@@ -161,8 +161,10 @@ enum holds is `ErrorVariantReshape`, whether the place was reached through a nar
 reference, a narrowed name beside a `mut` borrow, a pattern's binding or a reference bound
 into the variant; one that could change a collection's shape or replace an owner is
 `ErrorShapeReshape` or `ErrorShapeStore`, whether the element was reached by index, a method
-returning a reference or a reference bound to it. Only a change of shape or variant is asked
-of it: `x += x` reads what it writes.
+returning a reference or a reference bound to it. A move of what the place was borrowed
+from, or a store or swap over it by its own name, is `ErrorFrozen` (`l[0] += take(l)`,
+`u.x += {u = ...; 5}`): the stand-in's write is the borrow's later use. Nothing else is
+asked of it (`loanUseCompound`): `x += x` reads what it writes.
 
 ## What it does not do
 

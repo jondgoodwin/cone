@@ -1554,18 +1554,19 @@ borrows it through (`x += 1` is `{let tmp = &mut x; *tmp = *tmp + 1}`, and
 `v <- a, b` appends through one; both named `tempName`) is an access, a write,
 and no holder: `k += k` compiles. What is borrowed through it still carries
 its loan (`pwVarDcl` keeps it on the temporary, `pwLend` reads it), so
-`r = (v <- (1, 2))` holds `v`'s loan. One thing is asked of it as of a holder:
-where it points into a collection, into what an owner points at or into an
-enum's variant, whether the right side of the compound assignment could change
-that shape or variant before the temporary is written through
-(`pwCompoundPlace`; [narrow](../nodes/narrow.md), "A compound assignment").
-So `l[0usize] += grow(&mut l)` is `ErrorShapeReshape`, as
-`let p = &mut l[0usize]; let v = grow(&mut l); *p = v` is. Nothing else is
-asked of it: a right side that moves the collection or the owner away, or
-assigns over it by its own name (`l[0usize] += take(l)`), compiles, and the
-write lands in freed storage. A function whose only such borrow is the
-temporary has nothing that holds it, so the gate marks it (`flowGateCompound`,
-`FlowGateShape` above). A
+`r = (v <- (1, 2))` holds `v`'s loan. Two things are asked of it as of a
+holder, and only where it points into a collection, into what an owner points
+at or into an enum's variant (`pwCompoundPlace`; [narrow](../nodes/narrow.md),
+"A compound assignment"): whether the right side of the compound assignment
+could change that shape or variant before the temporary is written through, and
+whether it moves away or replaces what the place was borrowed from by its own
+name. So `l[0usize] += grow(&mut l)` is `ErrorShapeReshape`, as
+`let p = &mut l[0usize]; let v = grow(&mut l); *p = v` is, and
+`l[0usize] += take(l)` is `ErrorFrozen`, as the same through `p` is. Nothing
+else is asked of it: a read or a write of the collection there is accepted, and
+a place in a variable's own storage (`x += {x = 5; 1}`) has no stand-in. A
+function whose only such borrow is the temporary has nothing that holds it, so
+the gate marks it (`flowGateCompound`, `FlowGateShape` above). A
 borrow a
 call returns carries its receiver's loan as the receiver was reached: through a
 shared path (`l: &mut List`, a field of `self`, a `Rc[mut, T]` owner) that loan
