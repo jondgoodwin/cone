@@ -2680,8 +2680,12 @@ static void loanShapeContName(uint32_t loan, char *buf, size_t size) {
     snprintf(buf, size, "'%s'%s", st->namesym ? &st->namesym->namestr : "collection", reshapeIsSum((INode *)st) ? " value" : "");
 }
 
-int loanShapeIsSum(uint32_t loan) {
+static int loanShapeIsSum(uint32_t loan) {
     return loans[loan].repoint || reshapeIsSum(loans[loan].shapecont);
+}
+
+int loanShapeMayMark(uint32_t loan) {
+    return loans[loan].shapecont != NULL || loans[loan].lazycont != NULL || loans[loan].refcont != NULL;
 }
 
 static void loanShapeEmit(INode *node, uint32_t loan, int why, char *msg) {
@@ -2712,6 +2716,21 @@ static void loanShapeReport(Pending *pend, INode *usenode) {
         snprintf(msg, sizeof(msg),
             "This %s could change the shape of a %s while the generator's caller may still hold a borrow into it that a 'yield' handed out (made %s, %s): %s. A %s that changes shape may move or free what it lent. Yield a copy, or yield the borrow only once the generator has done changing the %s.",
             what, cont, where, through, loanShapeReason(note, cont, sum, reason, sizeof(reason)), cont, cont);
+        loanShapeEmit(pend->access, pend->loan, note->why, msg);
+        return;
+    }
+    if (pathVars[pend->holder].compound && !sum) {
+        // The holder is the stand-in for a compound assignment's place, which has no name
+        char change[40];
+        snprintf(change, sizeof(change), "%u:%u", pend->access->linenbr, loanColumn(pend->access));
+        if (loanShapeIsOwner(pend->loan))
+            snprintf(msg, sizeof(msg),
+                "This compound assignment writes into what a %s owns (borrowed %s, %s), but the %s at %s, made before it writes, could replace the %s: %s. The place is borrowed before the right side is made, and replacing an owner frees what it points at, so the result would be written into freed storage. Make the right side first, into a local of its own ('let v = ...; x += v').",
+                cont, where, through, what, change, cont, loanShapeReason(note, cont, 1, reason, sizeof(reason)));
+        else
+            snprintf(msg, sizeof(msg),
+                "This compound assignment writes into what a %s lent (borrowed %s, %s), but the %s at %s, made before it writes, could change the shape of the %s: %s. The place is borrowed before the right side is made, and a %s that changes shape may move or free what it lent, so the result would be written into freed storage. Make the right side first, into a local of its own ('let v = ...; x += v').",
+                cont, where, through, what, change, cont, loanShapeReason(note, cont, sum, reason, sizeof(reason)), cont);
         loanShapeEmit(pend->access, pend->loan, note->why, msg);
         return;
     }

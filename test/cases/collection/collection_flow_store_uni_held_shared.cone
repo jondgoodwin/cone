@@ -277,5 +277,45 @@ fn variantReplacedBound() i32 {
   0i32
 }
 
+// A compound assignment's place is borrowed before its right side is made and written
+// after (collection_flow_compound_element), through a held '&uni' as through any other
+// way: a store made through the other holder
+fn compoundStored() {
+  var l = oneList();
+  var r = &uni l;
+  let o = Rc[mut, &uni List[i32]](r);
+  let o2 = o;
+  (**o)[0usize] += {**o2 = List[i32](); 1i32};     //~ ErrorShapeStore "This compound assignment writes into what a 'List' lent"
+}
+
+// ... a call that pushes onto it
+fn compoundPushed() {
+  var l = oneList();
+  var r = &uni l;
+  let o = Rc[mut, &uni List[i32]](r);
+  let o2 = o;
+  (**o)[0usize] += {(**o2).push(1i32); 1i32};      //~ ErrorShapeReshape "This compound assignment writes into what a 'List' lent"
+}
+
+// ... a push through the reference variable, into a list under an owner
+fn compoundOwnerThrough() {
+  var o: Uni[List[i32]] = Uni[List[i32]](oneList());
+  var r = &uni o;
+  let m = &mut r;
+  (***m)[0usize] += {(**r).push(1i32); 1i32};      //~ ErrorShapeReshape "This compound assignment writes into what a 'List' lent"
+}
+
+// ... and a change of the variant it writes into
+fn compoundVariant() {
+  var s: Shape = Circle(5);
+  var r = &uni s;
+  let o = Rc[mut, &uni Shape](r);
+  let o2 = o;
+  var p = &mut **o;
+  if p is Circle {
+    p.r += {**o2 = Square(99); 1i32};              //~ ErrorVariantReshape "This compound assignment writes into one of the variants"
+  }
+}
+
 fn main() {
 }
