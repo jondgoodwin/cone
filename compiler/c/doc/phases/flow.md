@@ -2157,8 +2157,9 @@ the trait. So a result such as `&<Error`, which may point at anything, is held a
 store or call that could free a container. `flowGateShapeAsk` walks a function that makes a
 virtual call whose result names a borrow. The refusal (`ErrorShapeStore`, `ErrorShapeReshape`)
 names "a value behind a virtual reference": the trait's name says nothing of what is held, and a
-closure's is made up. A closure called directly needs none of this, its captures' loans being
-its own. Tests: `collection_flow_reshape_virtual_result`,
+closure's is made up. Its advice is to copy what is needed out of the result before the change,
+there being no path of the caller's to make `imm` or `uni` (`loanShapeAdvice`). A closure called
+directly needs none of this, its captures' loans being its own. Tests: `collection_flow_reshape_virtual_result`,
 `collection_reshape_virtual_result_success`.
 
 What it does not follow: types are compared as types, so two `List[Pt]` are not told apart
