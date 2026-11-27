@@ -1861,6 +1861,21 @@ locals, which only a call that reaches one of them is asked of):
   (`flowGateShapeStore`) sets `FlowGateShape` for a store into a struct-typed place that is no
   local named whole, in a function that has lent.
 
+**A reference variable lent writably is a second name** for what the reference borrows. A view through
+a reference that is frozen rather than marked -- into `*r` of a `&uni`, or of a `&mut` nothing else
+writes by yet, or into `**m` -- is frozen under the one name it was taken by, which `&mut r` does not
+touch (a place and its dereference are apart). The two meet at whichever comes second.
+The view first: `loanShapeRefView` notes the container on the loan (`refcont`), and a borrow that
+writes, of a variable's own storage, of a value that may hold a reference, marks every such view held
+through that variable (`pwLend`, `loanShapeRefLent`). The borrow first: a view through a `uni`
+reference read through a `mut` borrow (`Place.far`, `loanHoldsUniqAlias`) is marked as it is made,
+its roots the locals along the way (`refway`, `loanRootsNote`), so a store through `r` reaches it.
+Either way the freezing stays, so a change by the view's own name is reported as before; the mark adds
+the store and call checks, which refuse only a change made while the view is still to be used. The
+views noted are a method's or a function's borrow into a collection (`pwShapeLent`), a borrow into what
+an owner owns (`pwOwnerLent`), and a narrowing into a variant, whether followed (`pwNarrowShared`) or
+not (`castNarrowedSum`: by a `uni` reference, or a match's own `&`).
+
 **An owner is a shape-changing value too.** Storing over an owning reference (`Uni`, `Rc`, `Arc`, a
 program's region) frees what it points at, so a borrow into what an owner owns (`&mut *s`, a field of the
 pointee, an owner lent where a borrow of its contents is wanted: a place that dereferences an owner,
@@ -1981,8 +1996,11 @@ is this narrowed reference: the message names the original name, which is the on
 sees go stale. A name narrowed by a test and read from its own storage, held by value or
 through `uni`, `imm` or `mut1`, has no narrowed reference: where a `mut` borrow of it is held
 at the test, a stand-in holds the same kind of loan and each use of the name as the variant is
-a use of it (`pwNarrowName`; [narrow](../nodes/narrow.md), "A name narrowed beside a `mut`
-borrow").
+a use of it. Where the name is a reference and the `mut` borrow is of the variable itself, the
+stand-in also holds a loan of the variable, marked with the reference's type as an owner is
+(`reshapeOwnerCont`), so that a store of such a reference over it, which points the name
+elsewhere, is asked too (`pwNarrowName`; [narrow](../nodes/narrow.md), "A name narrowed beside
+a `mut` borrow").
 
 An answer is yes, no or not yet, as the inference of a shape-changing type is: a
 callee whose body is not type checked yet answers not yet, counted in

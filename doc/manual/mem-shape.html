@@ -502,6 +502,31 @@ fn through() i32 {
   *v
 }
 </pre>
+	<p>The order does not matter. A writable borrow of the variable holding a reference is a second name for what that
+		reference borrows, so a borrow taken before <span class="pre">m</span> was made, and one taken through
+		<span class="pre">**m</span>, are both refused a change made by the other name while they are still to be used.
+		A read-only borrow of the variable (<span class="pre">&amp;r</span>) can change nothing, and refuses nothing.</p>
+<pre>
+fn before() i32 {
+  var l = List[i32]();
+  l.push(7i32);
+  var r = &amp;uni l;
+  let v = &amp;(*r)[0usize];
+  let m = &amp;mut r;               // Ok: nothing is changed yet
+  (**m).push(8i32);             // Error 1339: this call could move what 'v' points into
+  *v
+}
+
+fn through() i32 {
+  var l = List[i32]();
+  l.push(7i32);
+  var r = &amp;uni l;
+  let m = &amp;mut r;
+  let v = &amp;(**m)[0usize];
+  *r = List[i32]();             // Error 1426: this replaces the list 'v' points into
+  *v
+}
+</pre>
 	<p>Writing an element that owns nothing in place is not refused, nor is replacing a field of an element through the
 		reference that borrowed the element:</p>
 <pre>
@@ -636,6 +661,10 @@ fn replaced() i32 {
 		(<a href="mod-substitution.html#flow">flow typing</a>), is followed the same way. For a local, or a
 		<span class="pre">uni</span> reference, that is only where a <span class="pre">&amp;mut</span> borrow of it
 		made earlier is still held at the test: the change is refused where the name is next used as the variant.
+		Where the name is a <span class="pre">uni</span>, <span class="pre">imm</span> or
+		<a href="mem-permissions.html#mut1">mut1</a> reference and the <span class="pre">&amp;mut</span> borrow is of the
+		name itself (<span class="pre">let r = &amp;mut s;</span>), pointing the name at another value through it
+		(<span class="pre">*r = other</span>, or a call handed <span class="pre">r</span> that may) is a change too.
 		Test it again after the change, or bind the payload by value.</p>
 <pre>
 fn narrowed() i32 {

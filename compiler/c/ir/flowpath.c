@@ -717,6 +717,19 @@ static PathSet *pwBlock(BlockNode *blk, int fnblock, int move);
 static PathSet *pwLend(INode *site, Place *pl, INode *perm, int access, uint32_t *loan);
 static void pwOwnerLent(Place *pl, uint32_t loan);
 static void pwHolderDies(uint32_t var);
+
+// What a borrow made through a narrowed name, or the name's reference handed on, carries of
+// its stand-in 'stand': all but the loan of the reference variable itself (loanIsRepoint).
+// What was made from the reference stays where it points when the name is pointed elsewhere
+static PathSet *pwNarrowCarried(uint32_t stand) {
+    PathSet *all = pathVars[stand].holds;
+    PathSet *carried = NULL;
+    for (uint32_t i = 0; all && i < all->cnt; ++i) {
+        if (!loanIsRepoint(loanOf(all->ids[i])))
+            carried = pathSetAdd(carried, all->ids[i]);
+    }
+    return carried;
+}
 static PathSet *pwPlaceSlots(Place *pl, PathSet *holds);
 static int pwIsGuard(VarDclNode *var);
 static void pwLockPoint(BlockNode *blk, INode *site, int kind);
@@ -1350,7 +1363,7 @@ static PathSet *pwPlaceValue(INode **nodep, int move) {
     PathSet *holds = pwPlaceHolds(&pl, *nodep);
     // A narrowed reference handed on as it is points into the variant
     if (pl.narrow && !pl.deref && pl.nsteps == 0 && pwCarries(((IExpNode *)*nodep)->vtype))
-        holds = pathSetUnion(holds, pathVars[pl.narrow].holds);
+        holds = pathSetUnion(holds, pwNarrowCarried(pl.narrow));
     // A holder moved away whole holds nothing here: its value, and the
     // finalizer that might read its borrows, went with the move
     if (moves && !pl.deref && pl.nsteps == 0 && pathVars[pl.var].holder)
@@ -1406,6 +1419,13 @@ static PathSet *pwLend(INode *site, Place *pl, INode *perm, int access, uint32_t
     // A borrow into what an owner points at: the owner stored over frees it (pwOwnerLent)
     if (pl->ownertype && id)
         pwOwnerLent(pl, id);
+    // A writable borrow of a variable's own storage, of a value that may hold a reference: a
+    // second name for what that reference borrows, so views through it are marked
+    if (!pl->deref && (permGetFlags(perm) & MayWrite)) {
+        INode *lentref = iexpGetTypeDcl(site);
+        if (lentref->tag != RefTag || pwCarries(((RefNode *)lentref)->vtexp))
+            loanShapeRefLent(pl->var);
+    }
     // Only a holder holds loans, but for an operator's temporary (pwVarDcl).
     // The new loan is near: the borrow points at its place. What the root
     // holds is held there, so a borrow of the root's own storage ('&mut q',
@@ -1427,7 +1447,7 @@ static PathSet *pwLend(INode *site, Place *pl, INode *perm, int access, uint32_t
     PathSet *lentset = pathSetAdd(pwPlaceSlots(pl, held), id);
     // A borrow into the variant a name is narrowed to is a reference into it too
     if (pl->narrow)
-        lentset = pathSetUnion(lentset, pathVars[pl->narrow].holds);
+        lentset = pathSetUnion(lentset, pwNarrowCarried(pl->narrow));
     return lentset;
 }
 
@@ -2846,6 +2866,8 @@ static void pwShapeLent(Place *pl, uint32_t loan, INode *container, int ofarg) {
     // freezing stops the global's own name in this function, never a callee that writes it by name
     if (loanPlaceInGlobal(pl))
         loanShapeMark(loan, container);
+    else if (loanShapeContainer(loan) == NULL)
+        loanShapeRefView(loan, container);
 }
 
 // A borrow into what an owning reference points at ('&mut *s', a field of what 'so' owns, the
@@ -2867,6 +2889,8 @@ static void pwOwnerLent(Place *pl, uint32_t loan) {
         else if (loanUniqAlias(loan))
             loanShapeLazy(loan, cont);
     }
+    if (loanShapeContainer(loan) == NULL)
+        loanShapeRefView(loan, cont);
 }
 
 // A call is made. Each marked loan is asked whether the call could reshape the
@@ -3038,6 +3062,13 @@ static PathSet *pwNarrowShared(CastNode *cast, uint32_t alias) {
             loanShapeAliasBy(loan, alias);
         pwShapeBorrow(&pl, loan, sum);
     }
+    if (loan && loanShapeContainer(loan) == NULL) {
+        loanShapeRefView(loan, sum);
+        // Narrowed from a reference to what a 'uni' one borrows ('let x = &*r; match x'): the
+        // loan 'x' holds of '*r' is a view too
+        if (pl.deref)
+            loanShapeRefViews(pathVars[pl.var].holds, sum);
+    }
     return holds;
 }
 
@@ -3047,18 +3078,28 @@ static PathSet *pwNarrowShared(CastNode *cast, uint32_t alias) {
 // reference it is reached through, held here is one more name for it. Then a loan like that
 // of a reference narrowed into a variant (pwNarrowShared) is held by a stand-in for the
 // name, which each member of the variant named on it uses, and what is borrowed through one
-// carries (pwLend). 'keep': the narrowing rests on earlier tests too, whose loans stay
+// carries (pwLend). Where the name is a reference and the 'mut' borrow is of the variable
+// itself ('&mut p'), it can point the name elsewhere as well ('*r = other'), so the
+// stand-in holds a second loan, of the variable, marked with the reference's type as an
+// owner's is: a store of such a reference over it, or a call that may, is a change too.
+// Only the name's uses meet that one (pwNarrowCarried). 'keep': the narrowing rests on
+// earlier tests too, whose loans stay
 static void pwNarrowName(INode *site, VarDclNode *var, int keep) {
     if (!pathLoans)
         return;
     uint32_t index = pathVar(var);
     Place pl = { index, 0, 0 };
+    Place self = { index, 0, 0 };
     INode *type = itypeGetTypeDcl(var->vtype);
+    INode *reftype = NULL;
     if (type->tag == RefTag) {
         pl.deref = 1;
+        reftype = type;
         type = itypeGetTypeDcl(((RefNode *)type)->vtexp);
     }
     uint32_t alias = loanMutAliasAt(&pl);
+    // (a borrow of the variable itself is among those 'pl' finds, so there is an 'alias')
+    uint32_t repoint = reftype ? loanMutAliasAt(&self) : 0;
     uint32_t stand = pathVars[index].narrow;
     if (!alias && !stand)
         return;
@@ -3076,10 +3117,15 @@ static void pwNarrowName(INode *site, VarDclNode *var, int keep) {
     }
     PathSet *holds = keep ? pathVars[stand].holds : NULL;
     PathSet *pending = keep ? pathVars[stand].pending : NULL;
-    uint32_t loan = alias ? loanNarrowName(site, &pl, alias) : 0;
+    uint32_t loan = alias ? loanNarrowName(site, &pl, alias, 0) : 0;
     if (loan) {
         // (its roots are read from what 'var' holds, where it is a reference)
         loanShapeMark(loan, type);
+        holds = pathSetAdd(holds, loan);
+    }
+    loan = repoint ? loanNarrowName(site, &self, repoint, 1) : 0;
+    if (loan) {
+        loanShapeMark(loan, reshapeOwnerCont(reftype));
         holds = pathSetAdd(holds, loan);
     }
     pathSetFacts(stand, holds, pending);
@@ -4660,6 +4706,12 @@ static PathSet *pwValue(INode **nodep, int move) {
         // its value holds came from its operand ('case let Some(e)' converts
         // the matched 'Option[&T]' to its 'Some[&T]'), of no struct's slot
         PathSet *holds = pwValue(&((CastNode *)node)->exp, flowCastCarries(node) ? move : 0);
+        // A reference narrowed into a variant and not followed above (a 'uni' one, or a
+        // match's own '&' with no 'mut' borrow held): where what it is narrowed from is a
+        // reference nothing else reaches, that may be given another name while it is used
+        INode *sum = pathLoans ? castNarrowedSum(node) : NULL;
+        if (sum)
+            loanShapeRefViews(holds, sum);
         // One into an owning virtual reference ('Uni[Trait]' from a 'Uni[H]')
         // keeps its operand's value under a type that names no lifetime, so
         // nothing after follows what it holds: it may hold only global
