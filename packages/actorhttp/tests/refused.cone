@@ -22,7 +22,11 @@
 // still ended 'err overloaded'; a hoard giving back blocks of the larger
 // classes for the far end's receives either reset the far end anyway or, by
 // freeing whole slabs, let the 4 KiB text be taken (not refused).
-// 'lent' is compared at the end with its value after the first request.
+// 'lent' is compared at the end with its value after the first request. Both are
+// read once the pool has settled (settledLent): the client's fetch can answer
+// before every buffer of the exchange has been released, so a count read at
+// once is sometimes one 4 KiB buffer high (row 899: 13 of 60 runs failed so on a
+// 2-vCPU Linux box, either way round).
 
 mod refused;
 
@@ -83,6 +87,23 @@ fn hoard() Chain {
     }
   }
   held
+}
+
+// The pool's lent count at rest: read again until it has not moved for 200 ms
+// (10 s at most). A buffer never released stays counted.
+fn settledLent() u64 {
+  let limit = Instant.now() + Duration.fromSeconds(10i64);
+  var n = stats().lent;
+  var still = Instant.now() + Duration.fromMillis(200i64);
+  while Instant.now() < still && Instant.now() < limit {
+    thread.sleep(Duration.fromMillis(5i64));
+    let now = stats().lent;
+    if now != n {
+      n = now;
+      still = Instant.now() + Duration.fromMillis(200i64);
+    }
+  }
+  n
 }
 
 // Answers one request; the paths that wait do so until main has taken the pool
@@ -220,7 +241,7 @@ fn main() i32 {
   // A request served, its connection kept alive
   f.get(url(port, "/hello"), otx.clone());
   expectStr(takeS(&mut orx).view(), "ok 200 5", "a request is served");
-  let lent0 = stats().lent;
+  let lent0 = settledLent();
 
   // pumpWrites: a streamed write while the pool is taken
   f.get(url(port, "/pump"), otx.clone());
@@ -238,6 +259,6 @@ fn main() i32 {
   // A new request is served once the pool has room again
   f.get(url(port, "/hello"), otx.clone());
   expectStr(takeS(&mut orx).view(), "ok 200 5", "after the shortage a request is served");
-  expectUInt(stats().lent, lent0, "after the shortage the pool's lent count is what it was");
+  expectUInt(settledLent(), lent0, "after the shortage the pool's lent count is what it was");
   done()
 }
