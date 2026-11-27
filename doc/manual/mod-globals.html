@@ -351,9 +351,8 @@ let log = openLog();
 		runs it with every module's, in the <a href="#initall">same order</a>. A setup runs wherever
 		<span class="pre">init</span> does, however often that is. If a setup fails, panics for instance, the program ends
 		at once at start-up, as any panic ends it; nothing after it, no <span class="pre">init</span> and no
-		<span class="pre">main</span>, has run. The finalizer undoes them in the exact reverse (a global given a
-		constant is finalized last, then the setups in the reverse of the order they ran, and the globals
-		<span class="pre">init</span> assigned first).</p>
+		<span class="pre">main</span>, has run. Nothing undoes a setup when the program ends: the value stays in
+		its global (<a href="#globalend">A global is never finalized</a>).</p>
 	<p>Only a <span class="pre">let</span> global of a module may be a setup. A <span class="pre">var</span>
 		global, a static, a thread-local, an <span class="pre">extern</span> declaration and a global of a C-named
 		module still take only a constant, and so does any global compiled for a GPU, where nothing runs a
@@ -428,13 +427,68 @@ fn @initpure init() {
 	<p>The program runs each of them, once, and the program alone: no module calls, borrows or otherwise
 		names them, neither another module by a path nor the module that declares them. Writing
 		<span class="pre">pub</span> before one is allowed, and does not change this.</p>
-	<p>Where a module's globals hold values whose type has a <a href="rec-methods.html#finalizer">finalizer</a>,
-		or owning references, the compiler gives the module a finalizer that runs the module's own
-		<span class="pre">final</span>, if it declares one, and then finalizes each such global, releasing an
-		owner as a local's end would, in the reverse of the order they are set (a global given a constant value is set first, then the <a href="#setup">setups</a> in the order they run, then the globals in the order <span class="pre">init</span> first assigns them),
-		while the module's own <span class="pre">final</span> runs before them all, as a type's
-		<span class="pre">final</span> runs before its fields are finalized. Such a module may not declare a
-		function named <span class="pre">drop</span>, which is the name the compiler gives it.</p>
+
+	<h3 id="globalend">A global is never finalized</h3>
+	<p>When the program ends, each module's <span class="pre">final</span> runs, and that is all that runs for its
+		state. The value a global holds is not finalized: its type's <a href="rec-methods.html#finalizer">finalizer</a>
+		does not run, an owning reference it holds is not released, and an actor whose handle it keeps is not
+		finalized. The process ends with those values still in place, and the operating system takes back its memory,
+		its open files and its sockets. The reason is safety: an actor still running, a behaviour still paused on
+		I/O, or a thread the program detached may use a global right up to the end of the process, so no moment
+		before then is safe to free what it holds. (A <span class="pre">var</span> global given a new value while the
+		program runs still finalizes the value it replaces, as any assignment does.)</p>
+	<p>So <b>anything that has to happen outside the process belongs in the module's
+		<span class="pre">final</span></b>: writing out what a buffer still holds, deleting a temporary directory,
+		telling a peer goodbye. Here a program collects its report in a global and writes it in
+		<span class="pre">final</span>. Left to the global's value, those lines would never be written:</p>
+<pre>
+mod report;
+
+import stdio use *;
+import sync use *;
+
+// Lines held in memory until they are written out
+struct Held {
+  pub text: String;
+  pub fn flush(self: &amp;mut) {
+    print &lt;- text.view();
+    text = String();
+  }
+}
+
+let held: Arc[Mutex, Held];
+
+fn @initpure init() {
+  held = Arc[Mutex, Held](Held(String()));
+}
+
+// The module's finalizer writes out what the global still holds
+fn final() {
+  let h = &amp;mut *held;
+  h.flush();
+}
+
+fn note(line: &amp;str) {
+  let h = &amp;mut *held;
+  h.text &lt;- line, "\n";
+}
+
+fn main() {
+  note("opened");
+  note("closed");
+  print &lt;- "main returns\n";
+}
+</pre>
+	<p>It prints:</p>
+<pre>
+main returns
+opened
+closed
+</pre>
+	<p>A module's <span class="pre">final</span> runs before those of the modules it depends on, so what it uses of
+		theirs is still working. It may still be running while an actor is, so a <span class="pre">final</span> that
+		touches state an actor shares first waits for the actors to go quiet
+		(<span class="pre">actors.waitQuiet()</span>), and reaches that state through its lock as any code does.</p>
 
 	<h2 id="initall">When every module's initializer and finalizer run</h2>
 	<p>A program does not start them itself. The compiler stitches every module's initializer together in the
@@ -447,8 +501,9 @@ fn @initpure init() {
 		<span class="pre">main</span> (with the command line's <span class="pre">argc</span> and
 		<span class="pre">argv</span> if it takes them), runs every module's finalizer, and exits with the value
 		<span class="pre">main</span> returned (0 if it returns nothing). So everything has been initialized when
-		<span class="pre">main</span> begins, and a program that opened files in an initializer has them closed by a
-		finalizer when <span class="pre">main</span> returns. The program's <span class="pre">main</span> is a
+		<span class="pre">main</span> begins, and what a module's <span class="pre">final</span> does happens when
+		<span class="pre">main</span> returns. The values the globals hold are
+		<a href="#globalend">not finalized</a>. The program's <span class="pre">main</span> is a
 		function of the module that is the program, taking nothing, or an <span class="pre">i32</span> and a
 		<span class="pre">**u8</span>, and returning an integer or nothing:</p>
 <pre>
@@ -469,7 +524,7 @@ fn main() i32 {
 		<span class="pre">exit</span> or <span class="pre">abort</span>: the entry's finalizers run only when
 		<span class="pre">main</span> returns. A library compiled on its own has no entry of its own, and keeps its
 		initializer and finalizer for the program that imports it, whose include file for the library declares
-		them with <span class="pre">extern</span>, and declares the globals its finalizer finalizes. A C program
+		them with <span class="pre">extern</span>. A C program
 		that calls such a library is on its own for setting it up. A <span class="pre">main</span> that takes any
 		other parameters, a function with a C name that is the program's own C entry, and a WebAssembly or GPU
 		module get no entry from the compiler.</i></p>

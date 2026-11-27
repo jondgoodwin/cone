@@ -1,0 +1,45 @@
+// A global is never finalized, so what a program must write out as it ends is
+// written by its module's 'final', which still runs: here a global holds lines
+// until then. 'Kept' has a finalizer of its own that must never run.
+mod module_final_flush;
+
+import stdio use *;
+import sync use *;
+
+struct Kept {
+  pub n: i32;
+  fn final(self: &uni) { print <- "kept finalized\n"; }
+}
+
+// Lines held in memory until they are written out
+struct Held {
+  pub text: String;
+  pub kept: Kept;
+  pub fn flush(self: &mut) {
+    print <- text.view();
+    text = String();
+  }
+}
+
+let held: Arc[Mutex, Held];
+
+fn @initpure init() {
+  held = Arc[Mutex, Held](Held(String(), Kept(1)));
+}
+
+// The module's finalizer writes out what the global still holds
+fn final() {
+  let h = &mut *held;
+  h.flush();
+}
+
+fn note(line: &str) {
+  let h = &mut *held;
+  h.text <- line, "\n";
+}
+
+fn main() {
+  note("opened");
+  note("closed");
+  print <- "main returns\n";
+}
