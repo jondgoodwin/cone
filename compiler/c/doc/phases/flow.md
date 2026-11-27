@@ -852,9 +852,12 @@ dereference of an owning reference. Two places overlap when they share a root
 and one path is a prefix of the other, step by step; only two different fields
 are disjoint. Nothing is tracked through a raw pointer.
 
-**`*&x` is `x`.** A borrow written where it is dereferenced makes no root of its own
-and no loan: the place is the one borrowed (`pwDeref`, which still drop-checks and
-accesses that place as the borrow would), so `&(**&o)[0usize]` borrows what
+**`*&x` is `x`.** A borrow written where it is dereferenced makes no root of its own:
+the place is the one borrowed (`pwDeref`, which still drop-checks and accesses that
+place as the borrow would). A read-only one (`&`, `&imm`) makes no loan. One that may
+write (`&uni`, `&mut`) keeps its loan (`Place.kept`), which every view of what is
+dereferenced holds beside its own, so `let v = &*&uni x` leaves `x` borrowed as
+`let v = &uni x` does. So `&(**&o)[0usize]` borrows what
 `&(*o)[0usize]` does, and a store or a narrowing through one is judged by the place's
 own name. The checks that read a place expression without walking it strip the pair
 too (`reshapeUnborrow`: `pwStoreTarget`, `pwReceiverFieldOwner`, `pwStoreOverField`,
