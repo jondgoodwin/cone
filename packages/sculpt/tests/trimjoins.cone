@@ -1,0 +1,490 @@
+// The sculpt package's trimJoin: two open pieces cut along the curve where
+// they cross and welded there, checked with the testing package against
+// values worked out by hand; only a failure prints, so trimjoins.out holds the
+// summary alone.
+//
+// A curve of two open pieces cuts a piece in two only where it runs from the
+// piece's outline to its outline, or closes. Two planes cross in a line that
+// ends inside the larger of them, so it cuts the smaller one only; the pieces
+// here are therefore a plane and a tube, whose curve is a closed loop that
+// cuts both. Both tubes face inward, as the plane faces up (+z): the kept
+// plane (inside the tube) is then on the tube's front, and the kept tube (above
+// the plane) on the plane's front, so the result is a cup, floor and walls
+// facing the same way.
+//
+// - The box cup. A is the grid plane z = 0, x and y from -2 to 2 in steps of
+//   0.5 (81 vertices, 64 faces, face 8 j + i the cell [x_i, x_i + 0.5] x
+//   [y_j, y_j + 0.5]); B is a tube of 12 walls' cells round the rectangle
+//   |x| <= 0.7, |y| <= 0.85 (corners (+-0.7, +-0.85), the ring's points listed
+//   below, off every grid line and diagonal), 6 levels z = -1.25 to 1.25 in
+//   steps of 0.5 (72 vertices, 60 faces, face 12 k + i the cell of ring side i
+//   and level k), the faces turned to face in. The seam is the loop where the
+//   tube crosses z = 0: 12 + 12 crossings of the tube's vertical edges and the
+//   diagonals of its row of cells across z = 0, and A's edges' crossings (6 +
+//   6) and diagonals' (12): 48 points on the curve. The crossings of the
+//   diagonals (B's 12 and A's 12) lie in a straight run of both pieces' sides
+//   and are dropped, as the boolean drops them; the 24 left, B's 12 vertical
+//   edges' and A's 12 edges', are the seam's vertices, 24 seam edges round
+//   the loop. Keep A's face 36 (the cell [0, 0.5]^2, inside) and B's face 48
+//   (the top row). The kept vertices are A's 9 (x, y in -0.5, 0, 0.5) and B's
+//   12 x 3 (levels 0.25, 0.75, 1.25) = 45, each bit for bit the input's;
+//   every other vertex is on the seam, on both surfaces: 45 + 24 = 69
+//   vertices. Faces: A's 4 whole cells and 12 trimmed, B's 2 whole rows (24)
+//   and 12 trimmed, 52; and since the cup is a disc, V - E + F = 1: 120
+//   edges. The cup's area: the floor 1.4 x 1.7 = 2.38 and the walls'
+//   perimeter 2 (1.4 + 1.7) = 6.2 times their height 1.25 = 7.75, 10.13. Its
+//   only open edges are the walls' top ring (12 edges), none on the seam; each
+//   seam vertex has two seam edges, which carry the crease asked for, and no
+//   other edge does.
+// - The tilted plane on a cylinder. A is the plane z = 0.3 x over the grid
+//   x = -2.05 + 0.5125 i, y = -1.9 + 0.475 j (i, j 0 to 8); B an open
+//   cylinder of a regular 16-gon of radius 1 (rotated 0.05 rad), levels z =
+//   -1.2, -0.4, 0.45, 1.3, inward. The seam is the plane's section of the
+//   16-gon prism (the ellipse's polygon): its vertices lie on the plane and
+//   on a face of the prism. The cup's area: the plane section's area is the
+//   16-gon's, 8 sin(2 pi / 16) = 3.0614675, times sqrt(1.09) (the slope), and
+//   the walls' perimeter 32 sin(pi / 16) = 6.2428906 times their height from
+//   the seam to 1.3: the seam's mean height is 0 (the 16-gon is centred), so
+//   1.3 x 6.2428906 = 8.1157578; 11.3120. Open edges: the top ring, 16.
+// - Refusals, one line each: a face out of range (either); pieces that do not
+//   cross (the tube moved 10 aside); a curve that ends inside the piece (A
+//   crossed by a flat sheet B: the sheet is cut, the plane is not; the sheet
+//   first the other way round); a kept face the curve crosses; kept parts
+//   that face opposite ways (the tube facing out).
+// - The same run twice gives the same bits.
+
+mod trimjoins;
+
+import testing use *;
+import collections use *;
+import geomath use *;
+import mesh use *;
+import sculpt use *;
+
+let near = 0.00001;
+
+fn grid(xs: &List[f32], ys: &List[f32], tilt: f32) PolyMesh {
+  var pts = List[Vec3]();
+  var j = 0usize;
+  while j < ys.len() {
+    var i = 0usize;
+    while i < xs.len() {
+      pts.push(Vec3(*xs[i], *ys[j], tilt * *xs[i]));
+      i = i + 1usize;
+    }
+    j = j + 1usize;
+  }
+  var cnt = List[u32]();
+  var idx = List[u32]();
+  let nx = xs.len();
+  j = 0usize;
+  while j + 1usize < ys.len() {
+    var i = 0usize;
+    while i + 1usize < nx {
+      cnt.push(4u32);
+      idx.push(u32.from(j * nx + i));
+      idx.push(u32.from(j * nx + i + 1usize));
+      idx.push(u32.from((j + 1usize) * nx + i + 1usize));
+      idx.push(u32.from((j + 1usize) * nx + i));
+      i = i + 1usize;
+    }
+    j = j + 1usize;
+  }
+  var problems = List[String]();
+  PolyMesh.fromPolygons(pts.view(), cnt.view(), idx.view(), &mut problems)
+}
+
+// A closed ring of points, at each level: the tube's cells, facing in (or
+// out). Vertex n k + i, face n k + i.
+fn tube(ring: &List[Vec2], zs: &List[f32], inward: bool, dx: f32) PolyMesh {
+  let n = ring.len();
+  var pts = List[Vec3]();
+  var k = 0usize;
+  while k < zs.len() {
+    var i = 0usize;
+    while i < n {
+      let rp = *ring[i];
+      pts.push(Vec3(rp.x + dx, rp.y, *zs[k]));
+      i = i + 1usize;
+    }
+    k = k + 1usize;
+  }
+  var cnt = List[u32]();
+  var idx = List[u32]();
+  k = 0usize;
+  while k + 1usize < zs.len() {
+    var i = 0usize;
+    while i < n {
+      let i1 = (i + 1usize) % n;
+      let a = u32.from(k * n + i);
+      let b = u32.from(k * n + i1);
+      let c = u32.from((k + 1usize) * n + i1);
+      let d = u32.from((k + 1usize) * n + i);
+      cnt.push(4u32);
+      if inward {
+        idx.push(a); idx.push(d); idx.push(c); idx.push(b);
+      } else {
+        idx.push(a); idx.push(b); idx.push(c); idx.push(d);
+      }
+      i = i + 1usize;
+    }
+    k = k + 1usize;
+  }
+  var problems = List[String]();
+  PolyMesh.fromPolygons(pts.view(), cnt.view(), idx.view(), &mut problems)
+}
+
+// A flat sheet (an open run of points, not closed) at each level, facing +y
+fn sheet(xs: &List[f32], zs: &List[f32], y: f32) PolyMesh {
+  var pts = List[Vec3]();
+  var k = 0usize;
+  while k < zs.len() {
+    var i = 0usize;
+    while i < xs.len() {
+      pts.push(Vec3(*xs[i], y, *zs[k]));
+      i = i + 1usize;
+    }
+    k = k + 1usize;
+  }
+  var cnt = List[u32]();
+  var idx = List[u32]();
+  k = 0usize;
+  while k + 1usize < zs.len() {
+    var i = 0usize;
+    while i + 1usize < xs.len() {
+      cnt.push(4u32);
+      idx.push(u32.from(k * xs.len() + i));
+      idx.push(u32.from(k * xs.len() + i + 1usize));
+      idx.push(u32.from((k + 1usize) * xs.len() + i + 1usize));
+      idx.push(u32.from((k + 1usize) * xs.len() + i));
+      i = i + 1usize;
+    }
+    k = k + 1usize;
+  }
+  var problems = List[String]();
+  PolyMesh.fromPolygons(pts.view(), cnt.view(), idx.view(), &mut problems)
+}
+
+fn range(from: f32, step: f32, n: usize) List[f32] {
+  var l = List[f32]();
+  var i = 0usize;
+  while i < n {
+    l.push(from + step * f32.from(i));
+    i = i + 1usize;
+  }
+  l
+}
+
+fn boxRing() List[Vec2] {
+  var r = List[Vec2]();
+  r.push(Vec2(-0.7, -0.85));
+  r.push(Vec2(-0.25, -0.85));
+  r.push(Vec2(0.32, -0.85));
+  r.push(Vec2(0.7, -0.85));
+  r.push(Vec2(0.7, -0.35));
+  r.push(Vec2(0.7, 0.4));
+  r.push(Vec2(0.7, 0.85));
+  r.push(Vec2(0.2, 0.85));
+  r.push(Vec2(-0.25, 0.85));
+  r.push(Vec2(-0.7, 0.85));
+  r.push(Vec2(-0.7, 0.35));
+  r.push(Vec2(-0.7, -0.4));
+  r
+}
+
+fn roundRing() List[Vec2] {
+  var r = List[Vec2]();
+  var i = 0u32;
+  while i < 16u32 {
+    let a = 2. * pi * f32.from(i) / 16. + 0.05;
+    r.push(Vec2(cos(a), sin(a)));
+    i = i + 1u32;
+  }
+  r
+}
+
+fn totalArea(m: &PolyMesh) f64 {
+  var s = 0.0;
+  var f = 0u32;
+  while usize.from(f) < m.faceCount() {
+    let pts = m.facePositions(f);
+    var nx = 0.0;
+    var ny = 0.0;
+    var nz = 0.0;
+    var i = 0usize;
+    while i < pts.len() {
+      let p = DVec3.from(*pts[i]);
+      let q = DVec3.from(*pts[(i + 1usize) % pts.len()]);
+      nx = nx + (p.y - q.y) * (p.z + q.z);
+      ny = ny + (p.z - q.z) * (p.x + q.x);
+      nz = nz + (p.x - q.x) * (p.y + q.y);
+      i = i + 1usize;
+    }
+    s = s + 0.5 * (nx * nx + ny * ny + nz * nz).sqrt();
+    f = f + 1u32;
+  }
+  s
+}
+
+fn hasPoint(m: &PolyMesh, p: Vec3) bool {
+  var v = 0usize;
+  while v < m.positions.len() {
+    let q = *m.positions[v];
+    if p.x == q.x && p.y == q.y && p.z == q.z { return true; }
+    v = v + 1usize;
+  }
+  false
+}
+
+// The distance in the plane from (x, y) to the closed ring
+fn ringDistance(ring: &List[Vec2], x: f32, y: f32) f64 {
+  var best = 1.0e9;
+  var i = 0usize;
+  while i < ring.len() {
+    let p = *ring[i];
+    let q = *ring[(i + 1usize) % ring.len()];
+    let dx = f64.from(q.x - p.x);
+    let dy = f64.from(q.y - p.y);
+    let px = f64.from(x - p.x);
+    let py = f64.from(y - p.y);
+    var t = (px * dx + py * dy) / (dx * dx + dy * dy);
+    if t < 0.0 { t = 0.0; }
+    if t > 1.0 { t = 1.0; }
+    let ex = px - t * dx;
+    let ey = py - t * dy;
+    let d = (ex * ex + ey * ey).sqrt();
+    if d < best { best = d; }
+    i = i + 1usize;
+  }
+  best
+}
+
+// How a result measures against the pieces it was made from: its vertices
+// that are neither of a's nor of b's lie on both surfaces (the plane
+// z = tilt x and the ring's walls) within near
+struct Cup {
+  pub seam: List[bool];
+  pub seamCount: i64;
+  pub keptCount: i64;
+  pub offSurface: i64;
+}
+
+fn measure(r: &PolyMesh, a: &PolyMesh, b: &PolyMesh, ring: &List[Vec2], tilt: f32) Cup {
+  var c = Cup(List[bool](), 0, 0, 0);
+  var v = 0usize;
+  while v < r.positions.len() {
+    let p = *r.positions[v];
+    let own = hasPoint(a, p) || hasPoint(b, p);
+    c.seam.push(!own);
+    if own {
+      c.keptCount = c.keptCount + 1;
+    } else {
+      c.seamCount = c.seamCount + 1;
+      let onPlane = (f64.from(p.z) - f64.from(tilt) * f64.from(p.x)).abs();
+      let onWall = ringDistance(ring, p.x, p.y);
+      if onPlane > near || onWall > near { c.offSurface = c.offSurface + 1; }
+    }
+    v = v + 1usize;
+  }
+  c
+}
+
+// The open edges, those on the seam, and the vertices with other than two
+// seam edges, and how many edges carry 'crease' and how many carry anything
+// else
+struct Edges {
+  pub open: i64;
+  pub openOnSeam: i64;
+  pub seamEdges: i64;
+  pub badSeamVertices: i64;
+  pub creased: i64;
+  pub otherCrease: i64;
+}
+
+fn edgesOf(r: &PolyMesh, seam: &List[bool], crease: f32) Edges {
+  var s = Edges(0, 0, 0, 0, 0, 0);
+  let ch = r.findFloatChannel(EdgeDomain, "crease");
+  var deg = List[i64]();
+  var v = 0usize;
+  while v < r.vertexCount() { deg.push(0); v = v + 1usize; }
+  var e = 0u32;
+  while usize.from(e) < r.edgeCount() {
+    let x = usize.from(r.fromVertex(2u32 * e));
+    let y = usize.from(r.toVertex(2u32 * e));
+    let onSeam = *seam[x] && *seam[y];
+    if r.isBoundaryEdge(e) {
+      s.open = s.open + 1;
+      if *seam[x] || *seam[y] { s.openOnSeam = s.openOnSeam + 1; }
+    }
+    if onSeam {
+      s.seamEdges = s.seamEdges + 1;
+      deg.set(x, *deg[x] + 1);
+      deg.set(y, *deg[y] + 1);
+    }
+    let val = if ch == NoIndex {0.} else {r.float(ch, e)};
+    if val == crease { s.creased = s.creased + 1; }
+    if (val == crease) != onSeam { s.otherCrease = s.otherCrease + 1; }
+    e = e + 1u32;
+  }
+  v = 0usize;
+  while v < r.vertexCount() {
+    if *seam[v] && *deg[v] != 2 { s.badSeamVertices = s.badSeamVertices + 1; }
+    v = v + 1usize;
+  }
+  s
+}
+
+fn sameBits(a: &PolyMesh, b: &PolyMesh) bool {
+  if a.vertexCount() != b.vertexCount() || a.faceCount() != b.faceCount() || a.edgeCount() != b.edgeCount() {
+    return false;
+  }
+  var v = 0usize;
+  while v < a.vertexCount() {
+    let p = *a.positions[v];
+    let q = *b.positions[v];
+    if p.x != q.x || p.y != q.y || p.z != q.z { return false; }
+    v = v + 1usize;
+  }
+  var h = 0usize;
+  while h < a.hVertex.len() {
+    if *a.hVertex[h] != *b.hVertex[h] { return false; }
+    h = h + 1usize;
+  }
+  true
+}
+
+fn withW(m: &mut PolyMesh) {
+  let ch = m.addFloatChannel(VertexDomain, "w", 0.);
+  var v = 0usize;
+  while v < m.vertexCount() {
+    m.setFloat(ch, u32.from(v), (*m.positions[v]).x);
+    v = v + 1usize;
+  }
+}
+
+fn boxCup() {
+  let xs = range(-2., 0.5, 9usize);
+  let ring = boxRing();
+  var a = grid(&xs, &xs, 0.);
+  let zs = range(-1.25, 0.5, 6usize);
+  var b = tube(&ring, &zs, true, 0.);
+  withW(&mut a);
+  withW(&mut b);
+  expectInt(i64.from(a.vertexCount()), 81, "box: A vertices");
+  expectInt(i64.from(b.faceCount()), 60, "box: B faces");
+  var p = List[String]();
+  let r = trimJoin(&a, &b, 36u32, 48u32, 1.5, &mut p);
+  expectInt(i64.from(p.len()), 0, "box: no problem line");
+  expectInt(i64.from(r.validate().len()), 0, "box: valid");
+  let c = measure(&r, &a, &b, &ring, 0.);
+  expectInt(c.keptCount, 45, "box: 45 kept vertices, the inputs' bit for bit");
+  expectInt(c.offSurface, 0, "box: every other vertex on both surfaces");
+  expectInt(c.seamCount, 24, "box: 24 seam vertices");
+  expectInt(i64.from(r.vertexCount()), 69, "box: 69 vertices");
+  expectInt(i64.from(r.faceCount()), 52, "box: 52 faces");
+  expectInt(i64.from(r.edgeCount()), 120, "box: 120 edges");
+  let e = edgesOf(&r, &c.seam, 1.5);
+  expectInt(e.open, 12, "box: only the top ring open");
+  expectInt(e.openOnSeam, 0, "box: no open edge on the seam");
+  expectInt(e.badSeamVertices, 0, "box: the seam closes, two edges at each of its vertices");
+  expectInt(e.seamEdges, 24, "box: 24 seam edges");
+  expectInt(e.otherCrease, 0, "box: the crease on the seam edges and no other");
+  expectFloat(totalArea(&r), 10.13, 0.0001, "box: the cup's area");
+  // The channel w (x on both pieces) carried, the seam's blended
+  let w = r.findFloatChannel(VertexDomain, "w");
+  var wOk = w != NoIndex;
+  var v = 0usize;
+  while wOk && v < r.vertexCount() {
+    if (f64.from(r.float(w, u32.from(v))) - f64.from((*r.positions[v]).x)).abs() > near { wOk = false; }
+    v = v + 1usize;
+  }
+  expect(wOk, "box: the vertex channel carried");
+  // The same run twice
+  var q = List[String]();
+  let r2 = trimJoin(&a, &b, 36u32, 48u32, 1.5, &mut q);
+  expect(sameBits(&r, &r2), "box: the same bits twice");
+  // The inputs untouched
+  expectInt(i64.from(a.vertexCount()), 81, "box: A unchanged");
+}
+
+fn tiltedCylinder() {
+  let xs = range(-2.05, 0.5125, 9usize);
+  let ys = range(-1.9, 0.475, 9usize);
+  let ring = roundRing();
+  let a = grid(&xs, &ys, 0.3);
+  var zs = List[f32]();
+  zs.push(-1.2); zs.push(-0.4); zs.push(0.45); zs.push(1.3);
+  let b = tube(&ring, &zs, true, 0.);
+  var p = List[String]();
+  let r = trimJoin(&a, &b, 36u32, 32u32, 0., &mut p);
+  expectInt(i64.from(p.len()), 0, "cylinder: no problem line");
+  expectInt(i64.from(r.validate().len()), 0, "cylinder: valid");
+  let c = measure(&r, &a, &b, &ring, 0.3);
+  expectInt(c.offSurface, 0, "cylinder: the seam's vertices on both surfaces");
+  expect(c.seamCount >= 16, "cylinder: a seam round the prism");
+  let e = edgesOf(&r, &c.seam, 0.);
+  expectInt(e.open, 16, "cylinder: only the top ring open");
+  expectInt(e.badSeamVertices, 0, "cylinder: the seam closes");
+  let area = 3.0614675 * 1.0440307 + 6.2428906 * 1.3;
+  expectFloat(totalArea(&r), area, 0.0005, "cylinder: the cup's area");
+}
+
+fn refusals() {
+  let xs = range(-2., 0.5, 9usize);
+  let ring = boxRing();
+  let a = grid(&xs, &xs, 0.);
+  let zs = range(-1.25, 0.5, 6usize);
+  let b = tube(&ring, &zs, true, 0.);
+  // A face out of range, each piece
+  var p = List[String]();
+  var r = trimJoin(&a, &b, 64u32, 48u32, 0., &mut p);
+  expectInt(i64.from(p.len()), 1, "refused: face of the first out of range, one line");
+  expectInt(i64.from(r.faceCount()), 64, "refused: an unchanged copy of the first");
+  var p2 = List[String]();
+  r = trimJoin(&a, &b, 36u32, 60u32, 0., &mut p2);
+  expectInt(i64.from(p2.len()), 1, "refused: face of the second out of range, one line");
+  expectInt(i64.from(r.faceCount()), 64, "refused: an unchanged copy of the first, again");
+  // Pieces that do not cross
+  let far = tube(&ring, &zs, true, 10.);
+  var p3 = List[String]();
+  r = trimJoin(&a, &far, 36u32, 48u32, 0., &mut p3);
+  expectInt(i64.from(p3.len()), 1, "refused: no crossing, one line");
+  expectInt(i64.from(r.faceCount()), 64, "refused: no crossing, a copy");
+  // A kept face the curve crosses: the cell [0.5, 1] x [0, 0.5] (i 5, j 4)
+  var p4 = List[String]();
+  r = trimJoin(&a, &b, 37u32, 48u32, 0., &mut p4);
+  expectInt(i64.from(p4.len()), 1, "refused: a crossed face, one line");
+  // The tube's face 0 is crossed (its row 0 is below, not crossed): face 24 is the crossed row
+  var p5 = List[String]();
+  r = trimJoin(&a, &b, 36u32, 26u32, 0., &mut p5);
+  expectInt(i64.from(p5.len()), 1, "refused: a crossed face of the second, one line");
+  // Facing opposite ways
+  let out = tube(&ring, &zs, false, 0.);
+  var p6 = List[String]();
+  r = trimJoin(&a, &out, 36u32, 48u32, 0., &mut p6);
+  expectInt(i64.from(p6.len()), 1, "refused: opposite ways, one line");
+  expectInt(i64.from(r.faceCount()), 64, "refused: opposite ways, a copy");
+  // A flat sheet across the plane: the sheet is cut along the curve, the
+  // plane is not (the curve is a slit in it)
+  let sx = range(-0.85, 0.425, 5usize);
+  let sz = range(-1.25, 0.5, 6usize);
+  let sh = sheet(&sx, &sz, 0.3);
+  // The sheet faces -y (the cell's corners run x then z: its normal is
+  // (1,0,0) x (0,0,1) = -y); the plane faces +z; the kept sides need not agree
+  // for the slit to be found first
+  var p7 = List[String]();
+  r = trimJoin(&a, &sh, 0u32, 16u32, 0., &mut p7);
+  expectInt(i64.from(p7.len()), 1, "refused: a slit in the first, one line");
+  if p7.len() > 0usize { expectStr(p7[0usize].view(), "the curve does not separate the face to keep from the rest of the first piece", "slit line a"); }
+  var p8 = List[String]();
+  r = trimJoin(&sh, &a, 16u32, 0u32, 0., &mut p8);
+  expectInt(i64.from(p8.len()), 1, "refused: a slit in the second, one line");
+  if p8.len() > 0usize { expectStr(p8[0usize].view(), "the curve does not separate the face to keep from the rest of the second piece", "slit line b"); }
+}
+
+fn main() i32 {
+  boxCup();
+  tiltedCylinder();
+  refusals();
+  done()
+}
