@@ -1,0 +1,90 @@
+// The program's end with an HttpClient still held by an actor paused on an await of its own (aio's accept). The client
+// goes only when aio's end abandons that await, after this package's finalizer has run, so its close must not reach a
+// package global then.
+mod exitclient;
+
+import stdio use *;
+import thread;
+import time use Duration;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import collections use String;
+import iocore use SocketAddr, IoError;
+import actors;
+import aio use Socket;
+import actorhttp use HttpClient, Server, ServerConfig;
+
+fn socketOf(r: Result[Socket, IoError]) Socket {
+  var res = r;
+  var s = Socket.none();
+  match &mut res {
+    case var &mut Ok(ok) {s <-> *ok;}
+    else {panic("socketOf: failed");}
+  }
+  s
+}
+
+// Answers every request until the program ends: one 'next' awaited at all times
+actor Front {
+  server: Server;
+
+  pub async fn run(self, port: OneshotSender[u16]) {
+    var res = await actorhttp.listen(SocketAddr.localhost(0u16), ServerConfig.make());
+    match &mut res {
+      case var &mut Ok(ok) {server <-> *ok;}
+      else {panic("listen failed");}
+    }
+    var tx = port;
+    tx.send(server.port());
+    while true {
+      let n = await server.next();
+      match n {
+        case var Ok(ok) {
+          var ex = ok;
+          ex.text(200u16, "hi\n");
+        }
+        case let Err(e) {break;}
+      }
+    }
+  }
+}
+
+// Fetches once, to completion, then keeps the client while it waits for a connection that never comes
+actor Getter {
+  client: HttpClient;
+
+  pub async fn run(self, port: u16, done: OneshotSender[u64]) {
+    var u = String.from("http://127.0.0.1:");
+    u.appendUInt(u64.from(port));
+    u.append("/");
+    let answer = await client.get(u.view());
+    match answer {
+      case let Ok(r) {printStr("fetched\n");}
+      else {printStr("fetch failed\n");}
+    }
+    var d = done;
+    d.send(1u64);
+    let l = socketOf(await aio.listen(SocketAddr.localhost(0u16)));
+    let s = await l.accept();
+    printStr("accepted\n");
+  }
+}
+
+fn main() {
+  initAll();
+  var ptx: OneshotSender[u16];
+  var prx: OneshotReceiver[u16];
+  ptx, prx = Oneshot[u16].make();
+  {let f = Front(Server.none()); f.run(ptx);}
+  var port = 0u16;
+  match prx.recv() {
+    case let Some(p) {port = p;}
+    case is None[u16] {}
+  }
+  var dtx: OneshotSender[u64];
+  var drx: OneshotReceiver[u64];
+  dtx, drx = Oneshot[u64].make();
+  {let g = Getter(HttpClient.standard()); g.run(port, dtx);}
+  drx.recv();
+  thread.sleep(Duration.fromMillis(100i64));
+  printStr("end of main\n");
+}

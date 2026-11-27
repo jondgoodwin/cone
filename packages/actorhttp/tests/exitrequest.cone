@@ -1,0 +1,86 @@
+// The program's end with a request still pending on a manual Conn, to a server that never answers. The connection's owner
+// hears of its connection's end only after the package's finalizer, so it must not reach a package global then.
+mod exitrequest;
+
+import stdio use *;
+import thread;
+import time use Duration;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import collections use String;
+import iocore use SocketAddr, IoError;
+import http use RequestHead;
+import actors;
+import aio use Socket;
+import actorhttp use Conn, FetchError;
+
+fn socketOf(r: Result[Socket, IoError]) Socket {
+  var res = r;
+  var s = Socket.none();
+  match &mut res {
+    case var &mut Ok(ok) {s <-> *ok;}
+    else {panic("socketOf: failed");}
+  }
+  s
+}
+
+fn connOf(r: Result[Conn, FetchError]) Conn {
+  var res = r;
+  var c = Conn.none();
+  match &mut res {
+    case var &mut Ok(ok) {c <-> *ok;}
+    else {panic("connOf: failed");}
+  }
+  c
+}
+
+// Listens, and never accepts: the connection is made, and nothing answers it
+actor Lister {
+  sock: Socket;
+
+  pub async fn listen(self, port: OneshotSender[u16]) {
+    sock = socketOf(await aio.listen(SocketAddr.localhost(0u16)));
+    var p = 0u16;
+    match await sock.localAddr() {
+      case let Ok(a) {p = a.port();}
+      else {}
+    }
+    var tx = port;
+    tx.send(p);
+  }
+}
+
+actor Holder {
+  pub async fn run(self, port: u16, ready: OneshotSender[u64]) {
+    let c = connOf(await actorhttp.connect("127.0.0.1", port));
+    var r = ready;
+    r.send(1u64);
+    let answer = await c.request(RequestHead.make("GET", "/", "127.0.0.1"), String());
+    printStr("answered\n");
+  }
+}
+
+fn silentPort(lister: &Lister) u16 {
+  var tx: OneshotSender[u16];
+  var rx: OneshotReceiver[u16];
+  tx, rx = Oneshot[u16].make();
+  lister.listen(tx);
+  var port = 0u16;
+  match rx.recv() {
+    case let Some(p) {port = p;}
+    case is None[u16] {}
+  }
+  port
+}
+
+fn main() {
+  initAll();
+  let lister = Lister(Socket.none());
+  let port = silentPort(&lister);
+  var atx: OneshotSender[u64];
+  var arx: OneshotReceiver[u64];
+  atx, arx = Oneshot[u64].make();
+  {let h = Holder(); h.run(port, atx);}
+  arx.recv();
+  thread.sleep(Duration.fromMillis(100i64));
+  printStr("end of main\n");
+}

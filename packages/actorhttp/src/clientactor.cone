@@ -41,13 +41,16 @@ struct ClientRegistry {
   ids: List[u64];
 }
 
+// Neither touches the registry once the program is over (final): it is a global, dropped when final returns
 fn regAdd(a: ClientActor, id: u64) {
+  if programOver.load() {return;}
   let r = &mut *clientReg;
   r.actors.push(a);
   r.ids.push(id);
 }
 
 fn regRemove(id: u64) {
+  if programOver.load() {return;}
   let r = &mut *clientReg;
   match r.ids.indexOf(&id) {
     case let Some(k) {
@@ -68,7 +71,7 @@ fn regCopy(out: &mut List[ClientActor]) {
 }
 
 // At the program's end (final): every client actor not closed lets go of the replies it holds, unanswered, so a behaviour
-// paused on a fetch is abandoned as the service's own pending ones are
+// paused on a fetch is abandoned as the service's own pending ones are, and closes, its connections aborted
 fn abandonClients() {
   var all = List[ClientActor]();
   regCopy(&mut all);
@@ -295,15 +298,18 @@ pub actor ClientActor is ConnOwner {
     selfactor.deadlineLoop();
   }
 
-  // The program ends: the replies the client holds are let go unanswered (see abandonClients)
+  // The program ends: the replies the client holds are let go unanswered (see abandonClients), and then it closes
   pub async fn abandon(self) {
     fetches.clear();
+    selfactor.close();
   }
 
   // ---- fetches
 
   // A fetch: asked of the core, its reply kept until the core answers it
   pub async fn fetch(self, req: httpclient.Request, rp: FetchReply) {
+    // Asked once the program is over: its reply dropped, so the behaviour awaiting it is abandoned
+    if programOver.load() {return;}
     if closing {
       rp.answer(Err[httpclient.Response, FetchError](FetchError.cancelled()));
       return;
