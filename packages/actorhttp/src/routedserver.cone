@@ -580,17 +580,15 @@ pub actor ConnActor is ExchangeHost {
       return;
     }
     // whether the layer's failure was known before this turn's output was asked for ('events' feeds, and feed asks)
-    let known = match sc.failureOf() {
-      case let &Some(f) {f.stage == httpconn.Stage.Tls}
-      else {false}
-    };
+    let known = layerLost(sc.failureOf());
     var isDone = sc.done(now);
     if !writing {
       var n = sc.fill(now);
       // 'fill' can itself end the protocol (HTTP/2, refused a buffer for a frame, says Failed and Closed then): what it
-      // says is read now, since no byte need ever come to bring another turn
+      // says is read now, since no byte need ever come to bring another turn. A lost layer's connection ends below with
+      // nothing more taken from it, so no waiting write is answered as sent
       var again = n == 0usize;
-      while again {
+      while again && !layerLost(sc.failureOf()) {
         let said = hx.events(&mut sc, selfactor, now);
         if hx.cut {
           self.finishEnd();
@@ -763,6 +761,14 @@ pub actor ConnActor is ExchangeHost {
     if ended {return;}
     sc.abort();
     self.turn();
+  }
+}
+
+// Whether a connection's failure is its layer's (TLS's): the connection then ends
+fn layerLost(f: &Option[httpconn.Failure]) bool {
+  match f {
+    case let &Some(x) {x.stage == httpconn.Stage.Tls}
+    else {false}
   }
 }
 
