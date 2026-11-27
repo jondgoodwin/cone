@@ -33,12 +33,18 @@ order, and the environment follows.
 | `blockTypeCheck` | a loop block is a frame (`narrowLoopEnter`, `narrowLoopExit`) |
 | `fnDclTypeCheck` | a function body starts with nothing known and gives back what it was given (`narrowFnBegin`); a closure's `()` is its own function |
 | `assignTypeCheck`, `swapTypeCheck` | `narrowAssigned`: the name is changed; a variant stored over a name held by value is a narrowing to it (`state = State.Run(2)`) |
-| `borrowMutRef`, `borrowTypeCheck`, `borrowDerefOf` | `narrowBorrowed`: a writable borrow of the whole enum, or of what a reference variable points at, is a change |
+| `borrowMutRef`, `borrowTypeCheck`, `borrowDerefOf` | `narrowBorrowed`: a writable borrow of the whole enum, of what a reference variable points at, or of a reference variable itself, is a change |
 | `varDclTypeCheck` | `narrowDeclared`: a local declared with a variant of its enum (`var s: Shape = Shape.Circle(1)`) is narrowed to it |
 
 A set that comes out empty (a test that contradicts what was believed) is a branch that cannot
 run, and is taken as no knowledge rather than refused. A test in this pass of a loop makes a
 narrowing of this pass (`NarrowFact.depth`).
+
+**A borrow of a reference variable.** Where the name is a reference (`p: &uni Slot`), a `mut` or
+`uni` borrow of `p` itself is a writable route to the whole enum (`**r = v`) and to the name
+(`*r = other` points it at another value), so `narrowBorrowed` ends the narrowing there,
+whatever the permission of `p`. A borrow of that borrow (`&mut &mut p`) is reached through it,
+so ends nothing more. One made before the test and still held there is the loan walk's, below.
 
 **What is narrowed.** A local or a parameter that is named in source (a hidden variable's name
 starts with `-`, or is `_`), of a closed enum (`narrowClosedEnum`: a trait with no base that has
@@ -126,10 +132,14 @@ tests keeps them on both paths, which can refuse a change that came before the t
 - **It never proves a call harmless for a name held by value or through `uni`, `imm`, `mut1`,
   in type check.** Only the name's own assignments, writable borrows of the whole enum and
   swaps end the narrowing there; what another name may change is the loan walk's, above.
-- **It does not see a `mut` borrow of the reference variable made after the test.** `let r =
-  &mut p;` under `if p is Circle`, `p` a `uni` reference, ends no narrowing (`narrowBorrowed`
-  asks for a borrow of the enum) and none is held when the walk asks, so a call handed `r` is
-  not followed.
+- **It does not see the name pointed at another value through a `mut` borrow held at the test.**
+  With `let r = &mut p;` before `if p is Circle`, the loan walk's stand-in follows changes of
+  the enum `p` reaches, and `*r = other`, or a call handed `r` that does it, changes which enum
+  that is.
+- **A change in a later operand of a condition is forgotten** for a name held by value or through
+  `uni`, `imm`, `mut1`. The block of `if s is Circle && reset(&mut s)`, and an operand after
+  `reset`, are narrowed again from the `is` tests of the whole condition (`narrowAssume`,
+  `narrowAssumeLocal`).
 - **It does not retype the name.** Only a member of the variant named on it sees the variant.
   Passing the name where the variant is wanted is still a type error, since the name is the
   original value (4c).

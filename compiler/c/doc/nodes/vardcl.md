@@ -235,7 +235,8 @@ nothing.
    A variant's own by-value method (`d.drop()`) called on an enum-typed variable
    needs a dispatch on the tag that a value receiver does not have (`ErrorEnumValueDispatch`,
    1150). A program that needs either declares the variant as the type: `var d: Dv.Own = ...`.
-   A writable borrow of the whole variable also ends its narrowing (`narrowBorrowed`),
+   A writable borrow of the whole variable, a reference variable's included, also ends
+   its narrowing (`narrowBorrowed`),
    so a field read after `&mut v` is `ErrorNarrowStale` for a variable that started
    as a variant.
 6. **Literal rule.** `scope <= 1` — that is, a global or a parameter default —
