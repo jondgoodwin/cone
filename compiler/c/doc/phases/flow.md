@@ -1586,6 +1586,18 @@ walk follows it (`refstore(&mut a, &b)` is legal, and `a` used after `b`'s end
 is refused there), and into one that may outlive the function it refuses it at
 the call (`pwCallStores`).
 
+**A borrowed variable given more.** A holder of a borrow of a variable's own
+storage holds, far, what the variable holds, since a read through it can give any
+of that: `pwLend` gives it what is held when the borrow is made, and
+`pwLentGains` what is stored into the variable while the borrow is held, whole or
+in part, by name, through another reference, by a call or by a swap. So in `var p
+= &mut h; h = &b; out = *p`, `out` holds `b`'s loan. It gains and never loses:
+`h` pointed back at something longer-lived leaves `p` holding `b`'s loan, so what
+`p` reads is judged by the shortest-lived value `h` has held while `p` held the
+borrow. A holder whose every borrowed reference points at a value holding no
+borrow (`&i64`, an `Option[&i64]` a call returned) can read none of them, and
+gains nothing (`pwReadsBorrows`).
+
 **What is not held.** The temporary an operator changing its operand in place
 borrows it through (`x += 1` is `{let tmp = &mut x; *tmp = *tmp + 1}`, and
 `v <- a, b` appends through one; both named `tempName`) is an access, a write,
