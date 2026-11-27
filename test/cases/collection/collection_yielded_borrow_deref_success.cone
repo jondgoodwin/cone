@@ -1,0 +1,134 @@
+// What stays accepted beside collection_flow_yielded_borrow_deref: a view taken through a
+// borrow that a block or an 'if' yields, kept while something else changes or used up
+// before the change, and reads, stores, a swap and calls through one with no view held.
+//
+// The expected output is worked out by hand in the comments:
+// 7 3 5 7 8 2 5 1 1 1 5 6 0 12 11 21 60
+
+mod collection_yielded_borrow_deref_success;
+
+import stdio use *;
+import collections use *;
+
+struct Held { pub r: &i32; }
+
+fn listOf(n: i32) List[i32] {
+  var l = List[i32]();
+  l.push(n);
+  l
+}
+
+fn num(n: i32) {
+  printInt(i64.from(n));
+  printStr(" ");
+}
+
+// A view through a block, of a local nothing else changes: 7
+fn blockNeighbour() {
+  var m = listOf(7i32);
+  var n = listOf(1i32);
+  let v = &(*{&m})[0usize];
+  n.push(2i32);
+  num(*v);
+}
+
+// The arms borrow two lists and a third is changed: 3, then the third's 5
+fn thirdChanged(c: bool) {
+  var m = listOf(3i32);
+  var n = listOf(4i32);
+  var k = listOf(1i32);
+  let v = &(*(if c {&mut m} else {&mut n}))[0usize];
+  k = listOf(5i32);
+  num(*v);
+  num(k[0usize]);
+}
+
+// The view is used before the store: 7, then the new list's 8
+fn usedFirst() {
+  let o = Rc[mut, List[i32]](listOf(7i32));
+  let o2 = o;
+  let v = &(**{&o})[0usize];
+  num(*v);
+  *o2 = listOf(8i32);
+  num((**{&o})[0usize]);
+}
+
+// The view's block ends before the local grows: 2, then 2 + 3
+fn viewEnds(c: bool) {
+  var m = listOf(2i32);
+  var n = listOf(9i32);
+  {
+    let v = &(*(if c {&mut m} else {&mut n}))[0usize];
+    num(*v);
+  }
+  m.push(3i32);
+  num(m[0usize] + m[1usize]);
+}
+
+// A view dereferenced in each pass of a loop, the list grown after it: 1, 1, 1
+fn inLoop() {
+  var m = listOf(1i32);
+  var i = 0i32;
+  while i < 3i32 {
+    let v = &(*{&mut m})[0usize];
+    num(*v);
+    m.push(i);
+    i += 1i32;
+  }
+}
+
+// Stores and calls through them with no view held: 4 stored, 1 added to it, then 6
+// pushed onto the list the 'if' picks: 5 6, and the other list's 0
+fn storesAndCalls(c: bool) {
+  var m = listOf(0i32);
+  var n = listOf(0i32);
+  (*{&mut m})[0usize] = 4i32;
+  (*(if c {&mut m} else {&mut n}))[0usize] += 1i32;
+  (*(if c {&mut m} else {&mut n})).push(6i32);
+  num(m[0usize]);
+  num(m[1usize]);
+  num(n[0usize]);
+}
+
+// A store of the whole, and a swap, through them: 12, then 11 after the swap
+fn wholeAndSwap(c: bool) {
+  var m = listOf(0i32);
+  var n = listOf(11i32);
+  *{&mut m} = listOf(12i32);
+  num(m[0usize]);
+  *(if c {&mut m} else {&mut n}) <-> *{&mut n};
+  num(m[0usize]);
+}
+
+// A borrow stored through one into a local that outlives it: 21
+fn storedBorrow(c: bool) {
+  let a = 20i32;
+  let b = 21i32;
+  var h = Held(&a);
+  var k = Held(&a);
+  *(if c {&mut h} else {&mut k}) = Held(&b);
+  num(*h.r);
+}
+
+// A value read through a read-only one is a copy of what the reference holds, which may
+// then be lent again: 30 + 30
+fn valueRead() {
+  var x = 30i32;
+  var r = &x;
+  let v = *{&r};
+  let w = &uni r;
+  num(*v + **w);
+}
+
+fn main() {
+  blockNeighbour();
+  thirdChanged(true);
+  usedFirst();
+  viewEnds(true);
+  inLoop();
+  storesAndCalls(true);
+  wholeAndSwap(true);
+  storedBorrow(true);
+  valueRead();
+  printStr("\n");
+}

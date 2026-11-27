@@ -1,0 +1,237 @@
+// A borrow that a block, an 'if', a 'match' or a slice borrow yields, then dereferenced,
+// reaches what it was borrowed from, as the borrow written there does ('*{&o}' as 'o'),
+// and where the value may be one of several places it reaches each. The walk made no
+// place of such a value, so what was reached through it was not followed back: each
+// function here but those of the last group was accepted
+// (collection_yielded_borrow_deref_success holds what stays accepted).
+
+mod collection_flow_yielded_borrow_deref;
+
+import stdio use *;
+import collections use *;
+
+enum Shape {
+  struct Poly { pub pts: List[i32]; }
+  struct Empty {}
+}
+use Shape;
+
+struct Held { pub r: &i32; }
+
+fn make() List[i32] {
+  var l = List[i32]();
+  l.push(7i32);
+  l
+}
+
+// ---- A view, then a store through the other holder ----
+
+fn block() {
+  let o = Rc[mut, List[i32]](make());
+  let o2 = o;
+  let v = &(**{&o})[0usize];
+  *o2 = List[i32]();                     //~ ErrorShapeStore "could change the shape"
+  printInt(i64.from(*v));
+}
+
+fn nestedBlock() {
+  let o = Rc[mut, List[i32]](make());
+  let o2 = o;
+  let v = &(**{ let n = 1i32; {&o} })[0usize];
+  *o2 = List[i32]();                     //~ ErrorShapeStore "could change the shape"
+  printInt(i64.from(*v));
+}
+
+fn blockOfName() {
+  let o = Rc[mut, List[i32]](make());
+  let o2 = o;
+  let v = &(**{ let q = &o; q })[0usize];
+  *o2 = List[i32]();                     //~ ErrorShapeStore "could change the shape"
+  printInt(i64.from(*v));
+}
+
+fn anIf(c: bool) {
+  let o = Rc[mut, List[i32]](make());
+  let o2 = o;
+  let p = Rc[mut, List[i32]](make());
+  let v = &(**(if c {&p} else {&o}))[0usize];
+  *o2 = List[i32]();                     //~ ErrorShapeStore "could change the shape"
+  printInt(i64.from(*v));
+}
+
+fn ifInBlock(c: bool) {
+  let o = Rc[mut, List[i32]](make());
+  let o2 = o;
+  let p = Rc[mut, List[i32]](make());
+  let v = &(**{ if c {{&o}} else {&p} })[0usize];
+  *o2 = List[i32]();                     //~ ErrorShapeStore "could change the shape"
+  printInt(i64.from(*v));
+}
+
+fn aMatch(c: bool) {
+  let o = Rc[mut, List[i32]](make());
+  let o2 = o;
+  let p = Rc[mut, List[i32]](make());
+  let v = &(**(match c { case true {&p} case false {&o} }))[0usize];
+  *o2 = List[i32]();                     //~ ErrorShapeStore "could change the shape"
+  printInt(i64.from(*v));
+}
+
+fn mutBlock() {
+  var o = Rc[mut, List[i32]](make());
+  let o2 = o;
+  let v = &(**{&mut o})[0usize];
+  *o2 = List[i32]();                     //~ ErrorShapeStore "could change the shape"
+  printInt(i64.from(*v));
+}
+
+fn slice() {
+  let o = Rc[mut, List[i32]](make());
+  let o2 = o;
+  let v = &(*(&[]o)[0usize])[0usize];
+  *o2 = List[i32]();                     //~ ErrorShapeStore "could change the shape"
+  printInt(i64.from(*v));
+}
+
+fn sliceOfArray() {
+  let o = Rc[mut, List[i32]](make());
+  let o2 = o;
+  var a = [o, o];
+  let v = &(*(&[]a)[0usize])[0usize];
+  *o2 = List[i32]();                     //~ ErrorShapeStore "could change the shape"
+  printInt(i64.from(*v));
+}
+
+// ---- The change made through the yielded borrow, or beside it ----
+
+fn storedThrough() {
+  let o = Rc[mut, List[i32]](make());
+  var o2 = o;
+  let v = &(**{&o})[0usize];
+  **{&mut o2} = List[i32]();             //~ ErrorShapeStore "could change the shape"
+  printInt(i64.from(*v));
+}
+
+fn grown() {
+  let o = Rc[mut, List[i32]](make());
+  let o2 = o;
+  let v = &(**{&o})[0usize];
+  o2.push(8i32);                         //~ ErrorShapeReshape "could change the shape"
+  printInt(i64.from(*v));
+}
+
+fn compound() {
+  let o = Rc[mut, List[i32]](make());
+  var o2 = o;
+  (**{&mut o2})[0usize] += { *o = List[i32](); 1i32 };    //~ ErrorShapeStore "writes into what a 'List' lent"
+}
+
+// ---- A local of the function's own ----
+
+fn localGrown() {
+  var m = make();
+  let v = &(*{&mut m})[0usize];
+  m.push(2i32);                          //~ ErrorShapeReshape "could change the shape"
+  printInt(i64.from(*v));
+}
+
+fn localGrownIf(c: bool) {
+  var m = make();
+  var n = make();
+  let v = &(*(if c {&mut m} else {&mut n}))[0usize];
+  m.push(2i32);                          //~ ErrorShapeReshape "could change the shape"
+  printInt(i64.from(*v));
+}
+
+fn localStoredWhole() {
+  var a = 1i32;
+  var h = Held(&a);
+  {
+    var b = 2i32;                        //~ ErrorFrozen "goes out of scope while 'h' still holds"
+    *{&mut h} = Held(&b);
+  }
+  printInt(i64.from(*h.r));
+}
+
+// ---- A store of a local into what a caller lent ----
+
+fn storedOut(h: &mut Held) {
+  var a = 1i32;
+  *{h} = Held(&a);                       //~ ErrorEscape "outlive this function"
+}
+
+fn storedOutIf(h: &mut Held, k: &mut Held, c: bool) {
+  var a = 1i32;
+  *(if c {h} else {k}) = Held(&a);       //~ ErrorEscape "outlive this function"
+}
+
+// ---- A variant narrowed through one ----
+
+fn narrowed() {
+  var p = List[i32]();
+  p.push(9i32);
+  let s = Rc[mut, Shape](Poly(p));
+  let s2 = s;
+  match &**{&s} {
+    case let &Poly(q) {
+      *s2 = Empty;
+      printInt(i64.from(q.pts[0usize]));    //~ ErrorVariantReshape "a reference into one of the variants"
+    }
+    else {}
+  }
+}
+
+fn narrowedIf(c: bool) {
+  var p = List[i32]();
+  p.push(9i32);
+  var p2 = List[i32]();
+  p2.push(9i32);
+  let s = Rc[mut, Shape](Poly(p));
+  let s2 = s;
+  let t = Rc[mut, Shape](Poly(p2));
+  match &**(if c {&t} else {&s}) {
+    case let &Poly(q) {
+      *s2 = Empty;
+      printInt(i64.from(q.pts[0usize]));    //~ ErrorVariantReshape "a reference into one of the variants"
+    }
+    else {}
+  }
+}
+
+// ---- A writing borrow keeps its loan ----
+// As one written where it is dereferenced does: what is made through what a block or an
+// 'if' yields holds that borrow's loan for as long as it lives. These were refused
+// already, and stay so.
+
+fn uniKept() {
+  var x = 1i32;
+  let v = &*{&uni x};
+  let y = x;                             //~ ErrorFrozen "is borrowed mutably"
+  printInt(i64.from(*v + y));
+}
+
+fn uniKeptIf(c: bool) {
+  var x = 1i32;
+  var z = 1i32;
+  let v = &*(if c {&uni x} else {&uni z});
+  let y = x;                             //~ ErrorFrozen "is borrowed mutably"
+  printInt(i64.from(*v + y));
+}
+
+fn uniKeptThroughReference() {
+  var x = 1i32;
+  var p = &x;
+  let v = &**{&uni p};
+  let y = p;                             //~ ErrorFrozen "is borrowed mutably"
+  printInt(i64.from(*v + *y));
+}
+
+fn uniKeptValueRead() {
+  var x = 1i32;
+  var r = &x;
+  let v = *{&uni r};
+  let w = &uni r;                        //~ ErrorFrozen "is borrowed mutably"
+  printInt(i64.from(*v + **w));
+}
+
+fn main() {}
