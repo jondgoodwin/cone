@@ -561,6 +561,9 @@ static void contentsLowerEntries(TypeCheckState *pstate, FnCallNode **nodep) {
         nodesAdd(&blk->stmts, (INode*)hoisted[i]);
     VarDclNode *recv = contentsVar(haseach ? contentsRecvName() : tempName, unknownType, immPerm, lval,
         (uint16_t)(pstate->scope + 1), (INode*)node);
+    // The receiver was checked above, which its type was needed for: checking it
+    // again would lower an index or a method call in it twice
+    recv->valuechecked = 1;
     nodesAdd(&blk->stmts, (INode*)recv);
 
     int bad = 0;

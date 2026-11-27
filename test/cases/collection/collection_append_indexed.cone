@@ -1,0 +1,91 @@
+// A list of entries after '<-' appends to a receiver reached through an index or
+// a method call, as one entry does. The receiver is evaluated once for the list.
+// Every value below is worked out by hand from the statements.
+
+mod collection_append_indexed;
+
+import stdio use *;
+import collections use *;
+
+struct S { pub items: List[i32]; }
+struct Box {
+  pub items: List[i32];
+  pub asked: i32;
+  pub fn get(self: &mut) &mut List[i32] { self.asked = self.asked + 1; return &mut self.items; }
+}
+
+fn show(label: &str, xs: &List[i32]) {
+  printStr(label);
+  printInt(i64.from(xs.len()));
+  printStr(":");
+  each x in &*xs { printStr(" "); printInt(i64.from(*x)); }
+  printStr("\n");
+}
+
+// The index is a call that counts how often it is made
+fn at(n: &mut i32, i: usize) usize { *n = *n + 1; return i; }
+
+fn lists() List[List[i32]] {
+  var l = List[List[i32]]();
+  l.push(List[i32]());
+  l.push(List[i32]());
+  return l;
+}
+
+// Through a parameter
+fn viaRef(l: &mut List[List[i32]]) { l[1usize] <- (8, 9); }
+
+fn main() {
+  var l = lists();
+  l[0usize] <- 1;
+  l[0usize] <- (2, 3);
+  l[0usize] <- 4, 5;
+  show("elem ", &l[0usize]);          // 5: 1 2 3 4 5
+  viaRef(&mut l);
+  show("param ", &l[1usize]);         // 2: 8 9
+
+  var asked = 0;
+  l[at(&mut asked, 1usize)] <- (10, 11, 12);
+  show("once ", &l[1usize]);          // 5: 8 9 10 11 12
+  printStr("asked "); printInt(i64.from(asked)); printStr("\n");   // 1
+
+  &mut l[0usize] <- (6, 7);
+  show("borrow ", &l[0usize]);        // 7: 1 2 3 4 5 6 7
+
+  var n = 1usize;
+  l[n] <- 2 of 13;
+  l[n] <- (fill 14, 15);
+  show("of ", &l[1usize]);            // 9: 8 9 10 11 12 13 13, then one 14 to fill the capacity of 8, 15
+
+  var more = List[i32]();
+  more <- (16, 17);
+  l[0usize] <- (each &more, 18);
+  show("each ", &l[0usize]);          // 10: 1 2 3 4 5 6 7 16 17 18
+
+  var s = List[S]();
+  s.push(S(List[i32]()));
+  s[0usize].items <- (1, 2);
+  show("field ", &s[0usize].items);   // 2: 1 2
+
+  var deep = List[List[List[i32]]]();
+  deep.push(lists());
+  deep[0usize][1usize] <- (3, 4);
+  show("deep ", &deep[0usize][1usize]);  // 2: 3 4
+
+  var arr = [List[i32](), List[i32]()];
+  var i = 1usize;
+  arr[i] <- (5, 6);
+  show("array ", &arr[1usize]);       // 2: 5 6
+
+  var b = Box(List[i32](), 0);
+  b.get() <- (1, 2, 3);
+  *b.get() <- (4, 5);
+  show("method ", &b.items);          // 5: 1 2 3 4 5
+  printStr("asked "); printInt(i64.from(b.asked)); printStr("\n");   // 2
+
+  var t = List[String]();
+  t.push(String());
+  t[0usize] <- ("ab", "cd");
+  t[0usize] <- (5, 6);
+  printStr(t[0usize].view()); printStr("\n");   // abcd56
+}

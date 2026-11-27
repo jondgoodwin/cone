@@ -1026,8 +1026,10 @@ value. Its `first` is an expression resolved like any other, which a
   is already a reference) into a temporary, with the permission the type's `<-`
   methods need (`fnCallAppendBorrowPerm`: `mut` when every `<-` takes
   `self: &mut`, `ro` (`imm` for an `Immutable` type) when none does, and when
-  they differ `mut` if the receiver may be written, else `ro`), and each entry becomes
-  statements of one block against that borrow: a value, one application
+  they differ `mut` if the receiver may be written, else `ro`). The temporary is
+  declared `valuechecked`, so the receiver is not checked again with the block:
+  an index or a method call in it is already lowered. Each entry becomes
+  statements of that block against that borrow: a value, one application
   `*recv <- value`; `n of x`, a block counting `n` (checked here as a `usize`,
   a constant one 0 through 4294967295, `ErrorRepeatCount`) with `x`'s
   application inside the loop, so it is evaluated once per value; `fill x`, a
