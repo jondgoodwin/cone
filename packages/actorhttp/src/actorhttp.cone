@@ -217,16 +217,20 @@
 //
 // THE PROGRAM'S END. The package's finalizer, which finalAll() runs before
 // aio's and the actors package's, waits until no actor is queued or running
-// (an actor paused on a fetch is neither), then ends the service (aio's
-// Host.end) and waits until it has, before the packages it uses (httpconn,
-// httpclient, tls) are finalized: on the I/O thread the jobs queued for it are
-// dropped unrun, every client, server and connection is reset with the Loop
-// still alive, and the service is dropped. Their answers are not delivered:
-// each paused behaviour is ABANDONED, as aio's are (aio.cone's header says
-// how): its reply's envelope is dropped, an actor with nothing else holding it
-// dies, and the values its paused behaviour held are finalized; the rest of
-// the behaviour never runs. An exchange awaited after that is abandoned the
-// same way at once. aio's own I/O ends after, in aio's finalizer.
+// (an actor paused on a fetch is neither). Then each client actor and manual
+// connection lets go of the replies it holds and is ended, its connections
+// aborted, and the service is ended (aio's Host.end) and waited for, before
+// the packages it uses (httpconn, httpclient, tls) are finalized: on the I/O
+// thread the jobs queued for it are dropped unrun, every client, server and
+// connection is reset with the Loop still alive, and the service is dropped.
+// Their answers are not delivered: each paused behaviour is ABANDONED, as
+// aio's are (aio.cone's header says how): its reply's envelope is dropped, an
+// actor with nothing else holding it dies, and the values its paused behaviour
+// held are finalized; the rest of the behaviour never runs. An exchange awaited
+// after that is abandoned the same way at once. aio's own I/O ends after, in
+// aio's finalizer. The package's actors may still run until then (a client
+// closing, a connection's end arriving), and reach none of the package's
+// globals that its finalizer's end drops.
 //
 // UPLOADS. 'client.upload(request, framing)' (or 'uploadIn' with a lim) sends a request whose
 // body is a stream: the request's own body must be empty, 'framing' is BodyLength.sized(n) or
@@ -566,6 +570,9 @@ let liveH3Endpoints: Atomic[u64];    // ...and H3Endpoints
 let manualReg: Arc[Mutex, ManualRegistry];    // the ManualConns not ended (manualconn.cone), for the program's end
 let manualTls: Arc[Mutex, TlsClients];   // manualconn.cone: connectSecure's TLS contexts, one for each config
 let clientReg: Arc[Mutex, ClientRegistry];    // the client actors not yet closed (clientactor.cone), for the program's end
+// Set by 'final', before it ends what the registries hold. The three globals above are dropped when 'final' returns, and
+// actors of this package may still run after that: once this is set, no behaviour reaches any of them
+let programOver: Atomic[bool];
 
 fn @initpure init() {
   nextId = Atomic[u64].of(0u64);
@@ -576,6 +583,7 @@ fn @initpure init() {
   liveClientConns = Atomic[u64].of(0u64);
   liveH3Conns = Atomic[u64].of(0u64);
   liveH3Endpoints = Atomic[u64].of(0u64);
+  programOver = Atomic[bool].of(false);
   manualTls = Arc[Mutex, TlsClients](TlsClients());
   manualReg = Arc[Mutex, ManualRegistry](ManualRegistry(List[ManualConn](), List[u64]()));
   clientReg = Arc[Mutex, ClientRegistry](ClientRegistry(List[ClientActor](), List[u64]()));
@@ -656,8 +664,16 @@ pub fn servicesCreated() u64 {servicesMade.load()}
 // package's: once no actor is queued or running, the service ends, and every
 // behaviour still paused on it is abandoned (the package's header, THE
 // PROGRAM'S END). It ends here, not in aio's finalizer, so that it ends before
-// the packages it uses (httpconn, httpclient, tls) are finalized
+// the packages it uses (httpconn, httpclient, tls) are finalized.
+//
+// The registries and the TLS contexts are globals, dropped as this returns, and an actor of this package can run after
+// that: a client whose last handle goes only when aio's final abandons the behaviour holding it, a manual connection whose
+// connection actor ends only when its cancelled I/O completes, either made by a value finalized then. So the program is
+// marked over first, and the quiet waited for after it means no behaviour that looked before is still at a registry; then
+// every client actor and manual connection recorded is ended
 fn final() {
+  actors.waitQuiet();
+  programOver.store(true);
   actors.waitQuiet();
   // The client actors let go of the replies they hold (the fetches still waiting are abandoned, as the service's are
   // below), so a behaviour paused on one is dropped before the service ends, as it was when the service held it
