@@ -3137,6 +3137,12 @@ static void pwOwnerLent(Place *pl, uint32_t loan) {
         loanShapeMark(loan, cont);
 }
 
+// What a result from behind a virtual reference may point at: nothing says what holds it,
+// so each store and call is asked of what it could free that holds one (below, pwReach)
+typedef struct PwUnseen PwUnseen;
+static int pwUnseenStoreHits(INode *lval, PwUnseen *unseen);
+static uint32_t pwUnseenConts(FnCallNode *call, PwUnseen *unseen, INode ***conts);
+
 // A call is made. Each marked loan is asked whether the call could reshape the
 // collection it points into: reported at once if the borrow is handed to this very
 // call or waits in flight for the call around it; otherwise a pending conflict for
@@ -3243,18 +3249,37 @@ static void pwShapeCall(FnCallNode *call, FnDclNode *meth, Place *recvpl, PathSe
             if (local || nmine || anyapart)
                 rus[c] = -1;       // not kept for another loan
         }
-        if (!answers[c])
+        ReshapeVerdict verdict = verdicts[c];
+        int answer = answers[c];
+        // From behind a trait object: asked too of every collection, enum or owner this call
+        // reaches that could hold what the borrow points at
+        PwUnseen *unseen = (PwUnseen *)loanUnseen(loan);
+        if (!answer && unseen) {
+            INode **ucont;
+            uint32_t nucont = pwUnseenConts(call, unseen, &ucont);
+            for (uint32_t u = 0; u < nucont && !answer; ++u) {
+                uint32_t unsettled = shapeUnsettled;
+                int ugv = gv ? gv : reshapeMutGlobalsReach(ucont[u]) ? 2 : 0;
+                answer = reshapeCall(call, meth, ru, ucont[u], NULL, recvfield, ugv, &verdict, mine, nmine, 0,
+                    anyapart ? apart : NULL);
+                if (shapeUnsettled != unsettled && !flowWalkFinal) {
+                    flowShapeRetry = 1;
+                    answer = 0;
+                }
+            }
+        }
+        if (!answer)
             continue;
         // The collection changed through the very name the borrow was taken by is
         // the loan's own freezing, which reports it; another field of the same
         // struct, through the same reference, is another collection
         // (a borrow narrowed into an enum's variant freezes nothing, so a change of
         // variant through the same name is for this check to report)
-        if ((verdicts[c].why == ReshapeReceiver || verdicts[c].why == ReshapeReceiverUnseen) && recvpl
+        if ((verdict.why == ReshapeReceiver || verdict.why == ReshapeReceiverUnseen) && recvpl
                 && (((loanShapeFrozen(loan) || (loanUniqAlias(loan) && !loanIsAliased(loan)))
                         && loanShapeSamePlace(loan, recvpl)) || loanShapeDisjoint(loan, recvpl)))
             continue;
-        Name *callee = verdicts[c].callee ? verdicts[c].callee->namesym : NULL;
+        Name *callee = verdict.callee ? verdict.callee->namesym : NULL;
         // The borrow handed to this very call, beside whatever could reshape its collection
         int own = 0;
         for (uint32_t j = 0; (loan != recvloan || sk) && j < nargs; ++j) {
@@ -3262,9 +3287,9 @@ static void pwShapeCall(FnCallNode *call, FnDclNode *meth, Place *recvpl, PathSe
                 own = 1;
         }
         if (own || loanShapeInFlight(loan))
-            loanShapeNow((INode *)call, loan, verdicts[c].why, callee);
+            loanShapeNow((INode *)call, loan, verdict.why, callee);
         else
-            loanShapePend((INode *)call, loan, verdicts[c].why, callee);
+            loanShapePend((INode *)call, loan, verdict.why, callee);
     }
 }
 
@@ -3444,7 +3469,9 @@ static void pwShapeStore(INode *lval, Place *pl) {
         // A store that reaches only other locals cannot change what the loan points into
         if (local && pl && !loanShapeReaches(loan, &reach))
             continue;
-        if (!reshapeStoreHits(lval, loanShapeContainer(loan)) && !pwStoreOverField(lval, loanShapeContainer(loan)))
+        PwUnseen *unseen = (PwUnseen *)loanUnseen(loan);
+        if (!reshapeStoreHits(lval, loanShapeContainer(loan)) && !pwStoreOverField(lval, loanShapeContainer(loan))
+                && !(unseen && pwUnseenStoreHits(lval, unseen)))
             continue;
         if (pl && (loanShapeDisjoint(loan, pl) || (loanShapeFrozen(loan) && loanShapeSamePlace(loan, pl))))
             continue;
@@ -3514,7 +3541,13 @@ static PathSet *pwPointerOf(PathSet *carried) {
 // borrow written in place ('&(*o)[0]') is marked for the shape check with the containers it
 // is into, so the call's result is given the same, worked out from the parameter's type:
 // every container (a collection, an enum, an owner) reached past a shared owner that could
-// hold what the result points at
+// hold what the result points at.
+//
+// A virtual call's receiver is behind a trait, which names no fields, so its type says
+// nothing of what is reached. The result is then given one more loan, marked for the trait,
+// which holds what the result may point at (PwUnseen): a store or a call is asked of every
+// container it could free that holds one of those. A trait object a function is handed, or
+// one held in what is handed, is not followed so
 
 #define PwReachMax 24
 
@@ -3532,7 +3565,15 @@ typedef struct {
     uint32_t nconts;                // the containers found, in 'pwReachConts'
     uint32_t nseen;                 // the types walked, in 'pwReachSeen'
     int visits;                     // types visited by the walks that keep no record of them
+    INode *unseen;                  // a trait object owned on the way, whose contents no type names
+    int owned;                      // follow only what a value holds and owns, not what it borrows
 } PwReach;
+
+struct PwUnseen {
+    INode *targets[PwReachMax];
+    int ntargets;
+    int any;
+};
 
 #define PwReachVisits 4096
 
@@ -3695,6 +3736,8 @@ static void pwReachWalk(PwReach *r, INode *type, INode *cont, int shared, int ow
         if (perm == (INode *)opaqPerm || permIsLock(ref->perm))
             break;
         if (pwIsBorrowed(type)) {
+            if (r->owned)
+                break;
             // A held borrow: its own loans say where it points, and a borrow through it is
             // marked for no owner, but past a shared owner others write by it too
             if (type->tag != VirtRefTag)
@@ -3709,6 +3752,7 @@ static void pwReachWalk(PwReach *r, INode *type, INode *cont, int shared, int ow
         INode *incont = inshared && inowner ? reshapeOwnerCont(type) : cont;
         if (type->tag == VirtRefTag) {
             // A trait object: what it holds is unknown
+            r->unseen = itypeGetTypeDcl(ref->vtexp);
             if (inshared && inowner)
                 pwReachFound(r, incont);
         }
@@ -3783,6 +3827,64 @@ static uint32_t pwReachContKey(INode *cont) {
     return used++;
 }
 
+// Does storing over 'lval' free something that holds what a result from behind a trait
+// object may point at? The value replaced whole takes what it holds and owns with it
+static int pwUnseenStoreHits(INode *lval, PwUnseen *unseen) {
+    INode *stored = iexpGetTypeDcl(lval);
+    if (stored == NULL)
+        return 0;
+    // A local owning reference is its own place: the others' hold keeps what it points at
+    if ((stored->tag == RefTag || stored->tag == VirtRefTag) && !pwIsBorrowed(stored)
+            && reshapeUniqueLocalOf(lval, reshapeOwnerCont(stored)))
+        return 0;
+    PwReach r;
+    memset(&r, 0, sizeof(r));
+    memcpy(r.targets, unseen->targets, sizeof(r.targets));
+    r.ntargets = unseen->ntargets;
+    r.any = unseen->any;
+    r.owned = 1;
+    pwReachWalk(&r, stored, NULL, 1, 1, 0);
+    return r.nconts > 0 || r.unseen != NULL;
+}
+
+// The collections, enums and owners holding what 'unseen' names that a call could reach:
+// through what it is handed, or through a global. Copied out of the walk's list, which
+// asking of each may walk again
+static uint32_t pwUnseenConts(FnCallNode *call, PwUnseen *unseen, INode ***conts) {
+    PwReach r;
+    memset(&r, 0, sizeof(r));
+    memcpy(r.targets, unseen->targets, sizeof(r.targets));
+    r.ntargets = unseen->ntargets;
+    r.any = unseen->any;
+    FnSigNode *sig = (FnSigNode *)iexpGetDerefTypeDcl(call->objfn);
+    uint32_t nargs = call->args ? call->args->used : 0;
+    for (uint32_t i = 0; i < nargs; ++i) {
+        INode *type = sig && sig->tag == FnSigTag && i < sig->parms->used
+            ? iexpGetTypeDcl(nodesGet(sig->parms, i)) : iexpGetTypeDcl(nodesGet(call->args, i));
+        pwReachWalk(&r, type, NULL, 1, 1, 0);
+    }
+    for (uint32_t i = 0; i < reshapeGlobalCount(); ++i)
+        pwReachWalk(&r, reshapeGlobalAt(i)->vtype, NULL, 1, 1, 0);
+    *conts = (INode **)memAllocBlk((r.nconts ? r.nconts : 1) * sizeof(INode *));
+    memcpy(*conts, pwReachConts, r.nconts * sizeof(INode *));
+    return r.nconts;
+}
+
+// A loan for what a call's result may borrow from the argument at 'argi', marked for 'cont'
+static uint32_t pwReachLoan(FnCallNode *call, uint32_t argi, INode *cont, uint32_t base, PathSet **result) {
+    uint32_t id = loanMakeReach((INode *)nodesGet(call->args, argi), pwReachContKey(cont), base);
+    if (id == 0)
+        return 0;
+    if (isNameUseNode(call->objfn) && ((NameUseNode *)call->objfn)->dclnode
+            && ((NameUseNode *)call->objfn)->dclnode->tag == FnDclTag)
+        loanReturnedBy(id, ((NameUseNode *)call->objfn)->namesym);
+    loanShapeMark(id, cont);
+    *result = pathSetAdd(*result, id);
+    if (pwOwnCnt < sizeof(pwOwnLoans) / sizeof(pwOwnLoans[0]))
+        pwOwnLoans[pwOwnCnt++] = id;
+    return id;
+}
+
 // Mark what a call's result may borrow through a shared owner from the argument at 'argi',
 // which carries 'carried' into it. 'covered' says the lending of this argument already marks
 // the referent's own type where it should (a receiver, a reference lent as pwLentArg does).
@@ -3823,16 +3925,21 @@ static PathSet *pwReachShared(FnCallNode *call, uint32_t argi, INode *parmtype, 
         INode *cont = pwReachConts[k];
         if (covered && cont == referent)
             continue;
-        uint32_t id = loanMakeReach((INode *)nodesGet(call->args, argi), pwReachContKey(cont), base);
-        if (id == 0)
+        if (pwReachLoan(call, argi, cont, base, &result) == 0)
             break;
-        if (isNameUseNode(call->objfn) && ((NameUseNode *)call->objfn)->dclnode
-                && ((NameUseNode *)call->objfn)->dclnode->tag == FnDclTag)
-            loanReturnedBy(id, ((NameUseNode *)call->objfn)->namesym);
-        loanShapeMark(id, cont);
-        result = pathSetAdd(result, id);
-        if (pwOwnCnt < sizeof(pwOwnLoans) / sizeof(pwOwnLoans[0]))
-            pwOwnLoans[pwOwnCnt++] = id;
+    }
+    // A virtual call's receiver: the signature's 'self' names the trait, and what is behind
+    // it is not known
+    INode *self = argi == 0 && (call->flags & FlagVDisp) ? iexpGetTypeDcl(nodesGet(call->args, 0)) : NULL;
+    if (self && self->tag == VirtRefTag) {
+        uint32_t id = pwReachLoan(call, argi, itypeGetTypeDcl(((RefNode *)self)->vtexp), base, &result);
+        if (id && loanUnseen(id) == NULL) {
+            PwUnseen *unseen = (PwUnseen *)memAllocBlk(sizeof(PwUnseen));
+            memcpy(unseen->targets, r.targets, sizeof(unseen->targets));
+            unseen->ntargets = r.ntargets;
+            unseen->any = r.any;
+            loanUnseenSet(id, unseen);
+        }
     }
     return result;
 }
