@@ -482,6 +482,22 @@ this is the part most worth internalizing:
 
 So `&mut T` is invariant in `T` while `&ro T` is covariant.
 
+**A variant to its `@unsized` enum is covariant under `mut` and `uni`
+too** (`refWidensToUnsizedEnum`, asked by the invariant arm). The rule under
+the table is that a reference may widen to the referent's supertype wherever
+no store through the wider reference can change the referent's variant. No
+whole value of an `@unsized` enum is written (`ErrorNoSize`), so a `&mut
+Node` writes only a common field, or the fields or whole of a variant it has
+matched. It asks for: a thin reference (`RefTag`: a slice's elements are
+strided); a target permission of `mut` or `uni`, not `mut1`; `borrow` as the
+region of both, so no owner widens and a key does; and `structMatches` under
+`Regref` answering that the source is a variant of that enum, which keeps
+another enum, an extension's variant and another generic instance out. The
+referent's lifetimes and type arguments are held as for any recast. It
+answers `CastSubtype`. Being a coercion of the reference type, it also reaches
+what asks for one: an inferred join of two variants' references
+(`refFindSuper`), and a function's signature met by another's.
+
 **Covariance stops at a reference held behind one that would stop moving.**
 `refHeldMoveSeenAsCopy`, asked by the covariant arm of `refMatches` and of
 `arrayRefMatchesRef`, refuses a value type that is a reference whose own type
@@ -1112,7 +1128,8 @@ name there is not a return type).
   header's offset from it, so anything reaching a region method through an
   owning virtual reference goes through `genlOwnerHeader`, which reads the
   alignment from the vtable's record instead.
-- **Coming from Rust:** `&mut T` is invariant and `&ro T` covariant; `uni` is
+- **Coming from Rust:** `&mut T` is invariant (but for a variant to its
+  `@unsized` enum, above) and `&ro T` covariant; `uni` is
   not `&mut` but the *unique* permission, which is what makes owning references
   move; lifetimes are a block-nesting integer that is not part of type identity
   and is checked at two sites, the loan walk following the rest, a name on a signature's reference being no

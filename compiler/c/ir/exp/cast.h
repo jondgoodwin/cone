@@ -45,6 +45,12 @@ struct NameUseNode;
 // of a place reached as 'uni' ('match &s'), which no other name reaches unless a 'mut' borrow
 // of the place is held. Only then is the narrowed reference followed (flowpath.c, pwNarrowAliased).
 #define FlagNarrowOwnBorrow 0x0100  // Cast: narrows the match's own borrow of a place reached as 'uni'
+// A test that type check narrowed a local or parameter's own name by (not through the hidden
+// local a shared reference's narrowing holds). No node converts anything, so this tells the
+// loan walk where the narrowing is made (flowpath.c, pwNarrowName)
+#define FlagNarrowTest 0x0200     // Is: the name tested is narrowed by it
+#define FlagNarrowKeeps 0x0400    // Is, with FlagNarrowTest: what is known past it, on some path, rests on earlier tests too
+#define FlagNarrowArmAlone 0x0800 // Is, with FlagNarrowTest: where it holds, what is known rests on it alone
 // The binding a guard makes of a variable the arm binds again ('case let T(x) if g'):
 // it reads the matched place before the arm is chosen, so it takes nothing from it --
 // a payload that moves is viewed through a borrow (castGuardBorrow)
