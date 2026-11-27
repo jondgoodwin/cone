@@ -2146,13 +2146,14 @@ void flowGateCallAsk(FlowState *fstate, Nodes *args) {
     }
 }
 
-// The variable at the root of a borrowed place, or NULL for one not rooted in
-// a variable. A place reached through a reference is keyed by that reference.
+// The variable at the root of a borrowed or stored place, or NULL for one not
+// rooted in a variable ('_' too). A place reached through a reference is keyed
+// by that reference.
 static VarDclNode *flowGatePlaceRoot(INode *place) {
     while (1) {
         if (isNameUseNode(place) && isExpNode(place)) {
             INode *dcl = ((NameUseNode *)place)->dclnode;
-            return dcl->tag == VarDclTag ? (VarDclNode *)dcl : NULL;
+            return dcl && dcl->tag == VarDclTag ? (VarDclNode *)dcl : NULL;
         }
         switch (place->tag) {
         case FldAccessTag:
@@ -2212,6 +2213,14 @@ void flowGateOperandAsk(FlowState *fstate, INode *operand) {
         return;
     }
     fstate->inflight[fstate->inflightcnt++] = root;
+}
+
+// A store reads nothing of its target's root ('l = v', 'l.f = v', 'a[i] = v'
+// of an array), so no name use asks it: asked here as the use it is
+void flowGateStoredAsk(FlowState *fstate, INode *place) {
+    VarDclNode *root = flowGatePlaceRoot(place);
+    if (root)
+        flowGateUse(fstate, root);
 }
 
 // A value whose type carries a borrow made an owning virtual reference: the

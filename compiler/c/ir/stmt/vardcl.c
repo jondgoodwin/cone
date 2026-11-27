@@ -33,6 +33,7 @@ VarDclNode *newVarDclNode(Name *namesym, uint16_t tag, INode *perm) {
     name->nwrites = 0;
     name->userlocal = 0;
     name->valuechecked = 0;
+    name->keepsborrow = 0;
     name->hollowed = NULL;
     name->hollowall = NULL;
     name->hollowuse = NULL;
@@ -62,6 +63,7 @@ VarDclNode *newVarDclFull(Name *namesym, uint16_t tag, INode *type, INode *perm,
     name->nwrites = 0;
     name->userlocal = 0;
     name->valuechecked = 0;
+    name->keepsborrow = 0;
     name->hollowed = NULL;
     name->hollowall = NULL;
     name->hollowuse = NULL;
@@ -897,8 +899,18 @@ void varDclFlow(FlowState *fstate, VarDclNode **vardclnode) {
     if ((*vardclnode)->namesym != tempName)
         flowGateHolder(fstate, (*vardclnode)->vtype);
     if ((*vardclnode)->value) {
+        // A '<-' with several entries makes each of them while its temporary
+        // holds the receiver's borrow: that borrow waits, as a method
+        // receiver's does, to the end of the operator's block (blockFlow):
+        // 'l[0] <- 1, {l = List[T](); 5}'. (A compound assignment's temporary
+        // is flowGateCompound's.)
+        int keeps = (*vardclnode)->keepsborrow;
+        if (keeps)
+            flowGateOperandNext(fstate, (*vardclnode)->value);
         flowLoadValue(fstate, &((*vardclnode)->value));
         flowHandleMoveOrCopyLast(&((*vardclnode)->value));  // initialization copies/moves value
+        if (keeps)
+            flowGateOperand(fstate, (*vardclnode)->value);
         (*vardclnode)->flowtempflags |= VarInitialized;
     }
     else if (!((*vardclnode)->flowtempflags & VarInitialized))

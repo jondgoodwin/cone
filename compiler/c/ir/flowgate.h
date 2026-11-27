@@ -55,9 +55,13 @@ static inline void flowGateHolder(FlowState *fstate, INode *type) {
         fstate->gate |= FlowGateHolder;
 }
 
-// Gate trigger: a place assigned or swapped. A local named whole was asked
-// about at its declaration, and '_' stores nothing.
+// Gate trigger: a place assigned or swapped. A store over a variable whose
+// operand's borrow waits for its call or literal is a use of it
+// ('l[0].push({l = List[T](); 5})'), whatever its type. Otherwise a local named
+// whole was asked about at its declaration, and '_' stores nothing.
 static inline void flowGateAssigned(FlowState *fstate, INode *lval) {
+    if (fstate->inflightcnt)
+        flowGateStoredAsk(fstate, lval);
     if (lval->tag == NameUseTag) {
         INode *dcl = ((NameUseNode *)lval)->dclnode;
         if (dcl == NULL || (dcl->tag == VarDclTag && ((VarDclNode *)dcl)->scope >= 2
