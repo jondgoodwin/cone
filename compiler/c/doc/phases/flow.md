@@ -873,9 +873,8 @@ decided only as the program runs, so it holds what the value carries in a stand-
 view made through it holds the loans of each, and is marked for the shape check as one
 through a name is. The loans of borrows that may write are kept on the place too
 (`pwWritingLoans`, `Place.kept`), as `*&uni x` keeps its own. The stand-in is a temporary,
-but what it holds is not dropped at its statement's end (`PathVar.yielded`): a view marked
-later (`loanShapeLazy`) reads from it where the view points. Other values that are no place
-(an assignment's value, a tuple element, a field of a struct literal, a call's result where
+but what it holds is not dropped at its statement's end (`PathVar.yielded`). Other values
+that are no place (an assignment's value, a tuple element, a field of a struct literal, a call's result where
 the stand-in of the paragraph on a reference a call returned is not made) are still read as
 values, and what is dereferenced there is not followed.
 
