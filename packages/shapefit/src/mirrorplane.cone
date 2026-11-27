@@ -1,0 +1,448 @@
+// ======== The mirror plane of a point set ========
+//
+// Many things worth modelling are mirror images of themselves (a horse, a
+// face, a building), and knowing the plane lets every later step work on one
+// half. 'mirrorPlane' finds it from the points alone: the plane that carries the
+// points nearest onto themselves. A port of auto.py's 'mirror_plane' (the
+// procgen decomposer), Nelder-Mead and all.
+//
+// - A plane is parameterised by its normal's two angles (theta from +z,
+//   phi about it) and a distance d from the centre c0, the mean of the sampled
+//   points: the points x with (x - c0) . n = d.
+// - Its COST is how far the reflection of the points lands from the points. The
+//   sample is every k-th point (k = n / 'samples', at least 1), so at most about
+//   'samples' of them; each is reflected in the plane and the distance to the
+//   nearest of ALL the points is taken; the cost is the mean of those distances
+//   each capped at the 90th percentile of them (numpy's linear percentile), so a
+//   limb or a strap with no partner does not pull the plane. The nearest point
+//   is found by a k-d tree built by quickselect on the widest axis.
+// - Its STARTS are six: the three principal axes of the sampled points (the
+//   eigenvectors of their covariance, least spread first, by 'jacobiEigen') and the
+//   three coordinate axes. Each starts at d = the distance from c0 to the middle
+//   of the points' box along that axis. Principal axes alone failed on the horse,
+//   whose spread is nearly equal along two axes, so the second set rescues it.
+//   Each start is refined by Nelder-Mead (scipy's: reflection 1, expansion 2,
+//   contraction and shrink 1/2; the first simplex steps theta and phi 0.05 and d
+//   2.0; it stops when the simplex is within 1e-4 in every parameter and 1e-6 in
+//   cost, or after 600 rounds), and the plane of the least cost wins (the
+//   first of equals).
+// - It returns a point on the plane (c0 + d n), the unit normal (its
+//   largest component positive), the cost ('error'), and 'rms', the root of the
+//   mean of the squares of the capped distances at the plane, in the same units
+//   as the points.
+//
+// DETERMINISTIC: no randomness anywhere, every loop in a fixed order, f64
+// throughout; the same points give the same bits.
+
+// Which starts 'mirrorPlaneFrom' tries
+pub const StartsPrincipal = 1u32;   // the three principal axes
+pub const StartsCoordinate = 2u32;  // the three coordinate axes
+pub const StartsAll = 3u32;
+
+pub struct MirrorPlane {
+  pub origin: Vec3;     // a point on the plane
+  pub normal: Vec3;     // unit; the plane's two sides are not told apart
+  pub error: f64;       // the cost the search minimised: the mean capped distance
+  pub rms: f64;         // the root mean square of the capped distances
+}
+
+// The mirror plane of 'points' from about 4000 samples, from all six starts
+pub fn mirrorPlane(points: &Array[Vec3]) MirrorPlane {
+  mirrorPlaneFrom(points, 4000u32, StartsAll)
+}
+
+// The mirror plane from about 'samples' samples and the starts 'starts' name
+// (a sum of StartsPrincipal and StartsCoordinate). Fewer than 3 points, or
+// no start asked for, gives the plane x = 0 with an infinite error.
+pub fn mirrorPlaneFrom(points: &Array[Vec3], samples: u32, starts: u32) MirrorPlane {
+  let n = points.len;
+  if n < 3usize || (starts & 3u32) == 0u32 {
+    return MirrorPlane(Vec3(0., 0., 0.), Vec3(1., 0., 0.), 1.0e300, 1.0e300);
+  }
+  let tree = PointTree.of(points);
+  // The sample: every k-th point
+  let want = if samples < 1u32 { 1usize } else { usize.from(samples) };
+  let k = if n / want < 1usize { 1usize } else { n / want };
+  var sx = List[f64]();
+  var sy = List[f64]();
+  var sz = List[f64]();
+  var i = 0usize;
+  while i < n {
+    let p = points[i];
+    sx.push(f64.from(p.x));
+    sy.push(f64.from(p.y));
+    sz.push(f64.from(p.z));
+    i = i + k;
+  }
+  let ns = sx.len();
+  var c0 = DVec3(0.0, 0.0, 0.0);
+  i = 0usize;
+  while i < ns {
+    c0 = c0 + DVec3(*sx[i], *sy[i], *sz[i]);
+    i = i + 1usize;
+  }
+  c0 = c0 * (1.0 / f64.from(ns));
+  let box = Aabb3.fromPoints(points);
+  let bc = DVec3.from((box.min + box.max) * 0.5);
+  var cost = PlaneCost(tree, sx, sy, sz, c0, List[f64]());
+  // The starting directions: principal axes (least spread first), then coordinates
+  var dirs = List[DVec3]();
+  if (starts & StartsPrincipal) != 0u32 {
+    var cov = List[f64]();
+    var q = 0usize;
+    while q < 9usize { cov.push(0.0); q = q + 1usize; }
+    i = 0usize;
+    while i < ns {
+      let dv = DVec3(*sx[i] - c0.x, *sy[i] - c0.y, *sz[i] - c0.z);
+      var r = 0usize;
+      while r < 3usize {
+        let dr = if r == 0usize { dv.x } else if r == 1usize { dv.y } else { dv.z };
+        var c = 0usize;
+        while c < 3usize {
+          let dc = if c == 0usize { dv.x } else if c == 1usize { dv.y } else { dv.z };
+          cov.set(r * 3usize + c, *cov[r * 3usize + c] + dr * dc);
+          c = c + 1usize;
+        }
+        r = r + 1usize;
+      }
+      i = i + 1usize;
+    }
+    var vals = List[f64]();
+    var vecs = List[f64]();
+    jacobiEigen(&mut cov, 3usize, &mut vals, &mut vecs);
+    var col = 0usize;
+    while col < 3usize {
+      dirs.push(DVec3(*vecs[col], *vecs[3usize + col], *vecs[6usize + col]));
+      col = col + 1usize;
+    }
+  }
+  if (starts & StartsCoordinate) != 0u32 {
+    dirs.push(DVec3(1.0, 0.0, 0.0));
+    dirs.push(DVec3(0.0, 1.0, 0.0));
+    dirs.push(DVec3(0.0, 0.0, 1.0));
+  }
+  var bestCost = 1.0e300;
+  var best = DVec3(0.0, 0.0, 0.0);
+  var s = 0usize;
+  while s < dirs.len() {
+    let v = *dirs[s];
+    let zc = if v.z > 1.0 { 1.0 } else if v.z < -1.0 { -1.0 } else { v.z };
+    let th = libc.acos(zc);
+    let ph = libc.atan2(v.y, v.x);
+    let d0 = v.dot(bc - c0);
+    let x = nelderMead(&mut cost, DVec3(th, ph, d0));
+    let c = cost.at(x);
+    if c < bestCost {
+      bestCost = c;
+      best = x;
+    }
+    s = s + 1usize;
+  }
+  var nrm = planeNormal(best.x, best.y);
+  var d = best.z;
+  // The unit normal with its largest component positive (the plane is the same)
+  let ax = nrm.x.abs();
+  let ay = nrm.y.abs();
+  let az = nrm.z.abs();
+  let lead = if ax >= ay && ax >= az { nrm.x } else if ay >= az { nrm.y } else { nrm.z };
+  if lead < 0.0 {
+    nrm = nrm * -1.0;
+    d = -d;
+  }
+  let rms = cost.rmsAt(best);
+  MirrorPlane((c0 + nrm * d).toVec3(), nrm.toVec3(), bestCost, rms)
+}
+
+fn planeNormal(th: f64, ph: f64) DVec3 {
+  DVec3(libc.sin(th) * libc.cos(ph), libc.sin(th) * libc.sin(ph), libc.cos(th))
+}
+
+// The cost of a plane (theta, phi, d), over the sampled points and the tree of all points
+struct PlaneCost {
+  tree: PointTree;
+  sx: List[f64];
+  sy: List[f64];
+  sz: List[f64];
+  c0: DVec3;
+  dist: List[f64];     // scratch: the distances of the last evaluation
+
+  // Fill 'dist' with each sample's reflection's distance to the nearest point
+  fn measure(self: &mut, x: DVec3) {
+    let nn = planeNormal(x.x, x.y);
+    self.dist.clear();
+    var i = 0usize;
+    while i < sx.len() {
+      let p = DVec3(*sx[i], *sy[i], *sz[i]);
+      let h = 2.0 * ((p - c0).dot(nn) - x.z);
+      let q = p - nn * h;
+      self.dist.push(self.tree.nearest(q.x, q.y, q.z));
+      i = i + 1usize;
+    }
+  }
+
+  // The cost: the mean of the distances capped at their 90th percentile
+  fn eval(self: &mut, x: DVec3) f64 {
+    self.measure(x);
+    let cap = percentile90(&dist);
+    var sum = 0.0;
+    var i = 0usize;
+    while i < dist.len() {
+      let v = *dist[i];
+      sum = sum + if v < cap { v } else { cap };
+      i = i + 1usize;
+    }
+    sum / f64.from(dist.len())
+  }
+
+  fn at(self: &mut, x: DVec3) f64 { self.eval(x) }
+
+  fn rmsAt(self: &mut, x: DVec3) f64 {
+    self.measure(x);
+    let cap = percentile90(&dist);
+    var sum = 0.0;
+    var i = 0usize;
+    while i < dist.len() {
+      let v = *dist[i];
+      let c = if v < cap { v } else { cap };
+      sum = sum + c * c;
+      i = i + 1usize;
+    }
+    (sum / f64.from(dist.len())).sqrt()
+  }
+}
+
+// numpy's percentile 90, linear: the value at rank 0.9 (n - 1) of the sorted values
+fn percentile90(v: &List[f64]) f64 {
+  var a = List[f64].withCapacity(v.len());
+  var i = 0usize;
+  while i < v.len() {
+    a.push(*v[i]);
+    i = i + 1usize;
+  }
+  a.sort();
+  let rank = 0.9 * f64.from(a.len() - 1usize);
+  let lo = usize.from(rank);
+  let frac = rank - f64.from(lo);
+  if lo + 1usize >= a.len() { return *a[lo]; }
+  *a[lo] + frac * (*a[lo + 1usize] - *a[lo])
+}
+
+// scipy's Nelder-Mead on three parameters, from the simplex of 'x0' and three steps
+// (theta 0.05, phi 0.05, d 2.0), xatol 1e-4, fatol 1e-6, 600 rounds
+fn nelderMead(cost: &mut PlaneCost, x0: DVec3) DVec3 {
+  var sim = List[DVec3]();
+  sim.push(x0);
+  sim.push(DVec3(x0.x + 0.05, x0.y, x0.z));
+  sim.push(DVec3(x0.x, x0.y + 0.05, x0.z));
+  sim.push(DVec3(x0.x, x0.y, x0.z + 2.0));
+  var fs = List[f64]();
+  var i = 0usize;
+  while i < 4usize {
+    fs.push(cost.eval(*sim[i]));
+    i = i + 1usize;
+  }
+  sortSimplex(&mut sim, &mut fs);
+  var iter = 0;
+  while iter < 600 {
+    var dx = 0.0;
+    var df = 0.0;
+    i = 1usize;
+    while i < 4usize {
+      let d = (*sim[i] - *sim[0]);
+      let m = maxAbs(d);
+      if m > dx { dx = m; }
+      let e = (*fs[0] - *fs[i]).abs();
+      if e > df { df = e; }
+      i = i + 1usize;
+    }
+    if dx <= 0.0001 && df <= 0.000001 { break; }
+    let xbar = (*sim[0] + *sim[1] + *sim[2]) * (1.0 / 3.0);
+    let worst = *sim[3];
+    let xr = xbar * 2.0 - worst;
+    let fxr = cost.eval(xr);
+    var shrink = false;
+    if fxr < *fs[0] {
+      let xe = xbar * 3.0 - worst * 2.0;
+      let fxe = cost.eval(xe);
+      if fxe < fxr { sim.set(3usize, xe); fs.set(3usize, fxe); }
+      else { sim.set(3usize, xr); fs.set(3usize, fxr); }
+    } else if fxr < *fs[2] {
+      sim.set(3usize, xr);
+      fs.set(3usize, fxr);
+    } else if fxr < *fs[3] {
+      let xc = xbar * 1.5 - worst * 0.5;
+      let fxc = cost.eval(xc);
+      if fxc <= fxr { sim.set(3usize, xc); fs.set(3usize, fxc); } else { shrink = true; }
+    } else {
+      let xcc = xbar * 0.5 + worst * 0.5;
+      let fxcc = cost.eval(xcc);
+      if fxcc < *fs[3] { sim.set(3usize, xcc); fs.set(3usize, fxcc); } else { shrink = true; }
+    }
+    if shrink {
+      i = 1usize;
+      while i < 4usize {
+        let p = *sim[0] + (*sim[i] - *sim[0]) * 0.5;
+        sim.set(i, p);
+        fs.set(i, cost.eval(p));
+        i = i + 1usize;
+      }
+    }
+    iter = iter + 1;
+    sortSimplex(&mut sim, &mut fs);
+  }
+  *sim[0]
+}
+
+fn maxAbs(d: DVec3) f64 {
+  let a = d.x.abs();
+  let b = d.y.abs();
+  let c = d.z.abs();
+  if a >= b && a >= c { a } else if b >= c { b } else { c }
+}
+
+// The simplex sorted by cost, ties keeping their order (insertion sort: four entries)
+fn sortSimplex(sim: &mut List[DVec3], fs: &mut List[f64]) {
+  var i = 1usize;
+  while i < 4usize {
+    var j = i;
+    while j > 0usize && *fs[j - 1usize] > *fs[j] {
+      let tf = *fs[j];
+      fs.set(j, *fs[j - 1usize]);
+      fs.set(j - 1usize, tf);
+      let ts = *sim[j];
+      sim.set(j, *sim[j - 1usize]);
+      sim.set(j - 1usize, ts);
+      j = j - 1usize;
+    }
+    i = i + 1usize;
+  }
+}
+
+// A k-d tree over points, for the distance to the nearest: the points
+// permuted so each range [lo, hi) holds its median at mid = (lo + hi) / 2, the
+// range's lower half before it and its upper half after, split on the axis
+// 'axis[mid]' (the widest of the range's box)
+struct PointTree {
+  px: List[f64];
+  py: List[f64];
+  pz: List[f64];
+  idx: List[u32];
+  axis: List[u32];
+
+  fn of(points: &Array[Vec3]) PointTree {
+    let n = points.len;
+    var t = PointTree(List[f64].withCapacity(n), List[f64].withCapacity(n), List[f64].withCapacity(n),
+      List[u32].withCapacity(n), List[u32].withCapacity(n));
+    var i = 0usize;
+    while i < n {
+      t.px.push(f64.from(points[i].x));
+      t.py.push(f64.from(points[i].y));
+      t.pz.push(f64.from(points[i].z));
+      t.idx.push(u32.from(i));
+      t.axis.push(0u32);
+      i = i + 1usize;
+    }
+    var todo = List[usize]();
+    todo.push(0usize);
+    todo.push(n);
+    while todo.len() > 0usize {
+      let hi = *todo[todo.len() - 1usize];
+      let lo = *todo[todo.len() - 2usize];
+      todo.pop();
+      todo.pop();
+      if hi - lo < 2usize { continue; }
+      var xl = 1.0e300; var xh = -1.0e300;
+      var yl = 1.0e300; var yh = -1.0e300;
+      var zl = 1.0e300; var zh = -1.0e300;
+      var k = lo;
+      while k < hi {
+        let p = usize.from(*t.idx[k]);
+        let x = *t.px[p]; let y = *t.py[p]; let z = *t.pz[p];
+        if x < xl { xl = x; } if x > xh { xh = x; }
+        if y < yl { yl = y; } if y > yh { yh = y; }
+        if z < zl { zl = z; } if z > zh { zh = z; }
+        k = k + 1usize;
+      }
+      let ex = xh - xl;
+      let ey = yh - yl;
+      let ez = zh - zl;
+      let a = if ex >= ey && ex >= ez { 0u32 } else if ey >= ez { 1u32 } else { 2u32 };
+      let mid = (lo + hi) / 2usize;
+      t.select(lo, hi, mid, a);
+      t.axis.set(mid, a);
+      todo.push(lo);
+      todo.push(mid);
+      todo.push(mid + 1usize);
+      todo.push(hi);
+    }
+    t
+  }
+
+  fn key(self: &, p: usize, a: u32) f64 {
+    if a == 0u32 { *px[p] } else if a == 1u32 { *py[p] } else { *pz[p] }
+  }
+
+  // Quickselect (Hoare): after it, idx[k] holds what sorting [lo, hi) on axis a would, none before it
+  // greater and none after it less
+  fn select(self: &mut, lo: usize, hi: usize, k: usize, a: u32) {
+    var l = i64.from(lo);
+    var r = i64.from(hi) - 1i64;
+    let kk = i64.from(k);
+    while l < r {
+      let pivot = self.key(usize.from(*idx[usize.from(kk)]), a);
+      var i = l;
+      var j = r;
+      while i <= j {
+        while self.key(usize.from(*idx[usize.from(i)]), a) < pivot { i = i + 1i64; }
+        while pivot < self.key(usize.from(*idx[usize.from(j)]), a) { j = j - 1i64; }
+        if i <= j {
+          let tmp = *idx[usize.from(i)];
+          idx.set(usize.from(i), *idx[usize.from(j)]);
+          idx.set(usize.from(j), tmp);
+          i = i + 1i64;
+          j = j - 1i64;
+        }
+      }
+      if j < kk { l = i; }
+      if kk < i { r = j; }
+    }
+  }
+
+  // The distance from (x, y, z) to the nearest point
+  fn nearest(self: &, x: f64, y: f64, z: f64) f64 {
+    var best = 1.0e300;
+    var stack = List[usize]();
+    var bound = List[f64]();
+    stack.push(0usize);
+    stack.push(idx.len());
+    bound.push(0.0);
+    while stack.len() > 0usize {
+      let hi = *stack[stack.len() - 1usize];
+      let lo = *stack[stack.len() - 2usize];
+      let b = *bound[bound.len() - 1usize];
+      stack.pop();
+      stack.pop();
+      bound.pop();
+      if lo >= hi || b >= best { continue; }
+      let mid = (lo + hi) / 2usize;
+      let p = usize.from(*idx[mid]);
+      let dx = x - *px[p];
+      let dy = y - *py[p];
+      let dz = z - *pz[p];
+      let d2 = dx * dx + dy * dy + dz * dz;
+      if d2 < best { best = d2; }
+      let a = *axis[mid];
+      let diff = if a == 0u32 { dx } else if a == 1u32 { dy } else { dz };
+      let far2 = diff * diff;
+      // The far side first onto the stack, so the near side is searched first
+      if diff < 0.0 {
+        stack.push(mid + 1usize); stack.push(hi); bound.push(far2);
+        stack.push(lo); stack.push(mid); bound.push(0.0);
+      } else {
+        stack.push(lo); stack.push(mid); bound.push(far2);
+        stack.push(mid + 1usize); stack.push(hi); bound.push(0.0);
+      }
+    }
+    best.sqrt()
+  }
+}
