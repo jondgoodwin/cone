@@ -3713,12 +3713,13 @@ static int pwNamesArg(INode *type, Nodes *args, int depth) {
     }
 }
 
-// Is a struct's raw pointer, one to 'pointee', a way safe code reaches what the struct
-// holds? Safe code dereferences no raw pointer: only a collection's elements are reached
+// Asking what a trait's methods hand out: is a struct's raw pointer, one to 'pointee', a
+// way safe code reaches what the struct holds? Safe code dereferences no raw pointer: only a collection's elements are reached
 // by one, and those its type's arguments name ('List[T]''s '*T', 'Dict[K, V]''s
 // '*DictEntry[K, V]'). Where one of a struct's pointers names an argument, its others are
 // not followed ('List''s 'region'). A struct where none does has nothing to tell by, and
-// each of its pointers is taken as the way to its elements
+// each of its pointers is taken as the way to its elements. (The walk of what a
+// parameter reaches follows every pointer of a shape-changing type)
 static int pwElementPtr(StructNode *st, INode *pointee) {
     Nodes *args = itypeInstanceTypeArgs((INode *)st);
     if (args == NULL || pwNamesArg(pointee, args, 0))
@@ -3959,7 +3960,7 @@ static void pwReachWalk(PwReach *r, INode *type, INode *cont, int shared, int ow
                 continue;
             // A collection's block, reached by its own raw pointer
             if (ftype->tag == PtrTag) {
-                if (changing && pwElementPtr(st, ((StarNode *)ftype)->vtexp))
+                if (changing)
                     pwReachWalk(r, ((StarNode *)ftype)->vtexp, shared ? type : cont, shared, owner, depth + 1);
             }
             else

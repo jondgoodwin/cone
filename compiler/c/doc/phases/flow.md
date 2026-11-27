@@ -2155,22 +2155,18 @@ another `Rc[mut, List[i32]]` is refused too, as it is for `&(*o)[0]`. Not follow
 whose borrow is hidden in a trait object it owns.
 Tests: `collection_flow_reshape_shared_result`, `collection_reshape_shared_result_success`.
 
-**A raw pointer on the way** (`pwElementPtr`, shared by this walk and `pwHands` below). Safe
-code dereferences none: a pointer is followed only as it is the way to a collection's elements.
-Where one of a struct's pointers points at what names one of the struct's type arguments (`*T`,
-`*DictEntry[K, V]`), the others are not followed (`List`'s `region`); where none does, as in a
-struct that is no generic instance, each is. This walk follows them only in a shape-changing
-type (its block); `pwHands` in any type reached through a borrow or that carries one (an
-iterator's view). A raw pointer a result's type holds is still one of the result's targets
-(`pwReachTargets`).
-
 **A trait object a function is handed** (`pwReachTrait`, wherever the walk above meets a virtual
 reference: a parameter, a field or element within one, borrowed, or owned). The call is judged by
 its signature, and a trait object's signature is its trait's public methods and fields (the
 vtable's), a closure's its return type. The fields are walked as a struct's are, with their
 containers. The methods are asked (`pwTraitHands`, `pwHands`) whether one can hand out something
 the result could point at: what it returns, or writes through a `&mut` parameter, followed
-through fields, elements, owners' referents and the traits those reach. If one can, the result is
+through fields, elements, owners' referents and the traits those reach. A raw pointer is
+followed, in a type reached through a borrow or that carries one, only as the way to what the
+type holds (`pwElementPtr`): safe code dereferences none, so where one of a struct's pointers
+points at what names one of its type arguments (`*T`, `*DictEntry[K, V]`) the others are not
+followed (`List`'s `region`), and where none does, as in a struct that is no generic instance,
+each is. The walk above follows every pointer of a shape-changing type, `region` too. If one can, the result is
 given the unseen loan a virtual call's result has (below), under the trait. Nothing is followed
 through `opaq` or a lock. Past 200 deep or 100000 types the answer is yes. `flowGateReachesOwner`
 answers yes for every borrowed virtual reference, so such a function's caller is walked. A plain
