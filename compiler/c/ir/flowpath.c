@@ -3791,11 +3791,13 @@ static void pwSwap(SwapNode *node) {
         // Both addresses are made before either element is used (genlTerm,
         // SwapTag), so the first one made is held while the other side's place
         // is walked, as a place's base is while its index is ('n.r[0usize] <->
-        // x[change(m)]', pwIndexStandIn): reaching the other element is its use
+        // x[change(m)]', pwIndexStandIn): reaching the other element is its use.
+        // The loan of what an owner holds is keyed by the first side's own node:
+        // the second side's index keys its own by a node of the second
         uint32_t stand = 0;
         if (k == 1 && pathLoans && !flowGateOnlyReads(*sides[i]))
             stand = pwIndexStandIn(*sides[i],
-                found[first] ? pwPlaceRests(*sides[i], &places[first]) : bases[first]);
+                found[first] ? pwPlaceRests(*sides[first], &places[first]) : bases[first]);
         if (stand)
             pathVars[stand].swapped = 1;
         if (var) {
