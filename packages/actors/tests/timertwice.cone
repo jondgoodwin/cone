@@ -1,0 +1,43 @@
+// Two live awaits on one Timer are the misuse and still panic (row 875): the
+// first is wrapped by orCancelledOp, in a group nobody cancels, so its next()
+// is not one a cancel left behind (timeragain.cone, which is). Its .exit is a
+// panic's. Its stderr, unchecked here (a line number would pin timers.cone),
+// says: panic at timers.cone:<line>: actors: a Timer's next() awaited while
+// another is (a cancelled wait is taken over; this one is still live). What was
+// printed before is kept: a panic flushes stdout first.
+
+mod timertwice;
+
+import stdio use *;
+import thread;
+import time use Duration, Instant;
+import cancelgroups use CancelGroup;
+import actors;
+
+actor Asker {
+  timer: actors.Timer;
+
+  pub async fn first(self) {
+    timer.set(Instant.now() + Duration.fromSeconds(3600i64));
+    match await actors.orCancelledOp(timer.next()) {
+      case let Ok(v) {printStr("first answered\n");}
+      case let Err(c) {printStr("first woken\n");}
+    }
+  }
+
+  pub async fn second(self) {
+    printStr("second\n");
+    let v = await timer.next();
+    printStr("second answered\n");
+  }
+}
+
+fn main() {
+  initAll();
+  let g = CancelGroup.make();
+  let a = Asker(actors.Timer.make());
+  actors.withGroup(&g, fn() [a] { a.first(); });
+  a.second();
+  thread.sleep(Duration.fromSeconds(10i64));
+  printStr("not stopped\n");
+}
