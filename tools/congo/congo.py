@@ -3219,27 +3219,32 @@ UPDATE_SITE = "https://cone.jondgoodwin.com"
 UPDATE_LATEST = "latest.json"
 
 
-def installed_release(root: Path) -> tuple[str, str] | None:
-    """(commit, platform) from the VERSION a release's archive carries; None where
-    `root` has none (a checkout of the repository, say)."""
+# A commit's time as VERSION and latest.json write it; as text these sort by time
+COMMIT_TIME = r"\d{4}-\d\d-\d\d \d\d:\d\d:\d\d UTC"
+
+
+def installed_release(root: Path) -> tuple[str, str, str] | None:
+    """(commit, platform, commit time) from the VERSION a release's archive
+    carries; None where `root` has none (a checkout of the repository, say)."""
     try:
         text = (root / "VERSION").read_text(encoding="utf-8")
     except (OSError, UnicodeError):
         return None
     commit = re.match(r"Cone, commit ([0-9a-f]{40})\n", text)
     platform = re.search(r"^platform (\S+)$", text, re.MULTILINE)
-    return (commit[1], platform[1]) if commit and platform else None
+    when = re.search(rf"^commit time ({COMMIT_TIME})$", text, re.MULTILINE)
+    return (commit[1], platform[1], when[1]) if commit and platform and when else None
 
 
-def this_install() -> tuple[Path, str, str]:
+def this_install() -> tuple[Path, str, str, str]:
     """The install this Congo runs from (it lives at <install>/tools/congo/), with
-    its commit and platform."""
+    its commit, platform and commit time."""
     found = installed_release(REPO)
     if found is None or not (REPO / "bin" / f"conec{EXE_EXT}").is_file():
         raise CongoError(f"{REPO} is not an installed Cone (no release's VERSION and bin/conec),"
                          f" so there is nothing to update: a checkout of the repository is"
                          f" updated with git")
-    return REPO, found[0], found[1]
+    return (REPO, *found)
 
 
 def update_site() -> str:
@@ -3271,16 +3276,18 @@ def site_file(site: str, name: str):
         raise CongoError(f"cannot fetch {where}: {exc}; nothing was changed") from None
 
 
-def read_latest(site: str) -> tuple[str, dict[str, tuple[str, str]]]:
-    """The newest release: its commit, and each platform's (archive name, SHA-256)."""
+def read_latest(site: str) -> tuple[str, str, dict[str, tuple[str, str]]]:
+    """The newest release: its commit, that commit's time, and each platform's
+    (archive name, SHA-256)."""
     with site_file(site, UPDATE_LATEST) as stream:
         data = stream.read(1 << 20)
     try:
         latest = json.loads(data)
         commit = latest["commit"]
+        when = latest["commit_time"]
         archives = {platform: (entry["file"], entry["sha256"].lower())
                     for platform, entry in latest["archives"].items()}
-        good = re.fullmatch(r"[0-9a-f]{40}", commit) and all(
+        good = re.fullmatch(r"[0-9a-f]{40}", commit) and re.fullmatch(COMMIT_TIME, when) and all(
             re.fullmatch(r"[A-Za-z0-9_-][A-Za-z0-9._-]*(\.zip|\.tar\.gz)", file)
             and re.fullmatch(r"[0-9a-f]{64}", digest)
             for file, digest in archives.values())
@@ -3289,7 +3296,16 @@ def read_latest(site: str) -> tuple[str, dict[str, tuple[str, str]]]:
     if not good:
         raise CongoError(f"{UPDATE_LATEST} of {site} does not name a release as this Congo reads"
                          f" it: run the install command again ({UPDATE_SITE}/download.html)")
-    return commit, archives
+    return commit, when, archives
+
+
+def older_release(latest: str, latest_time: str, commit: str, commit_time: str) -> str | None:
+    """Why the site's release is not taken, where it is older than the installed
+    one; None where it is not older."""
+    if latest == commit or latest_time >= commit_time:
+        return None
+    return (f"the site's newest release, {latest[:8]} of {latest_time}, is older than the installed"
+            f" {commit[:8]} of {commit_time}")
 
 
 def beside(root: Path, suffix: str) -> Path:
@@ -3411,10 +3427,12 @@ def recover_update(root: Path) -> None:
     discard(beside(root, ".update"))
 
 
-def fetch_release(site: str, commit: str, platform: str, file: str, expected: str,
+def fetch_release(site: str, release: tuple[str, str, str], file: str, expected: str,
                   staging: Path) -> Path:
     """Download the release's archive into `staging`, verify it and unpack it,
-    returning the folder that is to become the install."""
+    returning the folder that is to become the install. `release` is what its
+    VERSION must say: (commit, platform, commit time)."""
+    commit, platform, _ = release
     archive = staging / file
     digest = hashlib.sha256()
     say("Downloading", file)
@@ -3441,7 +3459,7 @@ def fetch_release(site: str, commit: str, platform: str, file: str, expected: st
     new = unpacked / "cone"
     needed = [f"bin/conec{EXE_EXT}", "bin/congo.cmd" if IS_WINDOWS else "bin/congo",
               "tools/congo/congo.py"] + (["python/python.exe"] if IS_WINDOWS else [])
-    if installed_release(new) != (commit, platform) or not all((new / n).is_file() for n in needed):
+    if installed_release(new) != release or not all((new / n).is_file() for n in needed):
         raise CongoError(f"{file} does not hold the {platform} release {commit[:8]};"
                          f" nothing was changed")
     return new
@@ -3449,13 +3467,20 @@ def fetch_release(site: str, commit: str, platform: str, file: str, expected: st
 
 def update_install(root: Path) -> int:
     site = update_site()
+    if os.environ.get("CONE_UPDATE_URL"):
+        # said before anything is read, so an update from elsewhere is never silent
+        say("Using", f"{site} (CONE_UPDATE_URL)")
     with update_lock(root):
         recover_update(root)
-        _, commit, platform = this_install()
-        latest, archives = read_latest(site)
+        _, commit, platform, commit_time = this_install()
+        latest, latest_time, archives = read_latest(site)
         if latest == commit:
             say("Up to date", f"Cone {commit[:8]} is the newest release")
             return 0
+        older = older_release(latest, latest_time, commit, commit_time)
+        if older:
+            raise CongoError(f"{older}: not installed (congo update --rollback goes back to the"
+                             f" release the last update replaced); nothing was changed")
         if platform not in archives:
             raise CongoError(f"the newest release, {latest[:8]}, has no download for {platform};"
                              f" nothing was changed")
@@ -3468,7 +3493,7 @@ def update_install(root: Path) -> int:
         replaced = staging / "replaced"   # the release before last, until the swap is made
         try:
             staging.mkdir()
-            new = fetch_release(site, latest, platform, file, expected, staging)
+            new = fetch_release(site, (latest, platform, latest_time), file, expected, staging)
             if previous.exists():
                 rename_folder(previous, replaced)
             try:
@@ -3497,7 +3522,7 @@ def update_install(root: Path) -> int:
 def rollback_install(root: Path) -> int:
     with update_lock(root):
         recover_update(root)
-        _, commit, _ = this_install()
+        commit = this_install()[1]
         previous = beside(root, ".previous")
         found = installed_release(previous)
         if found is None or not (previous / "bin" / f"conec{EXE_EXT}").is_file():
@@ -3514,17 +3539,20 @@ def rollback_install(root: Path) -> int:
 
 
 def cmd_update(args: argparse.Namespace) -> int:
-    root, commit, platform = this_install()
+    root, commit, platform, commit_time = this_install()
     if args.rollback:
         return rollback_install(root)
     if not args.check:
         return update_install(root)
     site = update_site()
-    latest, archives = read_latest(site)
-    say("Installed", f"Cone {commit[:8]}, in {root}")
-    say("Newest", f"Cone {latest[:8]}, at {site}")
+    latest, latest_time, archives = read_latest(site)
+    say("Installed", f"Cone {commit[:8]} of {commit_time}, in {root}")
+    say("Newest", f"Cone {latest[:8]} of {latest_time}, at {site}")
+    older = older_release(latest, latest_time, commit, commit_time)
     if latest == commit:
         say("Up to date", "")
+    elif older:
+        say("Note", f"{older}: congo update does not install it")
     elif platform not in archives:
         say("Note", f"the newest release has no download for {platform}")
     else:

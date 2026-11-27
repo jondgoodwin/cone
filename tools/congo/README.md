@@ -98,11 +98,12 @@ Hello, world!
 works on the install this Congo runs from, wherever that is (`CONE_HOME` is the installers' setting and
 is not read here). A checkout of the repository is not an install, and is updated with git.
 
-It reads `latest.json` from https://cone.jondgoodwin.com, which names the newest release's commit and
-each system's archive with its SHA-256. Where that commit is the one in the install's `VERSION`, it says
-so and stops. Otherwise it downloads the archive, refuses it unless its SHA-256 matches, unpacks it
-beside the install, and moves it into the install's place, so `PATH` and the links to `conec` and
-`congo` point where they did. It follows the release the site names, even an older one.
+It reads `latest.json` from https://cone.jondgoodwin.com, which names the newest release's commit, that
+commit's time, and each system's archive with its SHA-256. Where the commit is the one in the install's
+`VERSION`, it says so and stops. A release whose commit is older than the installed one is refused:
+`--rollback` is the way back. Otherwise it downloads the archive, refuses it unless its SHA-256 matches,
+unpacks it beside the install, and moves it into the install's place, so `PATH` and the links to
+`conec` and `congo` point where they did.
 
 `congo update --check` prints what is installed and what is newest, and changes nothing.
 `congo update --rollback` swaps the install with the one the last update replaced, without the network;
@@ -126,8 +127,9 @@ folder is missing: rename `<install>.previous` (after a rollback, `<install>.rol
 run the install command again.
 
 `CONE_UPDATE_URL` names another place to read releases from: an `https://` or `file://` URL, or a
-folder, holding `latest.json` and `downloads/<hash8>/<archive>`. Whoever can write there chooses what is
-installed, since the SHA-256 comes from the same place.
+folder, holding `latest.json` and `downloads/<hash8>/<archive>`; where it is set, `congo update` prints
+the place before reading from it. Whoever can write there chooses what is installed, since the SHA-256
+comes from the same place.
 
 ## A package
 

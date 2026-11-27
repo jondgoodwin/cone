@@ -16,8 +16,9 @@ the builder's checkout settings. REV is origin/master unless --hash says
 otherwise. The commit is recorded in the archive (VERSION) and in every file
 name (the first 8 hexadecimal digits).
 
-latest.json, which `congo update` reads, names the newest release: its commit
-and each system's archive with its SHA-256. Publish it at the site's root,
+latest.json, which `congo update` reads, names the newest release: its commit,
+the commit's time (from the archives' VERSION; `congo update` refuses a release
+older than the installed one) and each system's archive with its SHA-256. Publish it at the site's root,
 beside install.sh, after the archives are under downloads/<hash8>/.
 
 Nothing here uploads anything. The output goes to --out (default
@@ -490,6 +491,22 @@ def fill(text: str, values: dict[str, str]) -> str:
     return text
 
 
+def commit_time_in(archive: Path, full: str) -> str:
+    """The commit time the archive's VERSION records ('2026-11-27 13:00:00 UTC'),
+    which is what an install of it will hold; the VERSION must be `full`'s. Read
+    from the archive, so `stage` needs no clone."""
+    if archive.suffix == ".zip":
+        with zipfile.ZipFile(archive) as zf:
+            data = zf.read("cone/VERSION")
+    else:
+        with tarfile.open(archive) as tar:
+            data = tar.extractfile("cone/VERSION").read()
+    found = re.match(r"Cone, commit ([0-9a-f]{40})\ncommit time (.+ UTC)\n", data.decode("utf-8"))
+    if not found or found[1] != full:
+        raise ReleaseError(f"{archive}: its VERSION is not commit {full}'s")
+    return found[2]
+
+
 def stage(args: argparse.Namespace) -> None:
     full = git("rev-parse", "--verify", f"{args.hash}^{{commit}}") if not args.full_hash else args.full_hash
     if not re.fullmatch(r"[0-9a-f]{40}", full):
@@ -502,6 +519,9 @@ def stage(args: argparse.Namespace) -> None:
     missing = [p for p in needed if not p.is_file()]
     if missing:
         raise ReleaseError("missing: " + ", ".join(str(p) for p in missing))
+    times = {commit_time_in(p, full) for p in needed}
+    if len(times) != 1:
+        raise ReleaseError(f"the archives record different commit times: {sorted(times)}")
     base = f"{SITE}/downloads/{short}"
     values = {
         "HASH": full, "HASH8": short, "SITE": SITE, "BASE": base,
@@ -522,8 +542,8 @@ def stage(args: argparse.Namespace) -> None:
     archives = {"linux-x86_64": {"file": lin.name, "sha256": values["LINUX_SHA256"]}}
     if not args.no_windows:
         archives["windows-x64"] = {"file": win.name, "sha256": values["WIN_SHA256"]}
-    (out / "latest.json").write_text(json.dumps({"commit": full, "archives": archives}, indent=2) + "\n",
-                                     encoding="utf-8", newline="\n")
+    latest = {"commit": full, "commit_time": times.pop(), "archives": archives}
+    (out / "latest.json").write_text(json.dumps(latest, indent=2) + "\n", encoding="utf-8", newline="\n")
     for name in ("install.sh",) if args.no_windows else ("install.ps1", "install.sh"):
         template = (HERE / f"{name}.in").read_text(encoding="utf-8")
         text = fill(template, values)

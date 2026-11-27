@@ -5048,9 +5048,14 @@ class CongoUpdate(unittest.TestCase):
         self.env = {k: v for k, v in os.environ.items() if k != "CONE_UPDATE_URL"}
         self.env.update(CONE_UPDATE_URL=str(self.site), PYTHONDONTWRITEBYTECODE="1")
 
+    def time_of(self, commit: str) -> str:
+        """A commit's time here: A is the oldest, then B, then C."""
+        return f"2026-11-{20 + 'abc'.index(commit[0])} 12:00:00 UTC"
+
     def make_tree(self, folder: Path, commit: str, platform: str) -> None:
         windows = platform == "windows-x64"
-        files = {"VERSION": f"Cone, commit {commit}\ncommit time 2026-11-27 12:00:00 UTC\nplatform {platform}\n",
+        files = {"VERSION": f"Cone, commit {commit}\ncommit time {self.time_of(commit)}\n"
+                            f"platform {platform}\n",
                  f"bin/conec{'.exe' if windows else ''}": f"conec {commit[:8]}\n",
                  f"bin/congo{'.cmd' if windows else ''}": "congo\n",
                  "marker.txt": commit[:8]}
@@ -5107,6 +5112,7 @@ class CongoUpdate(unittest.TestCase):
         archive = self.publish(self.B)
         latest = json.loads((self.site / "latest.json").read_text(encoding="utf-8"))
         self.assertEqual(latest["commit"], self.B)
+        self.assertEqual(latest["commit_time"], self.time_of(self.B))
         self.assertEqual(sorted(latest["archives"]), ["linux-x86_64", "windows-x64"])
         self.assertEqual(latest["archives"][self.PLATFORM],
                          {"file": archive.name, "sha256": hashlib.sha256(archive.read_bytes()).hexdigest()})
@@ -5157,6 +5163,26 @@ class CongoUpdate(unittest.TestCase):
         self.assertEqual(self.contents(self.install), second)
         self.assertEqual(self.contents(self.root / "Cone.previous"), first)
         self.assertEqual(self.names(), {"Cone", "Cone.previous", "Cone.lock"})
+
+    def test_an_older_release_is_refused_and_rollback_still_goes_back(self):
+        self.publish(self.C)
+        self.update()
+        self.publish(self.B)       # the site now names a release older than the installed one
+        before = self.contents(self.install)
+        self.assertIn("is older than the installed cccccccc", self.update("--check").stdout)
+        run = self.update(ok=False)
+        self.assertIn("bbbbbbbb of 2026-11-21 12:00:00 UTC, is older than the installed cccccccc", run.stderr)
+        self.assertNotIn("Downloading", run.stdout)
+        self.assertEqual(self.contents(self.install), before)
+        self.assertEqual(self.marker(self.root / "Cone.previous"), "aaaaaaaa")
+        self.update("--rollback")
+        self.assertEqual(self.marker(self.install), "aaaaaaaa")
+
+    def test_a_redirected_update_says_where_from_before_it_downloads(self):
+        self.publish(self.B)
+        said = self.update().stdout
+        self.assertIn(f"Using {self.site} (CONE_UPDATE_URL)", said)
+        self.assertLess(said.index("(CONE_UPDATE_URL)"), said.index("Downloading"))
 
     def test_nothing_to_roll_back_to(self):
         before = self.contents(self.install)
