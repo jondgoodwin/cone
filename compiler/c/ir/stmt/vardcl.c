@@ -33,6 +33,7 @@ VarDclNode *newVarDclNode(Name *namesym, uint16_t tag, INode *perm) {
     name->nwrites = 0;
     name->userlocal = 0;
     name->valuechecked = 0;
+    name->keepsborrow = 0;
     name->hollowed = NULL;
     name->hollowall = NULL;
     name->hollowuse = NULL;
@@ -62,6 +63,7 @@ VarDclNode *newVarDclFull(Name *namesym, uint16_t tag, INode *type, INode *perm,
     name->nwrites = 0;
     name->userlocal = 0;
     name->valuechecked = 0;
+    name->keepsborrow = 0;
     name->hollowed = NULL;
     name->hollowall = NULL;
     name->hollowuse = NULL;
@@ -894,17 +896,20 @@ void varDclFlow(FlowState *fstate, VarDclNode **vardclnode) {
     // The temporary an operator changing its operand in place borrows it
     // through ('x += 1', 'v <- (a, b)') is the operator's own, as a method's
     // receiver is, and holds nothing past it
-    int optemp = (*vardclnode)->namesym == tempName;
-    if (!optemp)
+    if ((*vardclnode)->namesym != tempName)
         flowGateHolder(fstate, (*vardclnode)->vtype);
     if ((*vardclnode)->value) {
-        // So its borrow waits as a receiver's does, to the end of the
-        // operator's block (blockFlow): 'l[0] <- 1, {l = List[T](); 5}'
-        if (optemp)
+        // A '<-' with several entries makes each of them while its temporary
+        // holds the receiver's borrow: that borrow waits, as a method
+        // receiver's does, to the end of the operator's block (blockFlow):
+        // 'l[0] <- 1, {l = List[T](); 5}'. (A compound assignment's temporary
+        // is flowGateCompound's.)
+        int keeps = (*vardclnode)->keepsborrow;
+        if (keeps)
             flowGateOperandNext(fstate, (*vardclnode)->value);
         flowLoadValue(fstate, &((*vardclnode)->value));
         flowHandleMoveOrCopyLast(&((*vardclnode)->value));  // initialization copies/moves value
-        if (optemp)
+        if (keeps)
             flowGateOperand(fstate, (*vardclnode)->value);
         (*vardclnode)->flowtempflags |= VarInitialized;
     }

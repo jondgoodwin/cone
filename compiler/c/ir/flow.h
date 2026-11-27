@@ -32,7 +32,7 @@ enum FlowGate {
                             // such a writable borrow, beside another argument carrying one; or a literal
                             // of two such values (flowGateJoinAsk)
     FlowGateInCall = 0x8,   // a variable named or stored over while an operand's borrow of it waits for its call
-                            // or literal, or an operator's temporary keeps it ('x += 1', 'v <- (a, b)')
+                            // or literal, or the temporary of a '<-' with several entries keeps it
     FlowGateBoxed  = 0x10,  // a value whose type carries a borrow converted to an owning virtual reference
     FlowGateShape  = 0x20,  // a method call lending a borrow of a value that may change shape (a list, a string)
                             // reached through a reference, transient or not, in a function that also makes a
