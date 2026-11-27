@@ -1,0 +1,449 @@
+// ======== Peeling a detail off a skin ========
+//
+// The surgery of mesh-to-procgen's step 3: a small closed detail (a nostril, a mouth slot) is cut out of a
+// part, the hole is filled and faired so that the part reads as one smooth skin, and the piece that was cut
+// out is kept to be described by its own operator. It is a composition of tools that stand on their own:
+// 'deleteFaces' (cut.cone), 'fillHole' (fillhole.cone), 'remeshRegion' (remeshregion.cone) and 'fairRegion'
+// (fair.cone). Which loops to peel is the caller's choice; this file is only the surgery.
+//
+// 'facesInsideLoop' names the faces a closed loop of vertices encloses. The loop lists vertex numbers in
+// order and is implicitly closed. Where two consecutive vertices share no edge they are joined by the
+// shortest path along edges (Dijkstra on edge length, ties to the lower vertex number, so a loop thinned
+// to every other vertex reads as the one it was thinned from). The joined loop's edges are barriers; faces
+// are flooded across the edges that are not barriers, from the face on each side of the loop's first edge,
+// and the inside is the side whose faces have the smaller total area. Refused, with one problem line and an
+// empty list: fewer than 3 vertices; a vertex number outside the mesh; a vertex given twice in a row; a
+// joined path that crosses itself (visits a vertex twice) or has no path between two vertices; a loop that
+// does not separate the mesh (its first edge is on the mesh's boundary, or both sides are reached from each
+// other).
+//
+// 'peelRegion' peels the faces given:
+//   1. The piece is those faces as a mesh of their own (every channel carried, as deleteFaces carries
+//      them: the vertices keep the order they had in the mesh).
+//   2. The base is the mesh with those faces deleted and the hole filled by fillHole, refined.
+//   3. remeshRegion makes even triangles of the fill and 'ring' rings of the skin round it (a ring: every
+//      face touching a vertex of the region so far), 5 rounds, at the length L, the mean edge length of the
+//      ring's faces in the input (with ring 0, of the hole's own edges).
+//   4. fairRegion, order 2, on the remesh's free vertices.
+// Everything outside the remeshed region is as the input was, bit for bit (remeshRegion's promise: the
+// region's edge is held, and fairRegion moves only what it is given). The base's faces and vertices are
+// renumbered by remeshRegion's rule; 'faces' and 'vertices' name what was made new, in the base's numbering.
+//
+// Refused, with one problem line and the mesh returned as an unchanged copy (the piece empty, 'faces' and
+// 'vertices' empty): a face number outside the mesh; the faces touch the mesh's own boundary; their removal
+// leaves more than one hole loop (an island inside, two pieces apart) or a loop that touches itself; or one
+// of the tools refuses (its line is the one pushed). An empty list of faces is a silent copy.
+
+pub struct PeeledRegion {
+  pub mesh: PolyMesh;        // the base: region removed, hole filled, remeshed, faired
+  pub piece: PolyMesh;       // the removed faces as their own mesh, every channel carried
+  pub faces: List[u32];      // the new surface's faces in mesh (fill plus the remeshed ring), ascending
+  pub vertices: List[u32];   // its freed vertices, ascending: what was faired
+}
+
+fn peelNote(problems: &mut List[String], who: &str, why: &str) {
+  var s = String.from(who);
+  s.append(why);
+  problems.push(s);
+}
+
+fn loopRefused(problems: &mut List[String], why: &str) List[u32] {
+  peelNote(problems, "facesInsideLoop: ", why);
+  List[u32]()
+}
+
+fn falseList(n: usize) List[bool] {
+  var l = List[bool].withCapacity(n);
+  var i = 0usize;
+  while i < n {
+    l.push(false);
+    i = i + 1usize;
+  }
+  l
+}
+
+// The half-edge from a to b, or NoIndex
+fn halfedgeBetween(m: &PolyMesh, a: u32, b: u32) u32 {
+  let hs = m.vertexOutgoing(a);
+  var i = 0usize;
+  while i < hs.len() {
+    if m.toVertex(*hs[i]) == b { return *hs[i]; }
+    i = i + 1usize;
+  }
+  NoIndex
+}
+
+// The shortest path along edges from a to b by Dijkstra on edge length; on equal lengths each vertex keeps
+// the lower-numbered predecessor. 'path' receives the vertices after a up to b. The scratch lists are
+// sized to the mesh (dist all above 1e299, pred NoIndex, done false) and are left so again.
+fn shortestPath(m: &PolyMesh, a: u32, b: u32, dist: &mut List[f64], pred: &mut List[u32], done: &mut List[bool],
+    touched: &mut List[u32], path: &mut List[u32]) bool {
+  var q = PriorityQueue[f64, u32]();
+  dist.set(usize.from(a), 0.0);
+  touched.push(a);
+  q.push(0.0, a);
+  var reached = false;
+  var going = true;
+  while going {
+    match q.pop() {
+      case let Some(pair) {
+        let d, u = pair;
+        let ui = usize.from(u);
+        if !*done[ui] {
+          done.set(ui, true);
+          if u == b {
+            reached = true;
+            going = false;
+          } else {
+            let hs = m.vertexOutgoing(u);
+            var k = 0usize;
+            while k < hs.len() {
+              let w = m.toVertex(*hs[k]);
+              let wi = usize.from(w);
+              if !*done[wi] {
+                let nd = d + f64.from((*m.positions[wi] - *m.positions[ui]).length());
+                let cur = *dist[wi];
+                if nd < cur {
+                  if cur > 1.0e299 { touched.push(w); }
+                  dist.set(wi, nd);
+                  pred.set(wi, u);
+                  q.push(nd, w);
+                } else if nd == cur && u < *pred[wi] {
+                  pred.set(wi, u);
+                }
+              }
+              k = k + 1usize;
+            }
+          }
+        }
+      }
+      case is None { going = false; }
+    }
+  }
+  if reached {
+    var rev = List[u32]();
+    var v = b;
+    while v != a {
+      rev.push(v);
+      v = *pred[usize.from(v)];
+    }
+    var i = rev.len();
+    while i > 0usize {
+      i = i - 1usize;
+      path.push(*rev[i]);
+    }
+  }
+  var t = 0usize;
+  while t < touched.len() {
+    let ti = usize.from(*touched[t]);
+    dist.set(ti, 1.0e300);
+    pred.set(ti, NoIndex);
+    done.set(ti, false);
+    t = t + 1usize;
+  }
+  touched.clear();
+  reached
+}
+
+fn faceArea(m: &PolyMesh, f: u32) f64 {
+  let p = m.facePositions(f);
+  var a = 0.0;
+  var i = 1usize;
+  while i + 1usize < p.len() {
+    a = a + f64.from((*p[i] - *p[0usize]).cross(*p[i + 1usize] - *p[0usize]).length()) * 0.5;
+    i = i + 1usize;
+  }
+  a
+}
+
+// Labels with 'tag' every face reachable from 'seed' without crossing a barrier edge; the area reached
+fn floodFaces(m: &PolyMesh, seed: u32, barrier: &List[bool], label: &mut List[u8], tag: u8) f64 {
+  var area = 0.0;
+  var stack = List[u32]();
+  stack.push(seed);
+  label.set(usize.from(seed), tag);
+  while stack.len() > 0usize {
+    let f = *stack[stack.len() - 1usize];
+    stack.pop();
+    area = area + faceArea(m, f);
+    let hs = m.faceHalfedges(f);
+    var k = 0usize;
+    while k < hs.len() {
+      let h = *hs[k];
+      if !*barrier[usize.from(m.edge(h))] {
+        let g = m.face(m.twin(h));
+        if g != NoIndex && *label[usize.from(g)] == 0u8 {
+          label.set(usize.from(g), tag);
+          stack.push(g);
+        }
+      }
+      k = k + 1usize;
+    }
+  }
+  area
+}
+
+pub fn facesInsideLoop(m: &PolyMesh, loop: &Array[u32], problems: &mut List[String]) List[u32] {
+  let n = loop.len();
+  let nv = m.vertexCount();
+  if n < 3usize { return loopRefused(problems, "fewer than 3 vertices"); }
+  var i = 0usize;
+  while i < n {
+    if usize.from(loop[i]) >= nv { return loopRefused(problems, "a vertex is not in the mesh"); }
+    i = i + 1usize;
+  }
+
+  // The joined loop: its vertices once each, and its edges as barriers
+  var dist = List[f64].withCapacity(nv);
+  var pred = List[u32].withCapacity(nv);
+  var done = falseList(nv);
+  var seen = falseList(nv);
+  i = 0usize;
+  while i < nv {
+    dist.push(1.0e300);
+    pred.push(NoIndex);
+    i = i + 1usize;
+  }
+  var touched = List[u32]();
+  var barrier = falseList(m.edgeCount());
+  var joined = List[u32]();
+  joined.push(loop[0usize]);
+  seen.set(usize.from(loop[0usize]), true);
+  var firstEdge = NoIndex;
+  i = 0usize;
+  while i < n {
+    let a = loop[i];
+    let b = loop[(i + 1usize) % n];
+    if a == b { return loopRefused(problems, "a vertex is given twice in a row"); }
+    var step = List[u32]();
+    if halfedgeBetween(m, a, b) != NoIndex {
+      step.push(b);
+    } else if !shortestPath(m, a, b, &mut dist, &mut pred, &mut done, &mut touched, &mut step) {
+      return loopRefused(problems, "no path of edges joins two consecutive vertices");
+    }
+    var prev = a;
+    var k = 0usize;
+    while k < step.len() {
+      let w = *step[k];
+      let closing = i + 1usize == n && k + 1usize == step.len();
+      if *seen[usize.from(w)] && !closing { return loopRefused(problems, "the joined loop crosses itself"); }
+      let h = halfedgeBetween(m, prev, w);
+      barrier.set(usize.from(m.edge(h)), true);
+      if firstEdge == NoIndex { firstEdge = h; }
+      if !closing {
+        seen.set(usize.from(w), true);
+        joined.push(w);
+      }
+      prev = w;
+      k = k + 1usize;
+    }
+    i = i + 1usize;
+  }
+
+  // The faces either side of the loop, flooded
+  let fa = m.face(firstEdge);
+  let fb = m.face(m.twin(firstEdge));
+  if fa == NoIndex || fb == NoIndex { return loopRefused(problems, "the loop does not separate the mesh (it runs along the boundary)"); }
+  var label = List[u8].withCapacity(m.faceCount());
+  i = 0usize;
+  while i < m.faceCount() {
+    label.push(0u8);
+    i = i + 1usize;
+  }
+  let areaA = floodFaces(m, fa, &barrier, &mut label, 1u8);
+  if *label[usize.from(fb)] != 0u8 { return loopRefused(problems, "the loop does not separate the mesh"); }
+  let areaB = floodFaces(m, fb, &barrier, &mut label, 2u8);
+  let inside = if areaA <= areaB { 1u8 } else { 2u8 };
+  var out = List[u32]();
+  i = 0usize;
+  while i < label.len() {
+    if *label[i] == inside { out.push(u32.from(i)); }
+    i = i + 1usize;
+  }
+  out
+}
+
+// ---- peelRegion
+
+fn peelRefused(m: &PolyMesh, problems: &mut List[String], why: &str) PeeledRegion {
+  peelNote(problems, "peelRegion: ", why);
+  PeeledRegion(m.clone(), PolyMesh(), List[u32](), List[u32]())
+}
+
+// The mean length of the edges of the faces listed (an edge counted once for each listed face it bounds)
+fn meanSide(m: &PolyMesh, faces: &List[u32]) f32 {
+  var sum = 0.0;
+  var n = 0usize;
+  var i = 0usize;
+  while i < faces.len() {
+    let p = m.facePositions(*faces[i]);
+    var k = 0usize;
+    while k < p.len() {
+      sum = sum + f64.from((*p[(k + 1usize) % p.len()] - *p[k]).length());
+      n = n + 1usize;
+      k = k + 1usize;
+    }
+    i = i + 1usize;
+  }
+  if n == 0usize { return 0.; }
+  f32.from(sum / f64.from(n))
+}
+
+pub fn peelRegion(m: &PolyMesh, faces: &Array[u32], ring: u32, problems: &mut List[String]) PeeledRegion {
+  let nf = m.faceCount();
+  let nv = m.vertexCount();
+  var inS = falseList(nf);
+  var i = 0usize;
+  while i < faces.len() {
+    if usize.from(faces[i]) >= nf { return peelRefused(m, problems, "a face is not in the mesh"); }
+    inS.set(usize.from(faces[i]), true);
+    i = i + 1usize;
+  }
+  var sorted = List[u32]();
+  var rest = List[u32]();
+  i = 0usize;
+  while i < nf {
+    if *inS[i] { sorted.push(u32.from(i)); } else { rest.push(u32.from(i)); }
+    i = i + 1usize;
+  }
+  if sorted.len() == 0usize { return PeeledRegion(m.clone(), PolyMesh(), List[u32](), List[u32]()); }
+
+  // The hole the removal leaves: half-edges of faces outside whose twin is inside
+  var holes = List[u32]();
+  var outFrom = List[u32].withCapacity(nv);
+  i = 0usize;
+  while i < nv {
+    outFrom.push(NoIndex);
+    i = i + 1usize;
+  }
+  var h = 0u32;
+  while usize.from(h) < m.halfedgeCount() {
+    let f = m.face(h);
+    if f != NoIndex && *inS[usize.from(f)] {
+      let t = m.twin(h);
+      let g = m.face(t);
+      if g == NoIndex { return peelRefused(m, problems, "the faces touch the mesh's own boundary"); }
+      if !*inS[usize.from(g)] {
+        holes.push(t);
+        let from = usize.from(m.fromVertex(t));
+        if *outFrom[from] != NoIndex { return peelRefused(m, problems, "the removal leaves a hole that touches itself or more than one hole"); }
+        outFrom.set(from, t);
+      }
+    }
+    h = h + 1u32;
+  }
+  if holes.len() == 0usize { return peelRefused(m, problems, "the faces leave no hole (they are a whole closed piece)"); }
+  var steps = 1usize;
+  var cur = *outFrom[usize.from(m.toVertex(*holes[0usize]))];
+  while cur != *holes[0usize] && steps <= holes.len() {
+    cur = *outFrom[usize.from(m.toVertex(cur))];
+    steps = steps + 1usize;
+  }
+  if steps != holes.len() { return peelRefused(m, problems, "the removal leaves more than one hole loop"); }
+
+  // 1. the piece: the complement deleted
+  let piece = deleteFaces(m, rest.view());
+
+  // 2. the base: the faces deleted, the hole found again by where its first vertex lies, filled
+  let cut = deleteFaces(m, sorted.view());
+  let probe = *m.positions[usize.from(m.fromVertex(*holes[0usize]))];
+  var v = NoIndex;
+  var c = 0usize;
+  while c < cut.vertexCount() && v == NoIndex {
+    let p = *cut.positions[c];
+    if cut.isBoundaryVertex(u32.from(c)) && p.x == probe.x && p.y == probe.y && p.z == probe.z
+        && boundaryLoop(&cut, u32.from(c)).len() == holes.len() {
+      v = u32.from(c);
+    }
+    c = c + 1usize;
+  }
+  if v == NoIndex { return peelRefused(m, problems, "the hole was not found after the faces were deleted"); }
+  let holeLoop = boundaryLoop(&cut, v);
+  let before = problems.len();
+  let fill = fillHole(&cut, v, true, problems);
+  if problems.len() > before || fill.faces.len() == 0usize { return PeeledRegion(m.clone(), PolyMesh(), List[u32](), List[u32]()); }
+  let fm = &fill.mesh;
+
+  // 3. the region: the fill and 'ring' rings of skin; L from the ring's faces (the hole's edges for ring 0)
+  var inRegion = falseList(fm.faceCount());
+  i = 0usize;
+  while i < fill.faces.len() {
+    inRegion.set(usize.from(*fill.faces[i]), true);
+    i = i + 1usize;
+  }
+  var vflag = falseList(fm.vertexCount());
+  i = 0usize;
+  while i < holeLoop.len() {
+    vflag.set(usize.from(*holeLoop[i]), true);
+    i = i + 1usize;
+  }
+  var ringFaces = List[u32]();
+  var r = 0u32;
+  while r < ring {
+    var add = List[u32]();
+    var f = 0u32;
+    while usize.from(f) < fm.faceCount() {
+      if !*inRegion[usize.from(f)] {
+        let vs = fm.faceVertices(f);
+        var touches = false;
+        var k = 0usize;
+        while k < vs.len() {
+          if *vflag[usize.from(*vs[k])] { touches = true; }
+          k = k + 1usize;
+        }
+        if touches { add.push(f); }
+      }
+      f = f + 1u32;
+    }
+    var a = 0usize;
+    while a < add.len() {
+      inRegion.set(usize.from(*add[a]), true);
+      ringFaces.push(*add[a]);
+      let vs = fm.faceVertices(*add[a]);
+      var k = 0usize;
+      while k < vs.len() {
+        vflag.set(usize.from(*vs[k]), true);
+        k = k + 1usize;
+      }
+      a = a + 1usize;
+    }
+    r = r + 1u32;
+  }
+  var length: f32 = 0.;
+  if ringFaces.len() > 0usize {
+    length = meanSide(fm, &ringFaces);
+  } else {
+    var sum = 0.0;
+    i = 0usize;
+    while i < holeLoop.len() {
+      let a = *fm.positions[usize.from(*holeLoop[i])];
+      let b = *fm.positions[usize.from(*holeLoop[(i + 1usize) % holeLoop.len()])];
+      sum = sum + f64.from((b - a).length());
+      i = i + 1usize;
+    }
+    length = f32.from(sum / f64.from(holeLoop.len()));
+  }
+  var region = List[u32]();
+  i = 0usize;
+  while i < inRegion.len() {
+    if *inRegion[i] { region.push(u32.from(i)); }
+    i = i + 1usize;
+  }
+  let remeshed = remeshRegion(fm, region.view(), length, 5u32, problems);
+  if problems.len() > before || remeshed.faces.len() == 0usize { return PeeledRegion(m.clone(), PolyMesh(), List[u32](), List[u32]()); }
+
+  // 4. fair the free vertices, order 2
+  let faired = fairRegion(&remeshed.mesh, remeshed.vertices.view(), 2u32, problems);
+  if problems.len() > before { return PeeledRegion(m.clone(), PolyMesh(), List[u32](), List[u32]()); }
+  PeeledRegion(faired, piece, copyU32(&remeshed.faces), copyU32(&remeshed.vertices))
+}
+
+fn copyU32(a: &List[u32]) List[u32] {
+  var o = List[u32].withCapacity(a.len());
+  var i = 0usize;
+  while i < a.len() {
+    o.push(*a[i]);
+    i = i + 1usize;
+  }
+  o
+}
