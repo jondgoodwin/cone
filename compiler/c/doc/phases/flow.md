@@ -1981,8 +1981,11 @@ is this narrowed reference: the message names the original name, which is the on
 sees go stale. A name narrowed by a test and read from its own storage, held by value or
 through `uni`, `imm` or `mut1`, has no narrowed reference: where a `mut` borrow of it is held
 at the test, a stand-in holds the same kind of loan and each use of the name as the variant is
-a use of it (`pwNarrowName`; [narrow](../nodes/narrow.md), "A name narrowed beside a `mut`
-borrow").
+a use of it. Where the name is a reference and the `mut` borrow is of the variable itself, the
+stand-in also holds a loan of the variable, marked with the reference's type as an owner is
+(`reshapeOwnerCont`), so that a store of such a reference over it, which points the name
+elsewhere, is asked too (`pwNarrowName`; [narrow](../nodes/narrow.md), "A name narrowed beside
+a `mut` borrow").
 
 An answer is yes, no or not yet, as the inference of a shape-changing type is: a
 callee whose body is not type checked yet answers not yet, counted in
