@@ -11,7 +11,7 @@
 //
 // THE BLEND. The seam's edges given "crease" 0 (so the remesh does not hold them), remeshRegion on the band at
 // the edge length L = min(width / 4, the mean edge length of the band's input faces), 5 rounds, then fairRegion
-// order 2 on the region's free vertices.
+// order 2 on the region's free vertices, less their outermost ring (bsHoldRings, below).
 //
 // A BAND THAT IS BELOW THE MESH. A band narrower than about two input edge lengths (width under twice the mean
 // edge of its input faces) has less than one edge of well-shaped triangles to work with. A problem line says so,
@@ -103,8 +103,55 @@ pub fn blendSeam(m: &PolyMesh, seam: &Array[u32], width: f32, problems: &mut Lis
   }
   let rr = remeshRegion(&work, band.view(), edgeLength, 5u32, problems);
   if rr.faces.len() == 0usize { return BlendedSeam(m.clone(), List[u32](), List[u32]()); }
-  let faired = fairRegion(&rr.mesh, rr.vertices.view(), 2u32, problems);
+  var free = rr.vertices.clone();
+  var ring = 0u32;
+  while ring < bsHoldRings {
+    free = bsDropOuterRing(&rr.mesh, &free);
+    ring = ring + 1u32;
+  }
+  let faired = fairRegion(&rr.mesh, free.view(), 2u32, problems);
   BlendedSeam(faired, rr.faces.clone(), rr.vertices.clone())
+}
+
+// The fair solve leaves the band's outermost ring of free vertices where the remesh put them (on the surface
+// the band had on entry), as a third held ring: with only the two rings round the region, the outer edge showed
+// 11 to 25 degrees beside the post's sharp corners; with this one it is 0.03 degrees where the input's own
+// sharp edges are creased. The price is a fillet one ring (L) narrower than the band.
+let bsHoldRings = 1u32;
+
+// 'free' without the vertices that share a face with a vertex not in it
+fn bsDropOuterRing(m: &PolyMesh, free: &List[u32]) List[u32] {
+  var isFree = List[bool]();
+  var v = 0usize;
+  while v < m.vertexCount() { isFree.push(false); v = v + 1usize; }
+  var i = 0usize;
+  while i < free.len() { isFree.set(usize.from(*free[i]), true); i = i + 1usize; }
+  var outer = isFree.clone();
+  var f = 0usize;
+  while f < m.faceCount() {
+    let vs = m.faceVertices(u32.from(f));
+    var anyHeld = false;
+    var k = 0usize;
+    while k < vs.len() {
+      if !*isFree[usize.from(*vs[k])] { anyHeld = true; }
+      k = k + 1usize;
+    }
+    if anyHeld {
+      k = 0usize;
+      while k < vs.len() {
+        outer.set(usize.from(*vs[k]), false);
+        k = k + 1usize;
+      }
+    }
+    f = f + 1usize;
+  }
+  var kept = List[u32]();
+  i = 0usize;
+  while i < free.len() {
+    if *outer[usize.from(*free[i])] { kept.push(*free[i]); }
+    i = i + 1usize;
+  }
+  kept
 }
 
 // The union of a and b with its seam blended: booleanWith's union, its seam found (see the header), then blendSeam
