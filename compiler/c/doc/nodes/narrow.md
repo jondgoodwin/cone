@@ -129,13 +129,16 @@ side and writes into it after. Where the type declares the operator it is a call
 `{let tmp = &mut x; *tmp = *tmp + e}`. A plain store reaches its place after the value,
 which uses whatever the place is reached through (`-narrow`, a narrowed name's stand-in, a
 reference bound into the variant) and so meets a change the value made; `tmp` was made
-before, and is no holder (flow.md, "What is not held"). So where `tmp` carries a reference
-into a variant, the walk holds those in a stand-in for the length of the right side, and the
-write through `tmp` is its use (`pwCompoundVariant`): a call or store there that could change
-which variant the enum holds is `ErrorVariantReshape`, whether the place was reached through
-a narrowed reference, a narrowed name beside a `mut` borrow, a pattern's binding or a
-reference bound into the variant. Only a change of variant is asked of it: `x += x` reads
-what it writes.
+before, and is no holder (flow.md, "What is not held"). So where `tmp` carries a borrow into
+a value that changes shape (a collection, what an owner points at, an enum's variant), the
+walk holds those in a stand-in for the length of the right side, and the write through `tmp`
+is its use (`pwCompoundPlace`). A call or store there that could change which variant the
+enum holds is `ErrorVariantReshape`, whether the place was reached through a narrowed
+reference, a narrowed name beside a `mut` borrow, a pattern's binding or a reference bound
+into the variant; one that could change a collection's shape or replace an owner is
+`ErrorShapeReshape` or `ErrorShapeStore`, whether the element was reached by index, a method
+returning a reference or a reference bound to it. Only a change of shape or variant is asked
+of it: `x += x` reads what it writes.
 
 ## What it does not do
 
