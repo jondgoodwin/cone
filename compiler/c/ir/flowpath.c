@@ -3479,8 +3479,14 @@ static PathSet *pwPointerOf(PathSet *carried) {
 // A virtual call's receiver is behind a trait, which names no fields, so its type says
 // nothing of what is reached. The result is then given one more loan, marked for the trait,
 // which holds what the result may point at (PwUnseen): a store or a call is asked of every
-// container it could free that holds one of those. A trait object a function is handed, or
-// one held in what is handed, is not followed so
+// container it could free that holds one of those.
+//
+// A trait object a function is handed, or one held in what is handed, is judged by its
+// trait's signature, as the call is by its own: its public fields, whose types are known and
+// walked as a struct's are, and its public methods (for a callable, what it returns). Where
+// a method can hand out something the result could point at, by what it returns or what it
+// writes through a reference it is handed, the result is given the same unseen loan.
+// A downcast of the trait object is not seen by this
 
 #define PwReachMax 24
 
@@ -3500,6 +3506,7 @@ typedef struct {
     int visits;                     // types visited by the walks that keep no record of them
     INode *unseen;                  // a trait object owned on the way, whose contents no type names
     int owned;                      // follow only what a value holds and owns, not what it borrows
+    INode *handed;                  // a trait object met whose methods can hand out a target
 } PwReach;
 
 struct PwUnseen {
@@ -3598,6 +3605,173 @@ static int pwReachMatch(PwReach *r, INode *type) {
     return 0;
 }
 
+#define PwHandsMax 128
+
+// The types one asking of a trait's methods has walked, with how each was reached
+typedef struct {
+    INode *types[PwHandsMax];
+    uint8_t how[PwHandsMax];        // 1, through a borrow; 2, as a trait object
+    int ntypes;
+    int visits;
+} PwHands;
+
+static int pwTraitHands(PwReach *r, INode *trait, int lent, int fields, PwHands *h, int depth);
+
+// Was this type walked so already? Else it is recorded. A full record answers -1
+static int pwHandsSeen(PwHands *h, INode *type, int how) {
+    for (int i = 0; i < h->ntypes; ++i) {
+        if (h->types[i] == type && h->how[i] == how)
+            return 1;
+    }
+    if (h->ntypes == PwHandsMax)
+        return -1;
+    h->types[h->ntypes] = type;
+    h->how[h->ntypes++] = (uint8_t)how;
+    return 0;
+}
+
+// Can a borrow of one of the result's targets be had from a value of 'type' that a trait's
+// method hands out? 'lent' says the value is reached through a borrow, so that it, and
+// everything it holds, can be borrowed as long. Past the bounds it answers yes
+static int pwHands(PwReach *r, INode *type, int lent, PwHands *h, int depth) {
+    type = type ? itypeGetTypeDcl(type) : NULL;
+    if (type == NULL)
+        return 0;
+    if (depth > 32 || ++h->visits > PwReachVisits)
+        return 1;
+    if (lent && pwReachMatch(r, type))
+        return 1;
+    int seen = pwHandsSeen(h, type, lent);
+    if (seen)
+        return seen < 0;
+
+    INode **nodesp;
+    uint32_t cnt;
+    switch (type->tag) {
+    case RefTag:
+    case ArrayRefTag:
+    case VirtRefTag: {
+        RefNode *ref = (RefNode *)type;
+        // Nothing is read through 'opaq', and no borrow outlives a lock's guard
+        if (itypeGetTypeDcl(ref->perm) == (INode *)opaqPerm || permIsLock(ref->perm))
+            return pwIsBorrowed(type) && pwReachMatch(r, itypeGetTypeDcl(ref->vtexp));
+        if (pwIsBorrowed(type)) {
+            if (r->any)
+                return 1;
+            lent = 1;
+        }
+        if (type->tag == VirtRefTag)
+            return pwTraitHands(r, ref->vtexp, lent, 1, h, depth + 1);
+        return pwHands(r, ref->vtexp, lent, h, depth + 1);
+    }
+    case ArrayTag:
+        return pwHands(r, arrayElemType(type), lent, h, depth + 1);
+    case TTupleTag:
+        for (nodesFor(((TupleNode *)type)->elems, cnt, nodesp)) {
+            if (pwHands(r, *nodesp, lent, h, depth + 1))
+                return 1;
+        }
+        return 0;
+    case StructTag: {
+        StructNode *st = (StructNode *)type;
+        if (reshapeIsSum(type)) {
+            if (st->derived) {
+                for (nodesFor(st->derived, cnt, nodesp)) {
+                    if (pwHands(r, *nodesp, lent, h, depth + 1))
+                        return 1;
+                }
+            }
+            return 0;
+        }
+        if (st->flags & TraitType)
+            return pwTraitHands(r, type, lent, 1, h, depth + 1);
+        for (nodelistFor(&st->fields, cnt, nodesp)) {
+            INode *ftype = itypeGetTypeDcl(((IExpNode *)*nodesp)->vtype);
+            if (ftype == NULL)
+                continue;
+            // A raw pointer: a collection's block, or the view a borrow-carrying struct holds
+            if (ftype->tag == PtrTag) {
+                if ((lent || pwCarries(type)) && pwHands(r, ((StarNode *)ftype)->vtexp, 1, h, depth + 1))
+                    return 1;
+            }
+            else if (pwHands(r, ftype, lent, h, depth + 1))
+                return 1;
+        }
+        return 0;
+    }
+    default:
+        return 0;
+    }
+}
+
+// Can what is behind a trait object hand out one of the result's targets, as its trait's
+// signature says: what a public method returns, or writes through a reference it is
+// handed, and (where 'fields') what a public field holds?
+static int pwTraitHands(PwReach *r, INode *trait, int lent, int fields, PwHands *h, int depth) {
+    trait = itypeGetTypeDcl(trait);
+    if (trait == NULL || trait->tag != StructTag)
+        return 0;
+    if (depth > 32 || ++h->visits > PwReachVisits)
+        return 1;
+    if (fields) {
+        int seen = pwHandsSeen(h, trait, lent | 2);
+        if (seen)
+            return seen < 0;
+    }
+    Vtable *vtable = ((StructNode *)trait)->vtable;
+    if (vtable == NULL)
+        return 1;
+    INode **nodesp;
+    uint32_t cnt;
+    for (nodesFor(vtable->methfld, cnt, nodesp)) {
+        if ((*nodesp)->tag == FieldDclTag) {
+            if (fields && pwHands(r, ((IExpNode *)*nodesp)->vtype, lent, h, depth + 1))
+                return 1;
+            continue;
+        }
+        FnSigNode *sig = (FnSigNode *)itypeGetTypeDcl(((FnDclNode *)*nodesp)->vtype);
+        if (sig == NULL || sig->tag != FnSigTag)
+            return 1;
+        if (pwHands(r, sig->rettype, 0, h, depth + 1))
+            return 1;
+        // (the first parameter is the receiver)
+        for (uint32_t i = 1; i < sig->parms->used; ++i) {
+            INode *ptype = itypeGetTypeDcl(((IExpNode *)nodesGet(sig->parms, i))->vtype);
+            if (ptype && (ptype->tag == RefTag || ptype->tag == ArrayRefTag) && pwIsBorrowed(ptype)
+                    && (permGetFlags(((RefNode *)ptype)->perm) & MayWrite)
+                    && pwHands(r, ((RefNode *)ptype)->vtexp, 0, h, depth + 1))
+                return 1;
+        }
+    }
+    return 0;
+}
+
+static void pwReachWalk(PwReach *r, INode *type, INode *cont, int shared, int owner, int depth);
+
+// A trait object met on the way: its trait's public fields are walked as a struct's are,
+// and its methods are asked whether they hand out what the result could point at
+static void pwReachTrait(PwReach *r, RefNode *ref, INode *cont, int shared, int owner, int depth) {
+    INode *trait = itypeGetTypeDcl(ref->vtexp);
+    if (trait == NULL || trait->tag != StructTag)
+        return;
+    Vtable *vtable = ((StructNode *)trait)->vtable;
+    if (vtable) {
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(vtable->methfld, cnt, nodesp)) {
+            if ((*nodesp)->tag == FieldDclTag)
+                pwReachWalk(r, ((IExpNode *)*nodesp)->vtype, cont, shared, owner, depth + 1);
+        }
+    }
+    if (r->handed == NULL) {
+        PwHands h;
+        h.ntypes = 0;
+        h.visits = 0;
+        if (pwTraitHands(r, trait, 0, 0, &h, 0))
+            r->handed = trait;
+    }
+}
+
 static void pwReachFound(PwReach *r, INode *cont) {
     for (uint32_t i = 0; i < r->nconts; ++i) {
         if (pwReachConts[i] == cont)
@@ -3673,9 +3847,11 @@ static void pwReachWalk(PwReach *r, INode *type, INode *cont, int shared, int ow
                 break;
             // A held borrow: its own loans say where it points, and a borrow through it is
             // marked for no owner, but past a shared owner others write by it too
+            int past = pwMayAliasWritten(type) || (shared && perm == (INode *)uniPerm);
             if (type->tag != VirtRefTag)
-                pwReachWalk(r, ref->vtexp, NULL, pwMayAliasWritten(type) || (shared && perm == (INode *)uniPerm),
-                    owner, depth + 1);
+                pwReachWalk(r, ref->vtexp, NULL, past, owner, depth + 1);
+            else
+                pwReachTrait(r, ref, NULL, past, owner, depth);
             break;
         }
         // An owner: stored over, it frees what it holds
@@ -3688,6 +3864,7 @@ static void pwReachWalk(PwReach *r, INode *type, INode *cont, int shared, int ow
             r->unseen = itypeGetTypeDcl(ref->vtexp);
             if (inshared && inowner)
                 pwReachFound(r, incont);
+            pwReachTrait(r, ref, incont, inshared, inowner, depth);
         }
         else
             pwReachWalk(r, ref->vtexp, incont, inshared, inowner, depth + 1);
@@ -3721,6 +3898,10 @@ static void pwReachByValue(PwReach *r, INode *type, int depth) {
     case ArrayRefTag:
         if (pwIsBorrowed(type))
             pwReachWalk(r, ((RefNode *)type)->vtexp, NULL, pwMayAliasWritten(type), 0, 0);
+        break;
+    case VirtRefTag:
+        if (pwIsBorrowed(type))
+            pwReachTrait(r, (RefNode *)type, NULL, pwMayAliasWritten(type), 0, 0);
         break;
     case ArrayTag:
         pwReachByValue(r, arrayElemType(type), depth + 1);
@@ -3852,6 +4033,8 @@ static PathSet *pwReachShared(FnCallNode *call, uint32_t argi, INode *parmtype, 
         referent = itypeGetTypeDcl(((RefNode *)ptype)->vtexp);
         pwReachWalk(&r, referent, NULL, seed, seed, 0);
     }
+    else if (ptype->tag == VirtRefTag && pwIsBorrowed(ptype))
+        pwReachTrait(&r, (RefNode *)ptype, NULL, seed, seed, 0);
     else
         pwReachByValue(&r, ptype, 0);
     for (uint32_t k = 0; k < r.nconts; ++k) {
@@ -3861,11 +4044,13 @@ static PathSet *pwReachShared(FnCallNode *call, uint32_t argi, INode *parmtype, 
         if (pwReachLoan(call, argi, cont, base, &result) == 0)
             break;
     }
-    // A virtual call's receiver: the signature's 'self' names the trait, and what is behind
-    // it is not known
+    // A trait object, what is behind which is not known: a virtual call's receiver, whose
+    // signature's 'self' names the trait, or one the argument is or holds whose methods hand
+    // out what the result could point at
     INode *self = argi == 0 && (call->flags & FlagVDisp) ? iexpGetTypeDcl(nodesGet(call->args, 0)) : NULL;
-    if (self && self->tag == VirtRefTag) {
-        uint32_t id = pwReachLoan(call, argi, itypeGetTypeDcl(((RefNode *)self)->vtexp), base, &result);
+    INode *behind = self && self->tag == VirtRefTag ? itypeGetTypeDcl(((RefNode *)self)->vtexp) : r.handed;
+    if (behind) {
+        uint32_t id = pwReachLoan(call, argi, behind, base, &result);
         if (id && loanUnseen(id) == NULL) {
             PwUnseen *unseen = (PwUnseen *)memAllocBlk(sizeof(PwUnseen));
             memcpy(unseen->targets, r.targets, sizeof(unseen->targets));
