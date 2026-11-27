@@ -3254,7 +3254,10 @@ typedef struct {
     INode *seencont[PwReachSeen];
     uint8_t seenhow[PwReachSeen];
     int nseen;
+    int visits;                     // types visited by the walks that keep no 'seen'
 } PwReach;
+
+#define PwReachVisits 512
 
 static void pwReachTarget(PwReach *r, INode *type) {
     for (int i = 0; i < r->ntargets; ++i) {
@@ -3272,6 +3275,10 @@ static void pwReachTargets(PwReach *r, INode *type, int depth) {
     type = itypeGetTypeDcl(type);
     if (type == NULL || depth > 5)
         return;
+    if (++r->visits > PwReachVisits) {
+        r->any = 1;
+        return;
+    }
     switch (type->tag) {
     case RefTag:
     case ArrayRefTag:
@@ -3442,7 +3449,7 @@ static void pwReachWalk(PwReach *r, INode *type, INode *cont, int shared, int ow
 // for what it owns is the callee's and ends there
 static void pwReachByValue(PwReach *r, INode *type, int depth) {
     type = itypeGetTypeDcl(type);
-    if (type == NULL || depth > 6 || !pwCarries(type))
+    if (type == NULL || depth > 6 || !pwCarries(type) || ++r->visits > PwReachVisits)
         return;
     INode **nodesp;
     uint32_t cnt;

@@ -2265,12 +2265,19 @@ void flowGateJoinAsk(FlowState *fstate, Nodes *elems) {
         fstate->gate |= FlowGateStore;
 }
 
+// How many types the two walks below may visit for one call; past it they answer yes, which
+// only walks a function that need not be
+#define FlowGateTypeVisits 256
+static int flowGateVisits;
+
 // Does a value of this type reach an owner others hold too and may write by ('Rc[mut]'),
 // through the fields, elements and references it holds?
 static int flowGateReachesOwner(INode *type, int depth) {
     type = type ? flowGateTypeDcl(type) : NULL;
     if (type == NULL || depth > 6)
         return 0;
+    if (++flowGateVisits > FlowGateTypeVisits)
+        return 1;
     INode **nodesp;
     uint32_t cnt;
     switch (type->tag) {
@@ -2318,6 +2325,8 @@ static int flowGateNamesBorrow(INode *type, int depth) {
     type = type ? flowGateTypeDcl(type) : NULL;
     if (type == NULL || depth > 5)
         return 0;
+    if (++flowGateVisits > FlowGateTypeVisits)
+        return 1;
     INode **nodesp;
     uint32_t cnt;
     switch (type->tag) {
@@ -2363,6 +2372,7 @@ void flowGateShapeAsk(FlowState *fstate, INode *node) {
     FnCallNode *call = (FnCallNode *)node;
     // A call whose result may borrow from what an argument reaches through a shared owner
     // ('first(&o)', 'o' an 'Rc[mut, List]') lends it too (flowpath.c, pwReachShared)
+    flowGateVisits = 0;
     if (!fstate->shapelend && call->args && call->args->used > 0 && call->vtype && flowGateNamesBorrow(call->vtype, 0)) {
         INode *sig = iexpGetDerefTypeDcl(call->objfn);
         Nodes *parms = sig && sig->tag == FnSigTag ? ((FnSigNode *)sig)->parms : NULL;
@@ -2373,6 +2383,7 @@ void flowGateShapeAsk(FlowState *fstate, INode *node) {
             INode *self = parm && parm->tag == RefTag ? flowGateTypeDcl(((RefNode *)parm)->vtexp) : NULL;
             if (self && self->tag == StructTag && ((StructNode *)self)->lends == LendsShapeChanging)
                 continue;
+            flowGateVisits = 0;
             if (flowGateReachesOwner(((IExpNode *)nodesGet(parms, i))->vtype, 0)) {
                 fstate->shapelend = 1;
                 flowGateShapeWrite(fstate, call->args);
