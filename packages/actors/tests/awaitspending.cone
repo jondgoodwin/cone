@@ -76,6 +76,13 @@ actor Asker {
     }
   }
 
+  pub async fn nested(self) {
+    match await actors.orCancelledOp(actors.orCancelledOp(hungOp())) {
+      case let Ok(v) {ok.add(1u64);}
+      case let Err(c) {woken.add(1u64);}
+    }
+  }
+
   pub async fn onActor(self, other: Other) {
     let v = await other.ask();
     ok.add(1u64);
@@ -132,13 +139,18 @@ fn main() i32 {
   a.instant();
   pending(0u64, "orCancelledOp answered as it starts");
 
+  a.nested();
+  pending(1u64, "orCancelledOp twice over counts once");
+  hungAnswer();
+  pending(0u64, "... answered");
+
   let other = Other();
   a.onActor(other);
   pending(1u64, "an actor awaiting another is not counted: only the other's operation");
   hungAnswer();
   pending(0u64, "... answered");
 
-  expectUInt(ok.load(), 4u64, "the awaits that ended with an answer");
+  expectUInt(ok.load(), 5u64, "the awaits that ended with an answer");
   expectUInt(woken.load(), 3u64, "... and woken by a cancel");
   done()
 }
