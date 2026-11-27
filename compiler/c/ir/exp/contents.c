@@ -566,6 +566,9 @@ static void contentsLowerEntries(TypeCheckState *pstate, FnCallNode **nodep) {
     // sink's list: this block's statements end their temporaries one by one, and
     // the second check is what makes one the receiver borrows from a hidden local
     recv->valuechecked = !eachTemps;
+    // Its borrow of the receiver is held while every entry is made, so the flow
+    // gate asks it as it asks a method's receiver ('l <- 1, take(l)')
+    recv->keepsborrow = !haseach;
     nodesAdd(&blk->stmts, (INode*)recv);
 
     int bad = 0;
