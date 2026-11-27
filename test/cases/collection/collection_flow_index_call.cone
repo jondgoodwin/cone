@@ -1,0 +1,121 @@
+// The address of a place is made before its index, and used after. Where the place is in
+// what a collection lent or an owner holds, an index that calls or stores something that
+// could change the collection's shape or replace the owner is refused, whether the element
+// is then stored into, read or borrowed, or it would be reached in freed storage.
+// collection_index_call_success holds what is accepted beside each.
+
+mod collection_flow_index_call;
+
+import collections use *;
+
+struct Item { pub a: Array[usize, 3]; }
+
+fn item() Item { Item([1usize, 2usize, 3usize]) }
+
+fn grow(m: &mut List[Item]) usize {
+  var i = 0usize;
+  while i < 64usize { m.push(item()); i += 1usize; }
+  0usize
+}
+fn takeList(l: List[Item]) usize { 0usize }
+fn takeItem(u: Uni[Item]) usize { 0usize }
+fn replaceItem(m: &mut Uni[Item]) usize { *m = Uni[Item](item()); 0usize }
+
+// A local list, borrowed by its name
+fn local() {
+  var l = List[Item]();
+  l.push(item());
+  l[0usize].a[grow(&mut l)] = 1usize;     //~ ErrorShapeReshape "The place this index picks from is in what a 'List' lent"
+}
+
+fn localCompound() {
+  var l = List[Item]();
+  l.push(item());
+  l[0usize].a[grow(&mut l)] += 1usize;    //~ ErrorShapeReshape "made in the index, could change the shape"
+}
+
+fn localRead() usize {
+  var l = List[Item]();
+  l.push(item());
+  return l[0usize].a[grow(&mut l)];       //~ ErrorFrozen "to reach the place an index picks from"
+}
+
+fn localPushInIndex() {
+  var l = List[Item]();
+  l.push(item());
+  l[0usize].a[{l.push(item()); 0usize}] = 1usize; //~ ErrorShapeReshape "made in the index"
+}
+
+fn localSliced() {
+  var l = List[Item]();
+  l.push(item());
+  let s = &mut l[0usize].a[0usize..<grow(&mut l)]; //~ ErrorShapeReshape "made in the index"
+  s[0usize] = 1usize;
+}
+
+// Through references others may share
+fn refs(l: &mut List[Item], m: &mut List[Item]) {
+  l[0usize].a[grow(m)] = 1usize;          //~ ErrorShapeReshape "made in the index"
+}
+
+fn refsStore(l: &mut List[Item], m: &mut List[Item]) {
+  l[0usize].a[{*m = List[Item](); 0usize}] = 1usize; //~ ErrorShapeStore "the store at"
+}
+
+// A reference bound to the element, and one to the array in it
+fn boundElement(l: &mut List[Item], m: &mut List[Item]) {
+  let p = &mut l[0usize];
+  p.a[grow(m)] = 1usize;                  //~ ErrorShapeReshape "made in the index"
+}
+
+fn boundArray(l: &mut List[Item], m: &mut List[Item]) {
+  let p = &mut l[0usize].a;
+  p[grow(m)] = 1usize;                    //~ ErrorShapeReshape "made in the index"
+}
+
+// The list, or the owner, moved away or replaced by its own name
+fn localReplaced() {
+  var l = List[Item]();
+  l.push(item());
+  l[0usize].a[{l = List[Item](); 0usize}] = 1usize; //~ ErrorFrozen "may not be changed in the index"
+}
+
+fn localTaken() {
+  var l = List[Item]();
+  l.push(item());
+  l[0usize].a[takeList(l)] = 1usize;      //~ ErrorFrozen "may not be moved in the index"
+}
+
+fn ownedTaken() {
+  var u = Uni[Item](item());
+  u.a[takeItem(u)] = 1usize;              //~ ErrorFrozen "may not be moved in the index"
+}
+
+fn ownedReplaced() {
+  var u = Uni[Item](item());
+  u.a[{u = Uni[Item](item()); 0usize}] = 1usize; //~ ErrorFrozen "may not be changed in the index"
+}
+
+// What an owner holds
+fn owned() {
+  var u = Uni[Item](item());
+  u.a[replaceItem(&mut u)] = 1usize;      //~ ErrorShapeReshape "what a 'Uni[Item]' owns"
+}
+
+fn ownedRead() usize {
+  var u = Uni[Item](item());
+  return u.a[replaceItem(&mut u)];        //~ ErrorShapeReshape "what a 'Uni[Item]' owns"
+}
+
+fn ownedRef(u: &mut Uni[Item], m: &mut Uni[Item]) {
+  u.a[replaceItem(m)] = 1usize;           //~ ErrorShapeReshape "what a 'Uni[Item]' owns"
+}
+
+fn ownedBound() {
+  var u = Uni[Item](item());
+  let p = &mut u.a;
+  p[replaceItem(&mut u)] = 1usize;        //~ ErrorShapeReshape "made in the index"
+}
+
+fn main() {
+}

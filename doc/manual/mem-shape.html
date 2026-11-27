@@ -467,6 +467,28 @@ fn add(l: &amp;mut List[usize]) {
   l[0usize] += v;            // Ok
 }
 </pre>
+	<h3 id="indexcall">A call in an index</h3>
+	<p>The array or slice an index picks from is reached before the index is made, and the element after it. So an index
+		that calls, or stores, may not take that array away: it may not change the shape of the collection that lent it or
+		which variant of an enum it is in, nor replace, move or mutably borrow, by its own name, the collection or owner it
+		was borrowed from. Reading them is accepted. This holds for a store, a read and a borrow of the element alike.
+		Make the index first, into a local:</p>
+<pre>
+struct Row { pub cells: Array[usize, 3]; }
+
+fn grow(m: &amp;mut List[Row]) usize {
+  m.push(Row([0usize, 0usize, 0usize]));
+  0usize
+}
+fn mark(l: &amp;mut List[Row]) {
+  l[0usize].cells[l.len() - 1usize] = 1usize;   // Ok: len changes nothing
+  l[0usize].cells[grow(l)] = 1usize;            // Error 1339: the element was reached, then grow may move it
+  let i = grow(l);
+  l[0usize].cells[i] = 1usize;                  // Ok
+}
+</pre>
+	<p>A <span class="pre">List</span>'s own index, <span class="pre">l[grow(&amp;mut l)] = v</span>, is a method of the
+		list that reaches the storage only once its index is made, and is accepted.</p>
 
 	<h3 id="stores">Stores</h3>
 	<p>A store is asked as a call is, for it is no call but could do the same. While such a borrow is still to be used,
@@ -704,6 +726,9 @@ fn grown(s: &amp;mut Shape, m: &amp;mut Shape) {
   }
 }
 </pre>
+	<p>An array in a variant is reached before an index into it is made, so a call in the index may not change the variant
+		either: <span class="pre">s.points[widen(m)] = p</span>, with <span class="pre">s</span> narrowed, is error 1425.
+		Change the enum before the test, or after the last use of the variant.</p>
 	<p>A value owned by an <span class="pre">Rc</span> is another owner of the value, and no loan stands for
 		the other owners: where none can store another variant (<span class="pre">Rc[imm, T]</span>) the binding is a copy
 		of the owner typed as the variant, and where one could (<span class="pre">mut</span>, <span class="pre">ro</span>) it

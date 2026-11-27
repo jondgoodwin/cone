@@ -146,6 +146,14 @@ into the variant; one that could change a collection's shape or replace an owner
 returning a reference or a reference bound to it. Only a change of shape or variant is asked
 of it: `x += x` reads what it writes.
 
+## A call in an index
+
+`n.r[change(m)]`: generation takes the place's base, then its index (`genlAddr`), and uses the
+element after both, so a variant the index changes leaves the base in another variant's bytes,
+whether the element is stored into, read or borrowed. The walk holds what the base rests on in
+a stand-in while the index is walked, and reaching the element is its use (flow.md, "What is not
+held"): `ErrorVariantReshape`.
+
 ## What it does not do
 
 - **It never proves a call harmless for a name held by value or through `uni`, `imm`, `mut1`,
