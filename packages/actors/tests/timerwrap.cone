@@ -13,6 +13,8 @@
 //    taking the waiter and reading its Reply (Bug 127's seam), the deadline
 //    passing meanwhile.
 // 6. The tick racing the cancel, 500 rounds: each ends once.
+// 1 and 2 also take two wrappers over next() (rows 869 and 873 together): the
+// tick answers first, Ok(Ok(true)); a cancel wakes the outer one with Err.
 // Every actor made is finalized when its handle goes: the count a parked next()
 // holds of its actor is neither leaked nor let go twice. The last one is left
 // parked at the program's end.
@@ -57,6 +59,20 @@ actor Waiter {
     timer.set(fromNow(ns));
     match await actors.orCancelledOp(timer.next()) {
       case let Ok(v) {woke.send(if v {wasTrue} else {wasFalse});}
+      case let Err(c) {woke.send(wasErr);}
+    }
+  }
+
+  // As go, with two wrappers: the inner one's Result is never Err
+  pub async fn goTwice(self, ns: i64) {
+    timer.set(fromNow(ns));
+    match await actors.orCancelledOp(actors.orCancelledOp(timer.next())) {
+      case let Ok(inner) {
+        match inner {
+          case let Ok(v) {woke.send(if v {wasTrue} else {wasFalse});}
+          case let Err(c) {woke.send(9u64);}
+        }
+      }
       case let Err(c) {woke.send(wasErr);}
     }
   }
@@ -200,6 +216,8 @@ fn runAll() u64 {
   expectUInt(wrx.recv() || 9u64, 5u64, "1: ... and in a live group");
   a.go(-1000i64);
   expectUInt(wrx.recv() || 9u64, wasTrue, "1: already due: Ok(true)");
+  a.goTwice(20000000i64);
+  expectUInt(wrx.recv() || 9u64, wasTrue, "1: two wrappers: Ok(Ok(true))");
   idle("1: idle");
   expectUInt(owed(), 0u64, "1: nothing owed");
 
@@ -208,6 +226,16 @@ fn runAll() u64 {
   a.stopIt();
   idle("2: idle after stop()");
   expectUInt(owed(), 0u64, "2: ... stop() answered the next() left parked");
+  let a2 = Waiter(Mark(10u64), Timer.make(), 0i64, wtx.clone(), ptx.clone());
+  let og = CancelGroup.make();
+  actors.withGroup(&og, fn() [a2] { a2.goTwice(anHour); });
+  expectUInt(asked(&a2, &mut prx), 1u64, "2: two wrappers: parked");
+  og.cancel();
+  expectUInt(wrx.recv() || 9u64, wasErr, "2: ... the cancel wins: the outer one's Err");
+  expectUInt(owed(), 1u64, "2: ... next() still parked, its answer owed");
+  a2.stopIt();
+  idle("2: idle after stop(), two wrappers");
+  expectUInt(owed(), 0u64, "2: ... stop() answered it");
   let b = Waiter(Mark(2u64), Timer.make(), 0i64, wtx.clone(), ptx.clone());
   cancelWins(&b, &mut wrx, &mut prx, anHour);
   b.hurry();
@@ -311,7 +339,7 @@ fn runAll() u64 {
     else {}
   }
   expectUInt(extra, 0u64, "6: and no round ended twice");
-  8u64
+  9u64
 }
 
 fn main() i32 {
