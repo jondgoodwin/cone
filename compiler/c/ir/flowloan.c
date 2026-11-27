@@ -317,6 +317,80 @@ uint32_t loanMake(INode *site, Place *pl, INode *perm) {
     return loanMakeKeyed(site, pl, perm, 0);
 }
 
+// Is the loan's place in what a shared owning reference holds, where others may write?
+// So is one read through a 'uni' reference others may reach ('**o', 'o' an
+// 'Rc[mut, &uni T]': Place.uniway)
+int loanThroughSharedOwner(uint32_t loan) {
+    Loan *l = &loans[loan];
+    return l->kind != LoanCaller
+        && (l->place.uniway || (l->place.shwrite && (l->place.owned || l->place.ownertype != NULL)));
+}
+
+// A second loan made beside 'base', an argument's own, for the shape check: a call's result
+// may borrow from what that argument reaches through a shared owner (flowpath.c,
+// pwReachShared), which the argument's loan, of the handle alone, says nothing of. Its place
+// is the base's root variable and nothing more, taken as reached through a shared path past
+// an owner: it freezes nothing the base does not, and what it points into is never storage
+// the function owns. Keyed by the argument and 'n', the container's index among its own
+uint32_t loanMakeReach(INode *site, uint32_t n, uint32_t base) {
+    uint32_t key = 0x40000000u | n;
+    uint32_t id = mapGet(site, 0, key);
+    if (id)
+        return id;
+    if (nloans > LoanIdMask) {
+        errorUnreachable(site, "more loans in one function than an entry of a loan set can name");
+        return 0;
+    }
+    if (nloans >= loancap)
+        loans = (Loan *)pathGrow(loans, &loancap, sizeof(Loan));
+    id = nloans++;
+    Loan *loan = &loans[id];
+    *loan = loans[base];
+    loan->site = site;
+    loan->by = NULL;
+    loan->tiedfn = NULL;
+    loan->place.nsteps = 0;
+    loan->place.shared = 1;
+    loan->place.sharedlen = 0;
+    loan->place.shwrite = 1;
+    loan->place.owned = 1;
+    loan->place.ownertype = NULL;
+    loan->place.referent = NULL;
+    loan->place.slotted = NULL;
+    loan->place.slots = 0;
+    loan->place.narrow = 0;
+    loan->mayhold = 0;
+    loan->nmay = 0;
+    loan->maycap = 0;
+    // A caller loan's clone stays the caller's, so a result handed out keeps its lifetime
+    if (loan->kind != LoanCaller)
+        loan->kind = LoanAlias;
+    loan->writes = 0;
+    loan->shapecont = NULL;
+    loan->shapeowner = NULL;
+    loan->shapeownerval = 0;
+    loan->source = 0;
+    loan->uniq = 0;
+    loan->aliased = 0;
+    loan->aliasby = 0;
+    loan->lazycont = NULL;
+    loan->refcont = NULL;
+    loan->refway = 0;
+    loan->nroots = 0;
+    loan->rootsext = 0;
+    loan->globalview = 0;
+    loan->elemview = 0;
+    loan->repoint = 0;
+    if (loan->kind == LoanCaller)
+        loan->next = 0;
+    else {
+        loan->next = pathVars[loan->place.var].loans;
+        pathVars[loan->place.var].loans = id;
+    }
+    mapPut(site, 0, key, id);
+    return id;
+}
+
 // A caller loan is not linked from its parameter: no access here meets it.
 // Each part's is keyed by the parameter and the part, apart from every other
 // key the map holds: a borrow's (site, 0, 0), a report's (node, 0, 1) and a
