@@ -2393,7 +2393,9 @@ void flowGateShapeAsk(FlowState *fstate, INode *node) {
             if (self && self->tag == StructTag && ((StructNode *)self)->lends == LendsShapeChanging)
                 continue;
             flowGateVisits = 0;
-            if (flowGateReachesOwner(((IExpNode *)nodesGet(parms, i))->vtype, 0)) {
+            // (a virtual call's receiver: its 'self' names the trait, not what is behind it)
+            if ((i == 0 && (call->flags & FlagVDisp))
+                    || flowGateReachesOwner(((IExpNode *)nodesGet(parms, i))->vtype, 0)) {
                 fstate->shapelend = 1;
                 flowGateShapeWrite(fstate, call->args);
                 break;

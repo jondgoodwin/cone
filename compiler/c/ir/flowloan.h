@@ -405,6 +405,10 @@ uint32_t loanNarrowName(INode *site, Place *pl, uint32_t alias, int repoint);
 int loanIsRepoint(uint32_t loan);
 int loanIsExclusive(uint32_t entry);
 void loanShapeMark(uint32_t loan, INode *container);
+// A shape loan of what a call returned from behind a trait object: 'unseen' is the loan
+// walk's own record of what the borrow may point at (flowpath.c, PwUnseen), or NULL
+void loanUnseenSet(uint32_t loan, void *unseen);
+void *loanUnseen(uint32_t loan);
 // Is this a loan into a value that changes shape, marked so or marked once another
 // name for it is met?
 int loanShapeMayMark(uint32_t loan);
