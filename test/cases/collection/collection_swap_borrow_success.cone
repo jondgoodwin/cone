@@ -1,0 +1,127 @@
+// What is accepted beside collection_flow_swap_borrow: two elements of one list, a right
+// side whose index borrows something else, one that borrows the left side's value and is
+// done with it before the swap writes (by a block's own borrow, by a borrow made earlier
+// and last read there, by a borrow the index replaces), and one that reads the left side.
+// Also a right side whose index moves the left side's value and assigns it again, and
+// one that moves another list.
+
+mod collection_swap_borrow_success;
+
+import collections use *;
+import stdio use *;
+
+fn nums(a: usize, b: usize) List[usize] {
+  var l = List[usize]();
+  l.push(a);
+  l.push(b);
+  l
+}
+
+fn show(n: usize) {
+  printInt(i64.from(n));
+  printStr(" ");
+}
+fn line() { printStr("\n"); }
+
+fn elements() {
+  var l = nums(1usize, 2usize);
+  var i = 0usize;
+  var j = 1usize;
+  l[i] <-> l[j];
+  show(l[0usize]);
+  show(l[1usize]);
+  line();
+}
+
+// The borrow the index keeps is into another list
+fn another() {
+  var l = nums(1usize, 2usize);
+  var ls = [nums(3usize, 4usize)];
+  var o = nums(0usize, 6usize);
+  var z = 0usize;
+  var r = &z;
+  l <-> ls[{r = &o[1usize]; 0usize}];
+  show(l[0usize]);
+  show(ls[0usize][0usize]);
+  show(*r);
+  line();
+}
+
+// The index's own borrow of the left side ends with its block
+fn blockBorrow() {
+  var l = nums(1usize, 2usize);
+  var ls = [nums(3usize, 4usize), nums(5usize, 6usize)];
+  l <-> ls[{let r = &l[0usize]; *r}];
+  show(l[0usize]);
+  show(ls[1usize][0usize]);
+  line();
+}
+
+// A borrow made before, last read by the index
+fn lastRead() {
+  var l = nums(1usize, 2usize);
+  var ls = [nums(3usize, 4usize), nums(5usize, 6usize)];
+  let r = &l[0usize];
+  l <-> ls[*r];
+  show(l[0usize]);
+  show(ls[1usize][0usize]);
+  line();
+}
+
+// A borrow made before, which the index replaces
+fn replaced() {
+  var l = nums(1usize, 2usize);
+  var ls = [nums(3usize, 4usize)];
+  var z = 7usize;
+  var r = &l[0usize];
+  l <-> ls[{r = &z; 0usize}];
+  show(l[0usize]);
+  show(ls[0usize][0usize]);
+  show(*r);
+  line();
+}
+
+// The index reads the left side
+fn reads() {
+  var l = nums(1usize, 2usize);
+  var ls = [nums(3usize, 4usize), nums(5usize, 6usize)];
+  l <-> ls[l.len() - 1usize];
+  show(l[0usize]);
+  show(ls[1usize][0usize]);
+  line();
+}
+
+alias Numbers = List[usize];
+fn takeNumbers(l: Numbers) usize { 0usize }
+
+// The index moves the left side's value, and gives it a new one before the swap writes
+fn reassigned() {
+  var l = nums(1usize, 2usize);
+  var ls = [nums(3usize, 4usize)];
+  l <-> ls[{let i = takeNumbers(l); l = nums(8usize, 9usize); i}];
+  show(l[0usize]);
+  show(ls[0usize][0usize]);
+  line();
+}
+
+// The index moves a list the left side has no part in
+fn anotherMoved() {
+  var l = nums(1usize, 2usize);
+  var m = nums(5usize, 6usize);
+  var ls = [nums(3usize, 4usize)];
+  l <-> ls[takeNumbers(m)];
+  show(l[0usize]);
+  show(ls[0usize][0usize]);
+  line();
+}
+
+fn main() {
+  elements();
+  another();
+  blockBorrow();
+  lastRead();
+  replaced();
+  reads();
+  reassigned();
+  anotherMoved();
+}

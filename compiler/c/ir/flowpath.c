@@ -4598,6 +4598,7 @@ static void pwSwap(SwapNode *node) {
         nodesAdd(&both, node->rval);
         premark = pwPreBegin(both);
     }
+    // Reach both places, in the order generation makes their addresses
     for (int k = 0; k < 2; ++k) {
         int i = k ^ first;
         VarDclNode *var = pwNamedVar(*sides[i]);
@@ -4632,6 +4633,28 @@ static void pwSwap(SwapNode *node) {
             pl->slots = 0;
             pl->narrow = 0;
             pl->kept = NULL;
+            found[i] = 1;
+        }
+        else {
+            found[i] = pwPlace(sides[i], pl, &bases[i]);
+            pwIndexUse(stand, *sides[i]);
+            // What a reference's target holds, as it was when the address was
+            // made: the other side may point the reference elsewhere
+            if (found[i] && pl->deref)
+                holds[i] = pwPlaceHolds(pl, *sides[i]);
+        }
+    }
+    pwPreCnt = premark;
+    // Only then is either side read and written (genlTerm, SwapTag), as in
+    // the sequential form: what the walk of one side borrowed, moved or stored
+    // meets the other side's write ('l <-> ls[{r = &l[0usize]; 0usize}]')
+    for (int k = 0; k < 2; ++k) {
+        int i = k ^ first;
+        Place *pl = &places[i];
+        if (!found[i])
+            continue;
+        if (whole[i]) {
+            VarDclNode *var = pathVars[whole[i]].var;
             holds[i] = pathVars[whole[i]].holds;
             pwAccess(pl, itypeNeedsFinal(var->vtype) ? AccessReplace : AccessWrite, *sides[i]);
             pwDropUse(pl, *sides[i], 0);
@@ -4640,19 +4663,14 @@ static void pwSwap(SwapNode *node) {
             // mark on it
             if (!pathVars[whole[i]].holder && pathVars[whole[i]].pending)
                 loanUse(whole[i], *sides[i]);
-            found[i] = 1;
         }
         else {
-            found[i] = pwPlace(sides[i], pl, &bases[i]);
-            pwIndexUse(stand, *sides[i]);
-            if (found[i]) {
-                pwDropUse(pl, *sides[i], 0);
-                holds[i] = pwPlaceHolds(pl, *sides[i]);
-                pwAccess(pl, AccessWrite, *sides[i]);
-            }
+            pwDropUse(pl, *sides[i], 0);
+            PathSet *now = pwPlaceHolds(pl, *sides[i]);
+            holds[i] = pl->deref ? pathSetUnion(holds[i], now) : now;
+            pwAccess(pl, AccessWrite, *sides[i]);
         }
     }
-    pwPreCnt = premark;
     // A side that is not a local named whole is stored over: through another name, it
     // could reshape a value a borrow is into
     if (pathLoans && loanShapeCount()) {
