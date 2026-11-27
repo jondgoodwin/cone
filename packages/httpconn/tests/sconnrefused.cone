@@ -5,6 +5,7 @@
 // - refused at once: 'fill' gives nothing, the failure is there, Overloaded;
 // - refused after a buffer was given: the same, with bytes in the wire;
 // - refused again once 'next' has given Closed: it is still there, and 'done' is not true by itself;
+// - refused after 'abort', with bytes the layer already held: the layer's failure stands over the abort's;
 // - a layer that failed without a refusal and still has bytes (a TLS alert) is not told until they are taken.
 
 mod sconnrefused;
@@ -98,6 +99,13 @@ fn layer(gives: u32, every: bool, broken: bool) Option[Uni[Layer]] {
   Some[Uni[Layer]](Uni[Refusing](Refusing.make(gives, every, broken)))
 }
 
+// A layer that already holds bytes for the wire and is refused every buffer
+fn holding() Option[Uni[Layer]] {
+  var r = Refusing.make(0u32, true, false);
+  r.outq.push(piece("held"));
+  Some[Uni[Layer]](Uni[Refusing](r))
+}
+
 // Whether the connection says its layer failed for a refused buffer
 fn told(f: &Option[Failure]) bool {
   match f {
@@ -173,6 +181,12 @@ fn servers(now: Instant) {
   say("  the refusal is told again", told(c.failureOf()));
   say("  and the connection is not done by itself", !c.done(now));
 
+  printStr("server, refused after abort\n");
+  var e = ServerConn.make(Config.make(), holding(), now);
+  e.abort();
+  say("  fill gives nothing", e.fill(now) == 0usize);
+  say("  the refusal is told", told(e.failureOf()));
+
   printStr("server, failed with bytes still to send\n");
   var d = answering(0u32, false, true, now);
   let n = d.fill(now);
@@ -211,6 +225,12 @@ fn clients(now: Instant) {
   say("  fill gives nothing", c.fill(now) == 0usize);
   say("  the refusal is told again", told(c.failureOf()));
   say("  and the connection is not done by itself", !c.done(now));
+
+  printStr("client, refused after abort\n");
+  var d = ClientConn.make(Config.make(), holding(), now);
+  d.abort();
+  say("  fill gives nothing", d.fill(now) == 0usize);
+  say("  the refusal is told", told(d.failureOf()));
 }
 
 fn main() i32 {

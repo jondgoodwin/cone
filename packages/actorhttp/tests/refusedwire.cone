@@ -7,7 +7,8 @@
 // - client-tls: the client's ClientHello is refused: the fetch fails, Overloaded at Stage.Tls;
 // - server-h2c: HTTP/2 itself fails in 'fill' (no buffer for its frames, here the answers to 1000 PINGs): the connection
 //   closes;
-// - client-h2c: HTTP/2 itself fails in 'fill' (no buffer for its preface): the fetch fails, Overloaded.
+// - client-h2c: HTTP/2 itself fails in 'fill' (no buffer for a second request's frames, a first one waiting for its
+//   answer): the fetch fails, Overloaded.
 // The server listens or the client connects to a socket that never speaks. Every handshake deadline is 60 s, so an
 // owner that does not look after its 'fill' leaves each case waiting past this test's own 15 s, and it says NO.
 
@@ -262,6 +263,29 @@ actor Silent {
     }
     done.send(u64.from(p));
   }
+
+  // Accepts the client's connection and reads until it is closed: 1, or 0 when it was not within 15 s
+  pub async fn drain(self, var room: IoBuf, var done: OneshotSender[u64]) {
+    var conn = socketOf(await listener.accept());
+    let lim = IoLimits.until(Instant.now() + Duration.fromSeconds(15i64));
+    var got = 0u64;
+    var buf = room;
+    while true {
+      let r = await conn.readIn(buf, lim);
+      match r {
+        case var Ok(b) {
+          if b.len() == 0usize {got = 1u64; break;}
+          b.clear();
+          buf = b;
+        }
+        case let Err(e) {
+          if !e.isTimedOut() {got = 1u64;}
+          break;
+        }
+      }
+    }
+    done.send(got);
+  }
 }
 
 actor Fetch {
@@ -305,6 +329,14 @@ fn clientCase(secure: bool) {
   var u = String.from(if secure {"https://127.0.0.1:"} else {"http://127.0.0.1:"});
   u.appendUInt(port);
   u.append("/");
+  // HTTP/2: a first request, its connection up and never answered; the refused frame is the next one's
+  var atx: OneshotSender[u64];
+  var arx: OneshotReceiver[u64];
+  atx, arx = Oneshot[u64].make();
+  if !secure {
+    Fetch(client.clone()).get(String.from(u.view()), atx);
+    thread.sleep(Duration.fromSeconds(1i64));
+  }
   let holder = Holder(List[IoBuf]());
   holdOnWorker(&holder);
   var tx: OneshotSender[u64];
@@ -316,6 +348,12 @@ fn clientCase(secure: bool) {
   say("  the fetch fails before its deadline", got % 2u64 == 1u64);
   say("  ...Overloaded", (got / 2u64) % 2u64 == 1u64);
   if secure {say("  ...at Tls", got >= 4u64);}
+  else {say("  ...and the first with it, before its deadline", (arx.recv() || 0u64) % 2u64 == 1u64);}
+  var ctx: OneshotSender[u64];
+  var crx: OneshotReceiver[u64];
+  ctx, crx = Oneshot[u64].make();
+  silent.drain(IoBuf(4096usize), ctx);
+  say("  and the connection closes", (crx.recv() || 0u64) == 1u64);
 }
 
 // ---------------------------------------------------------------------------
