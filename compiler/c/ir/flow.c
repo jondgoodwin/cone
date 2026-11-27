@@ -2481,6 +2481,104 @@ void flowGateShapeWrite(FlowState *fstate, Nodes *args) {
     }
 }
 
+// Could what this place was borrowed through be freed before the borrow's last use: was
+// it lent by a call (the only way into a collection's storage), or is it what an owner
+// points at?
+static int flowGatePlaceLent(INode *place) {
+    while (1) {
+        switch (place->tag) {
+        case BorrowTag:
+        case ArrayBorrowTag:
+            place = ((RefNode *)place)->vtexp;
+            break;
+        case CastTag:
+            place = ((CastNode *)place)->exp;
+            break;
+        case FldAccessTag:
+            place = ((FnCallNode *)place)->objfn;
+            break;
+        case ArrIndexTag:
+        case DerefTag: {
+            INode *from = place->tag == DerefTag ? ((StarNode *)place)->vtexp : ((FnCallNode *)place)->objfn;
+            INode *type = iexpGetTypeDcl(from);
+            if ((type->tag == RefTag || type->tag == ArrayRefTag || type->tag == VirtRefTag) && !flowGateIsBorrowRef(type))
+                return 1;
+            place = from;
+            break;
+        }
+        case FnCallTag:
+            return 1;
+        default:
+            return 0;
+        }
+    }
+}
+
+// Does making this value do no more than read: names, literals, places and the
+// built-in operators on them? Anything else may call, or store
+static int flowGateOnlyReads(INode *node) {
+    if (isNameUseNode(node))
+        return 1;
+    switch (node->tag) {
+    case ULitTag:
+    case FLitTag:
+    case NilLitTag:
+    case StringLitTag:
+        return 1;
+    case CastTag:
+        return flowGateOnlyReads(((CastNode *)node)->exp);
+    case DerefTag:
+        return flowGateOnlyReads(((StarNode *)node)->vtexp);
+    case FldAccessTag:
+        return flowGateOnlyReads(((FnCallNode *)node)->objfn);
+    case ArrIndexTag:
+    case FnCallTag: {
+        FnCallNode *call = (FnCallNode *)node;
+        if (node->tag == ArrIndexTag) {
+            if (!flowGateOnlyReads(call->objfn))
+                return 0;
+        }
+        else {
+            if (!isNameUseNode(call->objfn))
+                return 0;
+            INode *fn = ((NameUseNode *)call->objfn)->dclnode;
+            if (fn == NULL || fn->tag != FnDclTag || ((FnDclNode *)fn)->value == NULL
+                || ((FnDclNode *)fn)->value->tag != IntrinsicTag)
+                return 0;
+        }
+        INode **argsp;
+        uint32_t cnt;
+        if (call->args == NULL)
+            return 1;
+        for (nodesFor(call->args, cnt, argsp)) {
+            if (!flowGateOnlyReads(*argsp))
+                return 0;
+        }
+        return 1;
+    }
+    default:
+        return 0;
+    }
+}
+
+// 'x += e' is '{let tmp = &mut x; *tmp = *tmp + e}' (fnCallOpAssgn): the temporary
+// holds the place's borrow while 'e' is made, and is no holder, so no trigger above
+// asks about it ('l[i] += grow(&mut l)' on a local list marked nothing). Where the
+// place is one a change could free, and 'e' does more than read, the function is
+// walked, for what changes it before the store (flowpath.c, pwCompoundPlace)
+void flowGateCompound(FlowState *fstate, INode *lval, INode *rval) {
+    if ((fstate->gate & FlowGateShape) || lval->tag != DerefTag)
+        return;
+    INode *ref = ((StarNode *)lval)->vtexp;
+    if (!isNameUseNode(ref))
+        return;
+    VarDclNode *tmp = (VarDclNode *)((NameUseNode *)ref)->dclnode;
+    if (tmp == NULL || tmp->tag != VarDclTag || tmp->namesym != tempName || tmp->value == NULL)
+        return;
+    if (flowGatePlaceLent(tmp->value) && !flowGateOnlyReads(rval))
+        fstate->gate |= FlowGateShape;
+}
+
 void flowGateUse(FlowState *fstate, VarDclNode *var) {
     for (uint16_t i = 0; i < fstate->inflightcnt; ++i) {
         if (fstate->inflight[i] == var) {

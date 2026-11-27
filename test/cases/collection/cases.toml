@@ -225,6 +225,12 @@ category = "run"
 description = "'<-' and '=' through a 'let' variable holding an 'Rc[mut, ...]' or an 'Arc[mut, ...]', and '<-' on a '&mut' parameter: one entry and several, a field, the whole value and an element stored through the owner"
 tags = ["typecheck", "flow", "genllvm", "runtime"]
 
+# A list of entries on a receiver that is an index or a method call, evaluated once
+[scenario.collection_append_indexed]
+category = "run"
+description = "a list of entries after '<-' on an indexed element (List, array, a field of an element, nested), a borrowed element, a method call's reference and a temporary owner, each receiver evaluated once"
+tags = ["typecheck", "flow", "genllvm", "runtime"]
+
 # -------- name resolution stage --------
 
 # The retired slice type '&[]T' for '&Array[T]', in the three groups of case
@@ -254,13 +260,13 @@ diagnostics = 5
 category = "reject"
 description = "A '<-' whose method takes 'self &mut' is refused on a 'let' variable, a 'let' global and a receiver lent read-only, for one entry and for several; of two overloads, only the writing one is refused"
 tags = ["typecheck"]
-diagnostics = 6
+diagnostics = 5
 
 [scenario.collection_typecheck_append_through_ref]
 category = "reject"
 description = "'<-' and '=' through a reference need the reference to permit the write: an 'Arc[imm, ...]' or 'Rc[imm, ...]' in a 'var' variable, a '&' parameter and an 'imm' List are refused, one entry or several"
 tags = ["typecheck"]
-diagnostics = 16
+diagnostics = 15
 
 [scenario.collection_typecheck_contents]
 category = "reject"
@@ -542,6 +548,25 @@ diagnostics = 10
 [scenario.collection_store_through_ref_success]
 category = "run"
 description = "A store through a reference to a '&uni' reference, accepted: with the borrow taken after it or used up before it, while a view of another list is held, three levels deep, through a field lent 'mut', and an enum stored over before it is matched"
+tags = ["flow", "genllvm", "runtime"]
+
+# A '&uni' reference held where others reach it is one way of several to what it points at
+# (collection_store_uni_held_shared_success holds what is accepted)
+[scenario.collection_flow_store_uni_held_shared]
+category = "reject"
+description = "A borrow through a '&uni' held in an 'Rc[mut, ..]' with two holders, or read through a '&' parameter, while the other holder stores over, swaps, pushes onto or clears what it points at, or hands it to a function: a List, a Dict, an owner and an enum's variant, with the borrow taken directly or through a borrow kept in a variable; and a compound assignment's place across the same changes"
+tags = ["flow"]
+diagnostics = 25
+
+[scenario.collection_flow_store_uni_held_one]
+category = "reject"
+description = "An 'Rc[mut, &uni ..]' with one holder: a store by the name the borrow was taken through is refused by the freezing, as before"
+tags = ["flow"]
+diagnostics = 1
+
+[scenario.collection_store_uni_held_shared_success]
+category = "run"
+description = "A '&uni' held in an 'Rc[mut, ..]' with two holders, accepted: the borrow used up before the store, taken after it, of another list, other reads while it is live, an enum stored over before it is matched, and a view through a lock's guard"
 tags = ["flow", "genllvm", "runtime"]
 
 # The same store over a field that OWNS the collection ('Uni', 'Rc', 'Arc', a program's own
@@ -1215,13 +1240,26 @@ category = "reject"
 description = "A callee that stores a borrow of a local into a list it is handed is refused at the call, whether the list reference is written out or passed by name; a store of a borrow through a raw pointer, a parameter or one made from a '&mut' parameter, is ErrorInvType (the place is global)"
 tags = ["flow"]
 
+# A compound assignment borrows its place before its right side is made and writes
+# into it after. collection_compound_element_success holds what is accepted beside each.
+[scenario.collection_flow_compound_element]
+category = "reject"
+description = "A compound assignment into an element a List or Dict lent (the element, a field of it, a reference bound to it, a List in an array, a type whose '+=' is rewritten to its '+'), or into what a Uni owns, whose right side calls or stores something that could change the shape of the collection or replace the owner"
+tags = ["flow"]
+diagnostics = 18
+
+[scenario.collection_compound_element_success]
+category = "run"
+description = "A compound assignment into a collection's element, accepted: its right side reaches nothing of the collection, only reads it, changes another one or another element, or is made first into a local"
+tags = ["flow", "genllvm", "runtime"]
+
 # A writable borrow of the variable holding a reference is a second name for what it borrows:
 # a view taken before it, and one taken through it, are both judged against the change
 [scenario.collection_flow_store_ref_second_name]
 category = "reject"
 description = "A view into what a reference borrows, and a writable borrow of the variable holding that reference, in either order, then a store or a call through the other name: a List, a Dict and an enum's variant, a struct's field, a parameter, a 'mut' reference and an owner's contents"
 tags = ["flow"]
-diagnostics = 45
+diagnostics = 47
 
 [scenario.collection_store_ref_second_name_success]
 category = "run"

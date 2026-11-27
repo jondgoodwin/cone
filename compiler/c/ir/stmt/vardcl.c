@@ -32,6 +32,7 @@ VarDclNode *newVarDclNode(Name *namesym, uint16_t tag, INode *perm) {
     name->nuses = 0;
     name->nwrites = 0;
     name->userlocal = 0;
+    name->valuechecked = 0;
     name->hollowed = NULL;
     name->hollowall = NULL;
     name->hollowuse = NULL;
@@ -60,6 +61,7 @@ VarDclNode *newVarDclFull(Name *namesym, uint16_t tag, INode *type, INode *perm,
     name->nuses = 0;
     name->nwrites = 0;
     name->userlocal = 0;
+    name->valuechecked = 0;
     name->hollowed = NULL;
     name->hollowall = NULL;
     name->hollowuse = NULL;
@@ -752,6 +754,9 @@ void varDclTypeCheck(TypeCheckState *pstate, VarDclNode *name) {
             deferred = slitDefaultDeferred(name->value, name->vtype);
             matches = deferred ? 1 : iexpCheckedCoerceIn(pstate, name->vtype, &name->value);
         }
+        // A checked tree is not checked again: a call in it is already lowered
+        else if (name->valuechecked)
+            matches = iexpCheckedCoerceIn(pstate, name->vtype, &name->value);
         else
             matches = iexpTypeCheckCoerceStated(pstate, name->vtype, &name->value);
         // A temporary the initializer extends becomes a hidden local of the block

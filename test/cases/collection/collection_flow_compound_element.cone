@@ -1,0 +1,124 @@
+// A compound assignment borrows its place before its right side is made, and writes
+// into it after: 'l[0] += e' is '{let tmp = &mut l[0]; *tmp = *tmp + e}'. Where the
+// place is one a collection or an owner lent, a call or a store in 'e' that could
+// change its shape would leave the write in freed storage
+// (collection_compound_element_success holds what is accepted beside each).
+
+mod collection_flow_compound_element;
+
+import collections use *;
+
+struct Item { pub n: usize; }
+struct Box { pub item: Item; }
+struct Num { pub n: usize; pub fn `+`(self, k: usize) Num { Num(self.n + k) } }
+
+fn grow(m: &mut List[usize]) usize {
+  var i = 0usize;
+  while i < 64usize { m.push(i); i += 1usize; }
+  5usize
+}
+fn growItems(m: &mut List[Item]) usize { m.push(Item(1usize)); 5usize }
+fn growBoxes(m: &mut List[Box]) usize { m.push(Box(Item(1usize))); 5usize }
+fn growNums(m: &mut List[Num]) usize { m.push(Num(1usize)); 5usize }
+fn growDict(m: &mut Dict[usize, usize]) usize {
+  var i = 2usize;
+  while i < 64usize { m.insert(i, i); i += 1usize; }
+  5usize
+}
+fn replaceItem(m: &mut Uni[Item]) usize { *m = Uni[Item](Item(7usize)); 5usize }
+
+// A local list, borrowed by its name
+fn local() {
+  var l = List[usize]();
+  l.push(1usize);
+  l[0usize] += grow(&mut l);              //~ ErrorShapeReshape "This compound assignment writes into what a 'List' lent"
+}
+
+// Through a 'mut' borrow held beside the local
+fn localAlias() {
+  var l = List[usize]();
+  l.push(1usize);
+  let m = &mut l;
+  l[0usize] += grow(m);                   //~ ErrorShapeReshape "This compound assignment writes into what a 'List' lent"
+}
+
+// Two references that may be one list, and one reference used twice
+fn twoRefs(l: &mut List[usize], m: &mut List[usize]) {
+  l[0usize] += grow(m);                   //~ ErrorShapeReshape "This compound assignment writes into what a 'List' lent"
+}
+fn sameRef(l: &mut List[usize]) {
+  l[0usize] -= grow(l);                   //~ ErrorShapeReshape "This compound assignment writes into what a 'List' lent"
+}
+
+// A reference to the element, bound first
+fn bound(l: &mut List[usize], m: &mut List[usize]) {
+  let p = &mut l[0usize];
+  *p *= grow(m);                          //~ ErrorShapeReshape "This compound assignment writes into what a 'List' lent"
+}
+
+// A field of an element, one and two deep, by name and through references
+fn fieldLocal() {
+  var l = List[Item]();
+  l.push(Item(1usize));
+  l[0usize].n |= growItems(&mut l);       //~ ErrorShapeReshape "This compound assignment writes into what a 'List' lent"
+}
+fn field(l: &mut List[Item], m: &mut List[Item]) {
+  l[0usize].n += growItems(m);            //~ ErrorShapeReshape "This compound assignment writes into what a 'List' lent"
+}
+fn deepField(l: &mut List[Box], m: &mut List[Box]) {
+  l[0usize].item.n += growBoxes(m);       //~ ErrorShapeReshape "This compound assignment writes into what a 'List' lent"
+}
+
+// A type whose '+=' is rewritten to its '+'
+fn methodPlus() {
+  var l = List[Num]();
+  l.push(Num(1usize));
+  l[0usize] += growNums(&mut l);          //~ ErrorShapeReshape "This compound assignment writes into what a 'List' lent"
+}
+
+// An element of a List in an array
+fn arrayLocal() {
+  var a = [List[usize](), List[usize]()];
+  a[0usize].push(1usize);
+  a[0usize][0usize] += grow(&mut a[0usize]);    //~ ErrorShapeReshape "This compound assignment writes into what a 'List' lent"
+}
+fn arrayRef(a: &mut Array[List[usize], 2], m: &mut List[usize]) {
+  a[0usize][0usize] <<= grow(m);          //~ ErrorShapeReshape "This compound assignment writes into what a 'List' lent"
+}
+
+// A Dict's value, by index and by a method that returns a reference to it
+fn dictLocal() {
+  var d = Dict[usize, usize]();
+  d.insert(1usize, 1usize);
+  let k = 1usize;
+  d[&k] += growDict(&mut d);              //~ ErrorShapeReshape "This compound assignment writes into what a 'Dict' lent"
+}
+fn dictRef(d: &mut Dict[usize, usize], m: &mut Dict[usize, usize]) {
+  let k = 1usize;
+  *d.getMut(&k).unwrap() += growDict(m);  //~ ErrorShapeReshape "This compound assignment writes into what a 'Dict' lent"
+}
+fn dictInsert(d: &mut Dict[usize, usize], m: &mut Dict[usize, usize]) {
+  *d.getOrInsert(1usize, 1usize) += growDict(m);    //~ ErrorShapeReshape "This compound assignment writes into what a 'Dict' lent"
+}
+
+// The change made by a method of the list itself, and by a store over it
+fn cleared() {
+  var l = List[usize]();
+  l.push(1usize);
+  l[0usize] += {l.clear(); 5usize};       //~ ErrorShapeReshape "This compound assignment writes into what a 'List' lent"
+}
+fn replaced(l: &mut List[usize], m: &mut List[usize]) {
+  l[0usize] += {*m = List[usize](); 5usize};    //~ ErrorShapeStore "This compound assignment writes into what a 'List' lent"
+}
+
+// What an owner points at, the owner replaced
+fn ownedLocal() {
+  var u = Uni[Item](Item(1usize));
+  u.n += replaceItem(&mut u);             //~ ErrorShapeReshape "This compound assignment writes into what a 'Uni[Item]' owns"
+}
+fn ownedRef(u: &mut Uni[Item], m: &mut Uni[Item]) {
+  u.n += replaceItem(m);                  //~ ErrorShapeReshape "This compound assignment writes into what a 'Uni[Item]' owns"
+}
+
+fn main() {
+}

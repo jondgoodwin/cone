@@ -1,0 +1,164 @@
+// A condition's later operand that changes a name an earlier test narrowed: the change ends
+// the narrowing, for the operands after it and for the branch, as a change in a block does.
+// The tests are asked again once the whole condition is checked, and must not bring the
+// narrowing back. enum_narrow_later_operand_success holds what is accepted beside each.
+
+mod enum_typecheck_narrow_later_operand;
+
+import stdio use *;
+
+// The payload a stale read would take for a pointer and a length
+enum Slot {
+  struct Text {
+    pub s: &str;
+  }
+
+  struct Num {
+    pub a: usize;
+    pub b: usize;
+  }
+
+  pub fn wipe(self: &mut Slot) bool {
+    *self = Num(4096usize, 8usize);
+    true
+  }
+}
+use Slot;
+
+enum Three {
+  struct One {
+    pub x: i32;
+  }
+
+  struct Two {
+    pub y: i32;
+  }
+
+  struct Last {
+    pub z: i32;
+  }
+}
+use Three;
+
+fn set(r: &mut Slot) bool {
+  *r = Num(4096usize, 8usize);
+  true
+}
+
+// Changes the variant and says false, for '||'
+fn setFalse(r: &mut Slot) bool {
+  *r = Num(4096usize, 8usize);
+  false
+}
+
+fn setRef(r: &mut &uni Slot) bool {
+  **r = Num(4096usize, 8usize);
+  true
+}
+
+fn setThree(r: &mut Three) bool {
+  *r = One(1);
+  true
+}
+
+fn byValue(var s: Slot) {
+  if s is Text && set(&mut s) {
+    printStr(s.s);                      //~ ErrorNarrowStale "it was changed at"
+  }
+}
+
+// A name that is a reference, borrowed itself
+fn byRef(var p: &uni Slot) {
+  if p is Text && setRef(&mut p) {
+    printStr(p.s);                      //~ ErrorNarrowStale "it was changed at"
+  }
+}
+
+// '||' with '!': the branch where both are false has run the change
+fn orNot(var s: Slot) {
+  if !(s is Text) || setFalse(&mut s) {
+  }
+  else {
+    printStr(s.s);                      //~ ErrorNarrowStale "it was changed at"
+  }
+}
+
+// And the code after a branch that leaves
+fn orLeave(var s: Slot) {
+  if !(s is Text) || setFalse(&mut s) {
+    return;
+  }
+  printStr(s.s);                        //~ ErrorNarrowStale "it was changed at"
+}
+
+fn whileLoop(var s: Slot) {
+  while s is Text && set(&mut s) {
+    printStr(s.s);                      //~ ErrorNarrowStale "it was changed at"
+  }
+}
+
+fn elseIf(var s: Slot, n: i32) {
+  if n == 0 {
+  }
+  else if s is Text && set(&mut s) {
+    printStr(s.s);                      //~ ErrorNarrowStale "it was changed at"
+  }
+}
+
+// A method that takes '&mut'
+fn method(var s: Slot) {
+  if s is Text && s.wipe() {
+    printStr(s.s);                      //~ ErrorNarrowStale "it was changed at"
+  }
+}
+
+// An operand after the change
+fn operandAfter(var s: Slot) {
+  if s is Text && set(&mut s) && s.s.len > 0usize {  //~ ErrorNarrowStale "it was changed at"
+  }
+}
+
+// The test inside a parenthesized part of the condition
+fn nested(var s: Slot, go: bool) {
+  if (s is Text && go) && set(&mut s) {
+    printStr(s.s);                      //~ ErrorNarrowStale "it was changed at"
+  }
+}
+
+fn swapped(var s: Slot) {
+  var t: Slot = Num(4096usize, 8usize);
+  if s is Text && {s <-> t; true} {
+    printStr(s.s);                      //~ ErrorNarrowStale "it was changed at"
+  }
+}
+
+// A match's guard is a later operand of its case's test
+fn guarded(var s: Slot) {
+  match s {
+    case Text if set(&mut s) {
+      printStr(s.s);                    //~ ErrorNarrowStale "it was changed at"
+    }
+    else {}
+  }
+}
+
+// A store in the later operand. Where the two paths of the '&&' meet nothing is known
+fn stored(var s: Slot) {
+  if s is Text && (s = Num(4096usize, 8usize)) is Num {
+    let t = s.s;                        //~ ErrorNoMbr
+  }
+}
+
+// A shared reference pointed at another value
+fn repointed(var p: &mut Slot, q: &mut Slot) {
+  if p is Text && (p = q) is Num {
+    printStr(p.s);                      //~ ErrorNarrowStale "it was changed at"
+  }
+}
+
+// By elimination: the test before the change says nothing, the one after it only its own
+fn eliminated(var s: Three) {
+  if !(s is One) && setThree(&mut s) && !(s is Two) {
+    let t = s.z;                        //~ ErrorNoMbr
+  }
+}

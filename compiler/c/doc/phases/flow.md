@@ -202,7 +202,7 @@ one bit per trigger:
 | `FlowGateStore` | `fnCallFlow` | a call with a `&mut X` argument, `X` carrying a borrow, or a struct argument holding such a writable borrow (`itypeWritableBorrowDepth`), beside another argument carrying one; or a struct, tuple or array literal (a closure's) of two values that may hold borrows, one of them a way to store (`flowGateJoinAsk`, from `typeLitFlow`, the value tuple and `arrayLitFlow`); or any call with arguments to a signature bounding a lifetime by `'static` (`FnSigNode.lifestatic`: a type parameter's `T + 'static`, a parameter `&<Trait + 'static`), whose arguments' loans `pwStaticArgs` checks though no type of them shows it, asked only once the parser has read a `'static` bound (`lifeStaticBoundSeen`) |
 | `FlowGateInCall` | `nameuseFlow`, `nameuseFlowBorrowed` | a variable named while a borrow of it made by an earlier operand of the same call, struct or array literal or value tuple is still waiting for it (`v.add(v.len())`), the borrow made inside an operand that is itself a call or literal whose value may carry it included (`both(s.view(), &mut s)`); `&uni s[i]` and `&s[a..=b]` on a slice are an index applied to a borrow of the slice (`borrowRefIndexDispatches`), so an operand that is an index is asked as that borrow (`flowGateOperandAsk`) |
 | `FlowGateBoxed` | `flowLoadValue` | a value whose type carries a borrow converted to an owning virtual reference (`Uni[Trait]` from a `Uni[H]`), whose loans the loan walk checks are global (section 6, "Named lifetimes") |
-| `FlowGateShape` | `fnCallFlow` (`flowGateShape`, `flowGateShapeAsk`) | a method call returning a borrow, on a receiver of a type that may change shape (`ShapeChanging`, or one whose answer `shapeinf` has not ruled out), reached through a reference, a field of `self` or a global rather than a plain local's own place. A borrow that never reaches a variable (`out.append(x.view())`, `two(l[0], bump(m))`) is otherwise no trigger at all, and a call made beside it could reshape what it lends. Asked even once another bit is set, for the bit also says the callees' bodies are to be checked before the walk (`shapeDemandCallees`). A receiver that is a `var` global's own place is no plain local, and a container some `var` global reaches may be what a reference points at: the borrow is asked of every call, so any call after it is a trigger (`FlowState.shapeglobal`); whether the call is refused is the inference's. Also a reference narrowed from an enum to one of its variants through a path others share (`flowGateNarrow`), and a store into a struct-typed place that is no local named whole, in a function that has already lent such a borrow (`flowGateShapeStore`) |
+| `FlowGateShape` | `fnCallFlow` (`flowGateShape`, `flowGateShapeAsk`) | a method call returning a borrow, on a receiver of a type that may change shape (`ShapeChanging`, or one whose answer `shapeinf` has not ruled out), reached through a reference, a field of `self` or a global rather than a plain local's own place. A borrow that never reaches a variable (`out.append(x.view())`, `two(l[0], bump(m))`) is otherwise no trigger at all, and a call made beside it could reshape what it lends. Asked even once another bit is set, for the bit also says the callees' bodies are to be checked before the walk (`shapeDemandCallees`). A receiver that is a `var` global's own place is no plain local, and a container some `var` global reaches may be what a reference points at: the borrow is asked of every call, so any call after it is a trigger (`FlowState.shapeglobal`); whether the call is refused is the inference's. Also a reference narrowed from an enum to one of its variants through a path others share (`flowGateNarrow`), and a store into a struct-typed place that is no local named whole, in a function that has already lent such a borrow (`flowGateShapeStore`). Also a compound assignment whose place a call lent or an owner points at, with a right side that does more than read (`assignFlow`, `flowGateCompound`): its temporary is declared by no holder trigger, so `l[i] += grow(&mut l)` on a local list would otherwise be walked for nothing. "Does more than read" is anything but names, literals, places and the built-in operators on them, so a call or a store written there |
 | `FlowGateStatic` | `typeLitFlow` (`flowGateStatic`, `flowGateStaticAsk`) | a struct or variant literal giving a value carrying a borrow to a field whose type holds borrows but only `'static` ones, whose loans the loan walk checks are global (`pwStaticOnly`, section 6, "Named lifetimes"): `stash(H(&v))` holds nothing in a local, returns nothing, and is otherwise no trigger |
 
 "Carries a borrow" is `itypeCarriesBorrow`: the type is a borrowed reference, or
@@ -864,6 +864,25 @@ reference its root is read through, or an owning reference a step dereferences
 many steps lead to that reference (0 when it is the root's). A dereference cut
 off by the step limit is not marked shared, so the place is held to the
 stricter rule.
+
+`Place.shared` is set by the borrowed reference the root is read through, so a
+`uni` one read from where others reach it (`**o`, `o` an `Rc[mut, &uni T]`;
+`**m`, `m: &mut &uni T`) leaves it clear. **`Place.uniway`** records that: the
+last reference does not say others may write, but the way to it does
+(`pwWayWritten`: some reference before it writes by a shared path), or the
+variable it is read from holds a borrow of such a place (`pwHoldsUniway`:
+`let x = &**o`, `&imm **o`, `&uni **o`). It is asked only by the shape check,
+which then treats the place as one others write by: a borrow into it is marked
+(`pwShapeLent`, `pwOwnerLent`), whatever the freezing
+did; a store through it reaches what the root variable holds (`pwShapeStore`);
+a method called on it has no receiver that is the only name (`pwShapeCall`); the
+loan's roots include what the root variable borrows (`loanRootsNote`); and a
+loan of it excludes no writer (`pwHeldExcluding`). It changes no loan's kind and
+no freezing. A borrow made through a lock (`g`, `&mut *shared`) is not such a way: no
+other holder reaches the value while the lock is held. A view through `&mut *shared`'s guard is
+still one read through a `mut` borrow of the reference (`refway`, under "A reference variable lent
+writably"), so it is marked, and a call handed some other writable `List` is refused under it,
+though nothing else reaches what it views.
 
 A *loan* is one borrow (`BorrowTag`, `ArrayBorrowTag`) of a place, the same
 loan each time a loop walks it again. Its kind comes from the borrow's
@@ -1536,10 +1555,17 @@ borrows it through (`x += 1` is `{let tmp = &mut x; *tmp = *tmp + 1}`, and
 and no holder: `k += k` compiles. What is borrowed through it still carries
 its loan (`pwVarDcl` keeps it on the temporary, `pwLend` reads it), so
 `r = (v <- (1, 2))` holds `v`'s loan. One thing is asked of it as of a holder:
-where it points into an enum's variant, whether the right side of the compound
-assignment could change that variant before the temporary is written through
-(`pwCompoundVariant`; [narrow](../nodes/narrow.md), "A compound assignment").
-A change of a collection's shape there is not asked. A
+where it points into a collection, into what an owner points at or into an
+enum's variant, whether the right side of the compound assignment could change
+that shape or variant before the temporary is written through
+(`pwCompoundPlace`; [narrow](../nodes/narrow.md), "A compound assignment").
+So `l[0usize] += grow(&mut l)` is `ErrorShapeReshape`, as
+`let p = &mut l[0usize]; let v = grow(&mut l); *p = v` is. Nothing else is
+asked of it: a right side that moves the collection or the owner away, or
+assigns over it by its own name (`l[0usize] += take(l)`), compiles, and the
+write lands in freed storage. A function whose only such borrow is the
+temporary has nothing that holds it, so the gate marks it (`flowGateCompound`,
+`FlowGateShape` above). A
 borrow a
 call returns carries its receiver's loan as the receiver was reached: through a
 shared path (`l: &mut List`, a field of `self`, a `Rc[mut, T]` owner) that loan
@@ -1703,7 +1729,8 @@ Part (b) of the rule (`reshape.c`, `flowpath.c`'s `pwShapeBorrow`/`pwShapeCall`,
 `flowloan.c`'s shape section). When `pwCall` freezes a shape-changing receiver's
 path (above) and the place is reached through a reference that others may
 write by (`Place.shwrite`: a `mut`, `ro` or lock-permission reference, an `Rc[mut]`
-owner; not `imm`, `mut1`, `opaq` or `uni`), the borrow's loan is *marked*
+owner; not `imm`, `mut1`, `opaq` or `uni` -- but a `uni` one read from such a way
+counts, `Place.uniway` under "The loan walk"), the borrow's loan is *marked*
 (`loanShapeMark`, `Loan.shapecont`) — unless the reference is read-only and what it
 was borrowed from is a place this function holds a loan on that excludes writers,
 where there is no other name. A place reached as `uni` has no other name until a
@@ -1835,9 +1862,10 @@ locals, which only a call that reaches one of them is asked of):
   only into locals is skipped unless the store reaches one of them: the place's root
   variable; through a reference others may share, what that variable holds instead;
   and through a reference itself read through a borrowed one (`**m`, `Place.far`)
-  both what it holds and, where the last reference is `uni`, the root. A `uni`
-  reference's referent is its own only while nothing else reaches the reference, and
-  one read through a borrow is reached by that borrow's holder. It reshapes
+  both what it holds and, where the last reference is `uni`, the root, and so too
+  through a `uni` reference read from where others may write (`**o` of an
+  `Rc[mut, &uni T]`, `Place.uniway`). A `uni` reference's referent is its own only
+  while nothing else reaches the reference. It reshapes
   (`reshapeStoreHits`) when the value stored over is the loan's container itself, or
   a value that holds one by value (`ReachContained`) or through owning references
   alone (`ReachOwned`: `Uni`, `Rc`, `Arc` or a region a program declares, with fields and
@@ -1870,6 +1898,9 @@ writes, of a variable's own storage, of a value that may hold a reference, marks
 through that variable (`pwLend`, `loanShapeRefLent`). The borrow first: a view through a `uni`
 reference read through a `mut` borrow (`Place.far`, `loanHoldsUniqAlias`) is marked as it is made,
 its roots the locals along the way (`refway`, `loanRootsNote`), so a store through `r` reaches it.
+Such a place is `Place.uniway` too: its roots stay the way's locals, and a view into a collection
+under an owner (`***m`, an `&uni Uni[List]`) takes the collection as its container (`pwShapeLent`),
+so a push through `r` is refused as a store over the owner is.
 Either way the freezing stays, so a change by the view's own name is reported as before; the mark adds
 the store and call checks, which refuse only a change made while the view is still to be used. The
 views noted are a method's or a function's borrow into a collection (`pwShapeLent`), a borrow into what
