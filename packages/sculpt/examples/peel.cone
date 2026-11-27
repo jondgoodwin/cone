@@ -6,7 +6,11 @@
 // own frame: every point of the two nostril rims lies within 0.046 mm of one of its vertices), consecutive
 // repeats dropped, and facesInsideLoop names the faces inside.
 //
-//   congo run --release --example peel          (from packages/sculpt; needs the files in C:/src/mesh-tools-shots)
+// The example's default is ring 3 (ring 1 and 2 are run beside it; the sheet shows source, rings 1 to 3, and
+// close-ups of the fill's edge at rings 1 and 3, all in plain shading): ring 3 brings the rim angle across the
+// region's edge to W68's level, ring 1 and 2 do not.
+//
+//   congo run --release --example peel         (from packages/sculpt; needs the files in C:/src/mesh-tools-shots)
 //
 // Measures are nostril.cone's own (regionRow and what it calls, unchanged), so the rows read beside lane 2b's
 // and the region remesh lane's. Output: PNG sheets and the numbers on stdout, in C:/src/mesh-tools-shots.
@@ -734,9 +738,9 @@ struct Feature {
   label: String;
   centre: Vec3;
   outward: Vec3;
-  base: PolyMesh;
-  piece: PolyMesh;
-  nNew: usize;
+  bases: List[PolyMesh];     // ring 1, 2, 3
+  nNew: List[usize];
+  rim0: Vec3;                // a point on the rim, for the close-up
 }
 
 fn main() i32 {
@@ -799,17 +803,24 @@ fn main() i32 {
         }
         centre = centre * (1. / f32.from(loop.len()));
         outward = outward.normalize();
-        t0 = Instant.now();
-        let peeled = peelRegion(&src, faces.view(), 1u32, &mut problems);
-        let tPeel = t0.elapsed().secondsF64();
-        print <- "peelRegion ring 1: ", peeled.faces.len(), " new triangles, ", peeled.vertices.len(), " faired vertices, piece ", peeled.piece.faceCount(),
-          " faces, base ", peeled.mesh.faceCount(), " faces, problems ", problems.len(), ", total ", tPeel, " s\n";
-        q = 0usize;
-        while q < problems.len() { print <- "  problem: ", problems[q].view(), "\n"; q = q + 1usize; }
-        print <- "base validate problems ", peeled.mesh.validate().len(), ", piece validate problems ", peeled.piece.validate().len(), "\n";
-        regionRow(name, 5u32, &peeled.mesh, &peeled.faces, &pyIndex, &noFlags, &noFaces, &rimPts, tPeel);
-        phases(&src, &faces);
-        feats.push(Feature(String.from(name), centre, outward, peeled.mesh.clone(), peeled.piece.clone(), peeled.faces.len()));
+        var bases = List[PolyMesh]();
+        var nNew = List[usize]();
+        var ringN = 1u32;
+        while ringN <= 3u32 {
+          t0 = Instant.now();
+          let peeled = peelRegion(&src, faces.view(), ringN, &mut problems);
+          let tPeel = t0.elapsed().secondsF64();
+          print <- "peelRegion ring ", ringN, ": ", peeled.faces.len(), " new triangles, ", peeled.vertices.len(), " faired vertices, piece ", peeled.piece.faceCount(),
+            " faces, base ", peeled.mesh.faceCount(), " faces, problems ", problems.len(), ", total ", tPeel, " s\n";
+          q = 0usize;
+          while q < problems.len() { print <- "  problem: ", problems[q].view(), "\n"; q = q + 1usize; }
+          print <- "base validate problems ", peeled.mesh.validate().len(), "\n";
+          regionRow(name, 5u32, &peeled.mesh, &peeled.faces, &pyIndex, &noFlags, &noFaces, &rimPts, tPeel);
+          bases.push(peeled.mesh.clone());
+          nNew.push(peeled.faces.len());
+          ringN = ringN + 1u32;
+        }
+        feats.push(Feature(String.from(name), centre, outward, bases, nNew, *rimPts[0usize]));
       }
     }
     n = n + 1usize;
@@ -817,7 +828,7 @@ fn main() i32 {
 
   // The sheet: per feature, source / base / piece, in two raking lights
   let tw = 300;
-  var cv = Canvas.make(tw * 3 * i32.from(feats.len()), tw * 2);
+  var cv = Canvas.make(tw * 6 * i32.from(feats.len()), tw * 2);
   var fi = 0usize;
   while fi < feats.len() {
     let ft = &feats[fi];
@@ -825,17 +836,20 @@ fn main() i32 {
     var row = 0;
     while row < 2 {
       var col = 0;
-      while col < 3 {
-        let x0 = (i32.from(fi) * 3 + col) * tw;
+      while col < 6 {
+        let x0 = (i32.from(fi) * 6 + col) * tw;
         cv.tile(x0, row * tw, x0 + tw, (row + 1) * tw, Vec3(0.97, 0.97, 0.97));
-        let cam = Cam.make(ft.outward, up, ft.centre, 30., f32.from(x0) + 150., f32.from(row * tw) + 150.);
+        // columns 4 and 5: a close-up of the fill's edge (at a rim vertex), rings 1 and 3
+        let close = col >= 4;
+        let cen = if close { ft.rim0 } else { ft.centre };
+        let cam = Cam.make(ft.outward, up, cen, if close { 110. } else { 30. }, f32.from(x0) + 150., f32.from(row * tw) + 150.);
         let lit = if row == 1 { (cam.v * -0.85 + cam.u * 0.3 + cam.w * 0.43).normalize() } else { (cam.u * 0.92 + cam.w * 0.38).normalize() };
+        let rad: f32 = if close { 1.3 } else { 5.2 };
         if col == 0 {
-          drawMesh(&mut cv, &src, &cam, lit, ft.centre, 5.2, 1000000000usize, 0., false, false);
-        } else if col == 1 {
-          drawMesh(&mut cv, &ft.base, &cam, lit, ft.centre, 5.2, ft.base.faceCount() - ft.nNew, 1., false, false);
+          drawMesh(&mut cv, &src, &cam, lit, cen, rad, 1000000000usize, 0., false, false);
         } else {
-          drawMesh(&mut cv, &ft.piece, &cam, lit, ft.centre, 5.2, 1000000000usize, 0., false, false);
+          let which = if col == 5 { 2usize } else if col == 4 { 0usize } else { usize.from(col - 1) };
+          drawMesh(&mut cv, &ft.bases[which], &cam, lit, cen, rad, 1000000000usize, 0., false, false);
         }
         col = col + 1;
       }
