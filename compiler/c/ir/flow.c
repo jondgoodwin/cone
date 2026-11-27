@@ -2594,6 +2594,15 @@ void flowGateIndex(FlowState *fstate, INode *index) {
     }
 }
 
+// A swap makes its left side's address, then its right side, and only then uses both.
+// Where the left side is a place a change could free, and the right does more than read,
+// the function is walked, for what changes it in between (flowpath.c, pwSwap). Where an
+// 'await' makes the right side first, the left is a plain path, with nothing to change
+void flowGateSwap(FlowState *fstate, INode *lval, INode *rval) {
+    if (flowGatePlaceLent(lval) && !flowGateOnlyReads(rval))
+        fstate->gate |= FlowGateShape;
+}
+
 void flowGateUse(FlowState *fstate, VarDclNode *var) {
     for (uint16_t i = 0; i < fstate->inflightcnt; ++i) {
         if (fstate->inflight[i] == var) {

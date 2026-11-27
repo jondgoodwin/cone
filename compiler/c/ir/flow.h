@@ -188,6 +188,8 @@ void flowGateShapeWrite(FlowState *fstate, Nodes *args);
 void flowGateCompound(FlowState *fstate, INode *lval, INode *rval);
 // An index of a place, whose address is made before the index is
 void flowGateIndex(FlowState *fstate, INode *index);
+// A swap, whose left side's address is made before the right side is
+void flowGateSwap(FlowState *fstate, INode *lval, INode *rval);
 // Does making this value do no more than read?
 int flowGateOnlyReads(INode *node);
 // A call's or literal's operands are about to be walked: whether it is itself an

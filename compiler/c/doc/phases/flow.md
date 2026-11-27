@@ -1593,9 +1593,24 @@ of it is not (`loanUse`): `l[0].a[l.len()]` is accepted. A place in a variable's
 own storage rests on no borrow, so `arr[bump(&mut arr)]` is accepted, as is a
 `List`'s own index, a method that reaches the storage after its argument. The
 gate marks a function for a lent or owned place indexed so (`flowGateIndex`).
-Only the index's own place is held: a swap reaches its first side before the
-second side's index, and nothing asks that index about the first
-(`n.a <-> x[change(m)]` compiles).
+A swap is held the same way. Generation makes the left side's address, then the
+right side's, and only then loads and stores through both (`genlTerm`, `SwapTag`),
+so where the right side does more than read, a stand-in holds what the left side
+rests on while the right side's place is walked (`pwSwap`; `PathVar.swapped` gives
+the messages), and reaching the right side is its use: `n.a <-> x[change(m)]` and
+`l[0usize] <-> x[grow(&mut l)]` are refused. All of the right side is covered, not
+its indexes alone: a call that returns the place, and an `&[]` that changes shape.
+A second element of one `List` (`l[i] <-> l[j]`) is accepted, its mutable borrow
+of the list being what `let a = &mut l[i]; let b = &mut l[j]` already allows. What
+the right side does is not held against a left side that rests on nothing (a
+variable's own storage). The gate marks a function for a swap whose left side is a
+lent or owned place and whose right side does more than read (`flowGateSwap`).
+Where only the right side holds an `await` it is made first, and the left, a plain
+path, changes nothing. With the sides written the other way round, the call in the
+left side's index runs before the right side is reached, and nothing is held.
+Not held: a borrow the right side's index makes of the left side's value itself
+(`l <-> ls[{r = &l[0usize]; 0usize}]`), since the walk writes the left side before
+it walks the right.
 
 A borrow a
 call returns carries its receiver's loan as the receiver was reached: through a

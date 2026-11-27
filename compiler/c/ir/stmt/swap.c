@@ -127,6 +127,7 @@ void swapFlow(FlowState *fstate, SwapNode **nodep) {
     flowGateAssigned(fstate, node->rval);
     flowGateShapeStore(fstate, node->lval);
     flowGateShapeStore(fstate, node->rval);
+    flowGateSwap(fstate, node->lval, node->rval);
     flowLoadValue(fstate, &node->lval);
     flowLoadValue(fstate, &node->rval);
 }
