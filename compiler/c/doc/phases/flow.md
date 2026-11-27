@@ -1016,6 +1016,16 @@ made an alias loan (`loanFlightOwnRo`), the callee taking it as a view others ma
 A free function's borrowed argument that its result carries (`pwLentArg`) keeps the
 exclusive freeze: a generator over a `&mut List` reshapes its own list.
 
+**A borrow through a reference keeps where it points.** A view taken through a reference
+variable (`&(*r)[0]`) points where `r` pointed as the borrow was made, whatever happens to
+`r` after. Its loan is of `*r`, and the mark for the shape check may come later (a lazy loan
+promoted, a view marked once the reference is lent), when `r` has left scope or holds another
+borrow. So the loan keeps what `r` held where the borrow was made (`Loan.way`: the union over
+the paths and a loop's passes), and its roots, with whether it is in a `var` global, are taken
+from that (`loanRootsNote`), not from what `r` holds at the mark. A later pass of a loop that
+adds to it notes the roots of a loan already marked again, since the pass may find the loan
+frozen and mark it no more.
+
 A holder reaching its loan's source through the loan — `*b = 9`, `r.x` — uses
 the holder; it does not access the source.
 
