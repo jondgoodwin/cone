@@ -3252,6 +3252,7 @@ static void pwShapeCall(FnCallNode *call, FnDclNode *meth, Place *recvpl, PathSe
     INode *owners[4];
     int rus[4];
     int gvs[4];
+    int sks[4];
     INode *ros[4];
     // The struct the receiver is a field of (a String held by value), the same for every loan asked
     // of this call; a loan is asked of it only where its own value is held by value in its owner
@@ -3273,9 +3274,12 @@ static void pwShapeCall(FnCallNode *call, FnDclNode *meth, Place *recvpl, PathSe
             ru = 0;
         VarDclNode *mine[3];
         int nmine = loanShapeRootVars(loan, mine);
-        // An owner lent as the receiver ('t.task.run()') is asked as any argument is: what it
-        // holds may lead back to the owner, which the method may then store over
+        // An owner lent as the receiver of its own method is asked as any argument is: what the
+        // receiver holds may lead back to the owner, which the method then stores over
+        // ('t.task.run()'). Not where it cannot, a unique owner whose receiver holds no way back
+        // to one (a node's method called through its owner, 'left.insert(v)')
         int ownrecv = loan == recvloan && reshapeIsOwner(cont);
+        int sk = ownrecv && meth && nargs > 0 && reshapeOwnerAbove(cont, iexpGetTypeDcl(nodesGet(call->args, 0)));
         int gv = loanShapeGlobalView(loan);
         // A method lending a borrow from a place reached through this loan's own borrow ('view' in
         // 'gl.items[0].label.view()') reads through it: the call that lends is not a call that
@@ -3301,7 +3305,7 @@ static void pwShapeCall(FnCallNode *call, FnDclNode *meth, Place *recvpl, PathSe
         // (or an argument's place) change what it is
         INode *ro = owner ? (loanShapeOwnerByValue(loan) ? recvfield : NULL) : recvfield;
         while (c < ncont && (conts[c] != cont || owners[c] != owner || ros[c] != ro || rus[c] != ru || gvs[c] != gv
-                || local || nmine || anyapart))
+                || sks[c] != sk || local || nmine || anyapart))
             ++c;
         if (c == ncont) {
             if (ncont == 4) {
@@ -3314,8 +3318,9 @@ static void pwShapeCall(FnCallNode *call, FnDclNode *meth, Place *recvpl, PathSe
             ros[c] = ro;
             rus[c] = ru;
             gvs[c] = gv;
+            sks[c] = sk;
             uint32_t unsettled = shapeUnsettled;
-            answers[c] = (uint8_t)reshapeCall(call, meth, ru, cont, owner, ro, gv, &verdicts[c], mine, nmine, anyapart ? apart : NULL);
+            answers[c] = (uint8_t)reshapeCall(call, meth, ru, cont, owner, ro, gv, &verdicts[c], mine, nmine, sk, anyapart ? apart : NULL);
             // A body this leans on is not checked yet: the verdict waits for the
             // walk made again at the end of type check
             if (shapeUnsettled != unsettled && !flowWalkFinal) {
@@ -3337,7 +3342,7 @@ static void pwShapeCall(FnCallNode *call, FnDclNode *meth, Place *recvpl, PathSe
             for (uint32_t u = 0; u < nucont && !answer; ++u) {
                 uint32_t unsettled = shapeUnsettled;
                 int ugv = gv ? gv : reshapeMutGlobalsReach(ucont[u]) ? 2 : 0;
-                answer = reshapeCall(call, meth, ru, ucont[u], NULL, recvfield, ugv, &verdict, mine, nmine,
+                answer = reshapeCall(call, meth, ru, ucont[u], NULL, recvfield, ugv, &verdict, mine, nmine, 0,
                     anyapart ? apart : NULL);
                 if (shapeUnsettled != unsettled && !flowWalkFinal) {
                     flowShapeRetry = 1;

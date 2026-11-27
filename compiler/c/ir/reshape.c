@@ -529,6 +529,77 @@ INode *reshapeOwnerCont(INode *ownertype) {
     return ownertype;
 }
 
+// Can a value of 'type' reach a 'cont' by a way that leaves what it owns uniquely: through
+// anything but its own fields, elements, variants and unique ('Uni') references? 'seen' (n of
+// them) is the structs walked; too many are taken as reaching
+static int reshapeWayBack(INode *type, INode *cont, INode **seen, int *n) {
+    type = type ? itypeGetTypeDcl(type) : NULL;
+    if (type == NULL)
+        return 0;
+    switch (type->tag) {
+    case RefTag:
+    {
+        RefNode *ref = (RefNode *)type;
+        if (ref->region && regionIsMove(itypeGetTypeDcl(ref->region)))
+            return reshapeWayBack(ref->vtexp, cont, seen, n);
+        return reshapeReach(type, cont, 1) != 0;
+    }
+    case ArrayRefTag:
+    case VirtRefTag:
+    case PtrTag:
+        return reshapeReach(type, cont, 1) != 0;
+    case ArrayTag:
+        return reshapeWayBack(arrayElemType(type), cont, seen, n);
+    case TTupleTag:
+    {
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(((TupleNode *)type)->elems, cnt, nodesp)) {
+            if (reshapeWayBack(*nodesp, cont, seen, n))
+                return 1;
+        }
+        return 0;
+    }
+    case StructTag:
+    {
+        for (int i = 0; i < *n; ++i) {
+            if (seen[i] == type)
+                return 0;
+        }
+        if (*n >= 64)
+            return 1;
+        seen[(*n)++] = type;
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodelistFor(&((StructNode *)type)->fields, cnt, nodesp)) {
+            if (reshapeWayBack(((IExpNode *)*nodesp)->vtype, cont, seen, n))
+                return 1;
+        }
+        if (((StructNode *)type)->derived) {
+            for (nodesFor(((StructNode *)type)->derived, cnt, nodesp)) {
+                if (reshapeWayBack(*nodesp, cont, seen, n))
+                    return 1;
+            }
+        }
+        return 0;
+    }
+    default:
+        return 0;
+    }
+}
+
+int reshapeOwnerAbove(INode *cont, INode *recvtype) {
+    if (cont->tag != RefTag || !((RefNode *)cont)->region
+            || !regionIsMove(itypeGetTypeDcl(((RefNode *)cont)->region)))
+        return 0;
+    INode *self = itypeGetTypeDcl(recvtype);
+    if (self == NULL || self->tag != RefTag)
+        return 0;
+    INode *seen[64];
+    int n = 0;
+    return !reshapeWayBack(((RefNode *)self)->vtexp, cont, seen, &n);
+}
+
 int reshapeStoreHits(INode *lval, INode *cont) {
     INode *stored = iexpGetTypeDcl(lval);
     if (stored != NULL && reshapeIsOwner(cont)) {
@@ -584,7 +655,7 @@ static int reshapeExempt(FnCallNode *call, FnDclNode *callee) {
 }
 
 static int reshapeCallBody(FnCallNode *call, FnDclNode *meth, int recvunique, INode *cont, INode *owner,
-        INode *recvowner, ReshapeVerdict *verdict, VarDclNode **mine, int nmine, const uint8_t *apart) {
+        INode *recvowner, ReshapeVerdict *verdict, VarDclNode **mine, int nmine, int skiprecv, const uint8_t *apart) {
     FnDclNode *callee = reshapeCallee(call);
     verdict->why = ReshapeNot;
     verdict->callee = callee;
@@ -592,7 +663,9 @@ static int reshapeCallBody(FnCallNode *call, FnDclNode *meth, int recvunique, IN
         return 0;
     uint32_t nargs = call->args ? call->args->used : 0;
     int visible = !(call->flags & FlagVDisp) && siVisible(callee);
-    uint32_t first = 0;     // 1 where the receiver is asked by the receiver's own rule below
+    // 'skiprecv': the borrow is the receiver's own (an owner lent to its method as 'self'), which is
+    // the value the method works on and no other name for the owner
+    uint32_t first = skiprecv && nargs > 0 ? 1 : 0;
 
     // A call handed nothing it could write through (a read-only reference, a number)
     // can reshape only through a global: most calls, dismissed at once
@@ -742,8 +815,8 @@ static int reshapeCallBody(FnCallNode *call, FnDclNode *meth, int recvunique, IN
 }
 
 int reshapeCall(FnCallNode *call, FnDclNode *meth, int recvunique, INode *cont, INode *owner, INode *recvowner,
-        int globalview, ReshapeVerdict *verdict, VarDclNode **mine, int nmine, const uint8_t *apart) {
-    if (reshapeCallBody(call, meth, recvunique, cont, owner, recvowner, verdict, mine, nmine, apart))
+        int globalview, ReshapeVerdict *verdict, VarDclNode **mine, int nmine, int skiprecv, const uint8_t *apart) {
+    if (reshapeCallBody(call, meth, recvunique, cont, owner, recvowner, verdict, mine, nmine, skiprecv, apart))
         return 1;
     // The borrow points into a 'var' global, or into something reached from one: a call that may
     // reshape the container's type through a global does, by the inference that judges every call

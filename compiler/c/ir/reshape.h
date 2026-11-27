@@ -119,6 +119,10 @@ int reshapeStoreHits(INode *lval, INode *cont);
 // place, or a field of it, reshapes nothing.
 int reshapeIsOwner(INode *cont);
 INode *reshapeOwnerCont(INode *ownertype);
+// Is the owner 'cont' out of reach of the receiver (of type 'recvtype') it is lent as to a
+// method: a unique owner ('Uni'), with nothing the receiver holds leading to an owner of its
+// type except what the receiver itself owns uniquely? Then every one it reaches is below it
+int reshapeOwnerAbove(INode *cont, INode *recvtype);
 
 // A global (a module-level variable, or a static) has been type checked. Whether
 // any global can reach a collection type decides whether a call that is handed
@@ -160,12 +164,15 @@ typedef struct {
 // 'globalview' says the borrow points into a 'var' global, or into anything reached from one: every
 // call is then taken to be able to write that global, but for the intrinsics, an init and a call
 // through a virtual reference marked '+ ShapeKeeping'.
+// 'skiprecv' says the borrow the loan is of is the receiver's own, an owner lent as the 'self' of
+// the method called, and the owner is out of the receiver's reach (reshapeOwnerAbove): only the
+// other arguments are then asked.
 // 'recvowner' is the struct the call's receiver is a field of, where the receiver is written as a field
 // access ('ui.input.clipboard.append(..)': Input), else NULL. A receiver that is a 'cont' held as a field
 // of a struct other than the borrow's 'owner' is another value than the one the borrow is into, and is
 // not asked: that needs both known.
 int reshapeCall(FnCallNode *call, FnDclNode *meth, int recvunique, INode *cont, INode *owner, INode *recvowner,
-    int globalview, ReshapeVerdict *verdict, VarDclNode **mine, int nmine, const uint8_t *apart);
+    int globalview, ReshapeVerdict *verdict, VarDclNode **mine, int nmine, int skiprecv, const uint8_t *apart);
 // 'apart' (or NULL): per argument, a borrow of a place that diverges from the borrow's own (a sibling
 // field, loanShapeDisjointAt): a value this function owns whole, as a unique local is
 // The struct a field access (through borrows and conversions) is a field of, held by value; else NULL (flowpath.c)
