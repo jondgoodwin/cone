@@ -1,0 +1,372 @@
+// The sculpt package's peel (facesInsideLoop, peelRegion), checked with the testing package against values
+// worked out by hand; only a failure prints, so peels.out holds the summary alone.
+//
+// The grid: 20 x 20 unit quads, 21 x 21 vertices, vertex (i, j) is number 21 j + i at (i, j, z), face (i, j)
+// is number 20 j + i. The bump raises the 5 x 5 vertices i, j = 8..12 to z = 0.5 (a 4 x 4 block of quads on
+// top, a ring of sloping quads round it). The loop is the ring of the 24 vertices i or j = 7 or 13 (all at
+// z = 0), counterclockwise from (7, 7).
+// - facesInsideLoop on it: the faces with i, j = 7..12, 6 x 6 = 36: the 16 quads of the top (i, j = 8..11)
+//   and the 20 of the sloping ring. The outside is 400 - 36 = 364 faces, the larger side. Given every other
+//   vertex (12 of them, the corners among them) the shortest path between neighbours is the straight edge run
+//   (the only path of length 2, and of 6 between corners), so the same 36 faces.
+// - peelRegion of those 36 faces, ring 1: the hole is the 24-gon, the fill and the ring of skin (faces with i
+//   or j = 6 or 12, which touch the loop) are remeshed and faired to order 2 with the region's edge held at
+//   z = 0 and the second ring too: the plane, so every vertex at z = 0 within 1e-5. The piece has 36 faces
+//   and 7 x 7 = 49 vertices and reaches z = 0.5.
+// - The bit-for-bit row: the same grid with two dents outside the region, (5, 10) at z = 0.3 and (4, 10) at
+//   z = -0.2, so a fairing that freed the second ring would move the held vertices beside them. Every
+//   input vertex with i or j <= 6 or >= 14 (outside the region's rim) is in the result at the same bits.
+// - The smallest angle in the remeshed region, measured at 32.2 degrees; the same peel with the remesh cut
+//   down to 0 rounds (the fill and ring only cut into triangles) measures 28.9, so the row asks for 30
+//   (the mutant that skips the remesh fails it). Mutants run: the larger side (fails the loop rows, the
+//   sphere row); remesh skipped (the angle row); the fairing freed one ring further (the bit-for-bit row,
+//   32 vertices moved).
+// - A lathed unit sphere, 12 columns and 12 rows (15 degrees each, poles on the axis): row k is at latitude
+//   -90 + 15 k, so k = 10 is 60 degrees, and its 12 vertices are numbers 1 + 12 (k - 1) = 109 to 120. The
+//   cap above it is the 12 quads between rows 10 and 11 and the 12 triangles to the pole: 24 faces (their
+//   centroid y above 0.85; those below it are at most 0.79), the smaller side of 144.
+// - A torus (a circle of radius 1 whose centre is 2 from the axis, 12 columns, 8 points): a loop round the
+//   tube (the 8 vertices of column 0) does not separate it.
+// - Refused, one problem line each and nothing returned: fewer than 3 vertices; a vertex outside the mesh;
+//   a loop of three collinear vertices (the way back passes through the middle one); the grid's four corners
+//   (the loop is the boundary, no second side); the torus's loop. peelRegion: a face outside the mesh; a
+//   corner face (the mesh's boundary); a ring of eight faces round one (two hole loops). An empty list is a
+//   silent copy.
+// - Channels: a face channel "id" on the grid reaches the piece, face 0 of the piece being grid face
+//   (7, 7) = 147.
+// - Determinism: the same peel twice, the same bits.
+
+mod peels;
+
+import testing use *;
+import collections use *;
+import geomath use *;
+import mesh use *;
+import sculpt use *;
+
+let near = 0.00001;
+
+fn polyMesh(pts: &List[Vec3], sizes: &List[u32], idx: &List[u32]) PolyMesh {
+  var problems = List[String]();
+  PolyMesh.fromPolygons(pts.view(), sizes.view(), idx.view(), &mut problems)
+}
+
+// The 20 x 20 grid with z set by the caller's dents: bump (true) and the listed (vertex, z)
+fn grid(bump: bool, dents: bool) PolyMesh {
+  var pts = List[Vec3]();
+  var j = 0u32;
+  while j <= 20u32 {
+    var i = 0u32;
+    while i <= 20u32 {
+      var z: f32 = 0.;
+      if bump && i >= 8u32 && i <= 12u32 && j >= 8u32 && j <= 12u32 { z = 0.5; }
+      if dents && i == 5u32 && j == 10u32 { z = 0.3; }
+      if dents && i == 4u32 && j == 10u32 { z = -0.2; }
+      pts.push(Vec3(f32.from(i), f32.from(j), z));
+      i = i + 1u32;
+    }
+    j = j + 1u32;
+  }
+  var sizes = List[u32]();
+  var idx = List[u32]();
+  j = 0u32;
+  while j < 20u32 {
+    var i = 0u32;
+    while i < 20u32 {
+      let a = 21u32 * j + i;
+      sizes.push(4u32);
+      idx.push(a);
+      idx.push(a + 1u32);
+      idx.push(a + 22u32);
+      idx.push(a + 21u32);
+      i = i + 1u32;
+    }
+    j = j + 1u32;
+  }
+  polyMesh(&pts, &sizes, &idx)
+}
+
+fn v(i: u32, j: u32) u32 { 21u32 * j + i }
+
+// The 24 vertices round i, j = 7..13, counterclockwise from (7, 7)
+fn bumpLoop() List[u32] {
+  var l = List[u32]();
+  var k = 7u32;
+  while k <= 12u32 { l.push(v(k, 7u32)); k = k + 1u32; }
+  k = 7u32;
+  while k <= 12u32 { l.push(v(13u32, k)); k = k + 1u32; }
+  k = 13u32;
+  while k >= 8u32 { l.push(v(k, 13u32)); k = k - 1u32; }
+  k = 13u32;
+  while k >= 8u32 { l.push(v(7u32, k)); k = k - 1u32; }
+  l
+}
+
+fn every(a: &List[u32], step: usize) List[u32] {
+  var o = List[u32]();
+  var i = 0usize;
+  while i < a.len() {
+    o.push(*a[i]);
+    i = i + step;
+  }
+  o
+}
+
+fn bumpFaces() List[u32] {
+  var l = List[u32]();
+  var j = 7u32;
+  while j <= 12u32 {
+    var i = 7u32;
+    while i <= 12u32 {
+      l.push(20u32 * j + i);
+      i = i + 1u32;
+    }
+    j = j + 1u32;
+  }
+  l
+}
+
+fn sameList(a: &List[u32], b: &List[u32]) bool {
+  if a.len() != b.len() { return false; }
+  var i = 0usize;
+  while i < a.len() {
+    if *a[i] != *b[i] { return false; }
+    i = i + 1usize;
+  }
+  true
+}
+
+// The smallest angle, degrees, over the triangles of the listed faces
+fn smallestAngle(m: &PolyMesh, faces: &List[u32]) f32 {
+  var least: f32 = 180.;
+  var i = 0usize;
+  while i < faces.len() {
+    let p = m.facePositions(*faces[i]);
+    var k = 0usize;
+    while k < 3usize {
+      let a = *p[(k + 1usize) % 3usize] - *p[k];
+      let c = *p[(k + 2usize) % 3usize] - *p[k];
+      let d = a.length() * c.length();
+      var cs: f32 = 1.;
+      if d > 0. { cs = a.dot(c) / d; }
+      if cs > 1. { cs = 1.; }
+      if cs < -1. { cs = -1.; }
+      let deg = cs.acos() * 180. / pi;
+      if deg < least { least = deg; }
+      k = k + 1usize;
+    }
+    i = i + 1usize;
+  }
+  least
+}
+
+fn maxAbsZ(m: &PolyMesh) f32 {
+  var z: f32 = 0.;
+  var i = 0usize;
+  while i < m.vertexCount() {
+    let a = (*m.positions[i]).z.abs();
+    if a > z { z = a; }
+    i = i + 1usize;
+  }
+  z
+}
+
+fn hasBits(m: &PolyMesh, p: Vec3) bool {
+  var i = 0usize;
+  while i < m.vertexCount() {
+    let q = *m.positions[i];
+    if q.x == p.x && q.y == p.y && q.z == p.z { return true; }
+    i = i + 1usize;
+  }
+  false
+}
+
+fn bump() {
+  let g = grid(true, false);
+  expectInt(i64.from(g.validate().len()), 0i64, "grid: valid");
+  var problems = List[String]();
+  let loop = bumpLoop();
+  expectInt(i64.from(loop.len()), 24i64, "bump loop: 24 vertices");
+  let want = bumpFaces();
+  let inside = facesInsideLoop(&g, loop.view(), &mut problems);
+  expect(sameList(&inside, &want), "loop: the 36 faces inside, not the 364 outside");
+  var rev = List[u32]();
+  var i = loop.len();
+  while i > 0usize { i = i - 1usize; rev.push(*loop[i]); }
+  expect(sameList(&facesInsideLoop(&g, rev.view(), &mut problems), &want), "loop: reversed, the same faces");
+  let thin = every(&loop, 2usize);
+  expectInt(i64.from(thin.len()), 12i64, "thinned loop: 12 vertices");
+  expect(sameList(&facesInsideLoop(&g, thin.view(), &mut problems), &want), "loop: every other vertex, the same faces");
+  expectInt(i64.from(problems.len()), 0i64, "loop: no problem lines");
+
+  let r = peelRegion(&g, want.view(), 1u32, &mut problems);
+  expectInt(i64.from(problems.len()), 0i64, "peel: no problem lines");
+  expectInt(i64.from(r.mesh.validate().len()), 0i64, "peel: base valid");
+  expect(f64.from(maxAbsZ(&r.mesh)) < near, "peel: the base is the plane, every z within 1e-5");
+  expectInt(i64.from(r.piece.faceCount()), 36i64, "peel: the piece has 36 faces");
+  expectInt(i64.from(r.piece.vertexCount()), 49i64, "peel: the piece has 49 vertices");
+  expectFloat(f64.from(r.piece.bounds().max.z), 0.5, near, "peel: the piece holds the bump");
+  expect(r.faces.len() > 36usize, "peel: the new surface has faces");
+  expect(r.vertices.len() > 0usize, "peel: the new surface has free vertices");
+  expect(smallestAngle(&r.mesh, &r.faces) > 30., "peel: the remeshed region's smallest angle above 30 degrees");
+  var boundary = 0i64;
+  var e = 0usize;
+  while e < r.mesh.edgeCount() {
+    if r.mesh.isBoundaryEdge(u32.from(e)) { boundary = boundary + 1i64; }
+    e = e + 1usize;
+  }
+  expectInt(boundary, 80i64, "peel: the grid's own boundary only, the hole closed");
+
+  let r0 = peelRegion(&g, want.view(), 0u32, &mut problems);
+  expectInt(i64.from(problems.len()), 0i64, "peel ring 0: no problem lines");
+  expect(f64.from(maxAbsZ(&r0.mesh)) < near, "peel ring 0: the plane");
+
+  // determinism
+  let r2 = peelRegion(&g, want.view(), 1u32, &mut problems);
+  var same = r.mesh.vertexCount() == r2.mesh.vertexCount() && r.mesh.faceCount() == r2.mesh.faceCount();
+  i = 0usize;
+  while same && i < r.mesh.vertexCount() {
+    let a = *r.mesh.positions[i];
+    let b = *r2.mesh.positions[i];
+    if a.x != b.x || a.y != b.y || a.z != b.z { same = false; }
+    i = i + 1usize;
+  }
+  expect(same, "peel: the same run twice gives the same bits");
+
+  // everything outside the region as it was
+  let d = grid(true, true);
+  let rd = peelRegion(&d, want.view(), 1u32, &mut problems);
+  var held = 0i64;
+  var lost = 0i64;
+  var j = 0u32;
+  while j <= 20u32 {
+    var k = 0u32;
+    while k <= 20u32 {
+      if k <= 6u32 || k >= 14u32 || j <= 6u32 || j >= 14u32 {
+        held = held + 1i64;
+        if !hasBits(&rd.mesh, *d.positions[usize.from(v(k, j))]) { lost = lost + 1i64; }
+      }
+      k = k + 1u32;
+    }
+    j = j + 1u32;
+  }
+  expectInt(held, 392i64, "bits: the outside is every vertex with i or j <= 6 or >= 14");
+  expectInt(lost, 0i64, "bits: every vertex outside the region is in the result at the same bits");
+
+  // channels
+  var c = grid(true, false);
+  let id = c.addFloatChannel(FaceDomain, "id", 3.);
+  var f = 0u32;
+  while usize.from(f) < c.faceCount() {
+    c.setFloat(id, f, f32.from(f));
+    f = f + 1u32;
+  }
+  let rc = peelRegion(&c, want.view(), 1u32, &mut problems);
+  let pid = rc.piece.findFloatChannel(FaceDomain, "id");
+  expectFloat(f64.from(rc.piece.float(pid, 0u32)), 147., near, "channels: the piece's face 0 is grid face (7, 7)");
+}
+
+fn sphere() {
+  var pts = List[Vec2]();
+  var k = 0u32;
+  while k <= 12u32 {
+    let a = -0.5 * pi + pi * f32.from(k) / 12.;
+    pts.push(Vec2(a.cos(), a.sin()));
+    k = k + 1u32;
+  }
+  let s = lathe(&Profile.fromPoints(pts.view(), false), Vec3(0., 1., 0.), 2. * pi, 12u32);
+  expectInt(i64.from(s.validate().len()), 0i64, "sphere: valid");
+  expectInt(i64.from(s.faceCount()), 144i64, "sphere: 144 faces");
+  var loop = List[u32]();
+  var c = 0u32;
+  while c < 12u32 { loop.push(109u32 + c); c = c + 1u32; }
+  expectFloat(f64.from((*s.positions[109usize]).y), 0.8660254, near, "sphere: row 10 is at 60 degrees");
+  var want = List[u32]();
+  var f = 0u32;
+  while usize.from(f) < s.faceCount() {
+    if s.faceCentroid(f).y > 0.85 { want.push(f); }
+    f = f + 1u32;
+  }
+  expectInt(i64.from(want.len()), 24i64, "sphere: the cap has 24 faces");
+  var problems = List[String]();
+  let got = facesInsideLoop(&s, loop.view(), &mut problems);
+  expect(sameList(&got, &want), "sphere: the cap, the smaller side, not the rest");
+  expectInt(i64.from(problems.len()), 0i64, "sphere: no problem lines");
+}
+
+fn torus() PolyMesh {
+  var pts = List[Vec2]();
+  var k = 0u32;
+  while k < 8u32 {
+    let a = 2. * pi * f32.from(k) / 8.;
+    pts.push(Vec2(2. + a.cos(), a.sin()));
+    k = k + 1u32;
+  }
+  lathe(&Profile.fromPoints(pts.view(), true), Vec3(0., 1., 0.), 2. * pi, 12u32)
+}
+
+fn refusals() {
+  let g = grid(true, false);
+  var p = List[String]();
+  var two = List[u32]();
+  two.push(1u32); two.push(2u32);
+  expectInt(i64.from(facesInsideLoop(&g, two.view(), &mut p).len()), 0i64, "refuse: 2 vertices, nothing");
+  expectInt(i64.from(p.len()), 1i64, "refuse: 2 vertices, one line");
+  var bad = List[u32]();
+  bad.push(1u32); bad.push(2u32); bad.push(9999u32);
+  expectInt(i64.from(facesInsideLoop(&g, bad.view(), &mut p).len()), 0i64, "refuse: vertex outside, nothing");
+  expectInt(i64.from(p.len()), 2i64, "refuse: vertex outside, one line");
+  var line = List[u32]();
+  line.push(v(7u32, 7u32)); line.push(v(8u32, 7u32)); line.push(v(9u32, 7u32));
+  expectInt(i64.from(facesInsideLoop(&g, line.view(), &mut p).len()), 0i64, "refuse: collinear, nothing");
+  expectInt(i64.from(p.len()), 3i64, "refuse: collinear, one line");
+  var corners = List[u32]();
+  corners.push(v(0u32, 0u32)); corners.push(v(20u32, 0u32)); corners.push(v(20u32, 20u32)); corners.push(v(0u32, 20u32));
+  expectInt(i64.from(facesInsideLoop(&g, corners.view(), &mut p).len()), 0i64, "refuse: the boundary, nothing");
+  expectInt(i64.from(p.len()), 4i64, "refuse: the boundary, one line");
+  let t = torus();
+  expectInt(i64.from(t.validate().len()), 0i64, "torus: valid");
+  var ringv = List[u32]();
+  var k = 0u32;
+  while k < 8u32 { ringv.push(k * 12u32); k = k + 1u32; }
+  expectInt(i64.from(facesInsideLoop(&t, ringv.view(), &mut p).len()), 0i64, "refuse: round the tube, nothing");
+  expectInt(i64.from(p.len()), 5i64, "refuse: round the tube, one line");
+
+  // peelRegion
+  var q = List[String]();
+  var out = List[u32]();
+  out.push(9999u32);
+  let r1 = peelRegion(&g, out.view(), 1u32, &mut q);
+  expectInt(i64.from(q.len()), 1i64, "refuse peel: a face outside, one line");
+  expectInt(i64.from(r1.mesh.faceCount()), 400i64, "refuse peel: a face outside, the mesh unchanged");
+  expectInt(i64.from(r1.piece.faceCount()), 0i64, "refuse peel: a face outside, no piece");
+  var corner = List[u32]();
+  corner.push(0u32);
+  let r2 = peelRegion(&g, corner.view(), 1u32, &mut q);
+  expectInt(i64.from(q.len()), 2i64, "refuse peel: the boundary, one line");
+  expectInt(i64.from(r2.mesh.faceCount()), 400i64, "refuse peel: the boundary, unchanged");
+  var annulus = List[u32]();
+  var j = 9u32;
+  while j <= 11u32 {
+    var i = 9u32;
+    while i <= 11u32 {
+      if !(i == 10u32 && j == 10u32) { annulus.push(20u32 * j + i); }
+      i = i + 1u32;
+    }
+    j = j + 1u32;
+  }
+  let r3 = peelRegion(&g, annulus.view(), 1u32, &mut q);
+  expectInt(i64.from(q.len()), 3i64, "refuse peel: two hole loops, one line");
+  expectInt(i64.from(r3.mesh.faceCount()), 400i64, "refuse peel: two hole loops, unchanged");
+  let none = List[u32]();
+  let r4 = peelRegion(&g, none.view(), 1u32, &mut q);
+  expectInt(i64.from(q.len()), 3i64, "peel: an empty list says nothing");
+  expectInt(i64.from(r4.mesh.faceCount()), 400i64, "peel: an empty list is a copy");
+}
+
+fn main() i32 {
+  bump();
+  sphere();
+  refusals();
+  done()
+}
