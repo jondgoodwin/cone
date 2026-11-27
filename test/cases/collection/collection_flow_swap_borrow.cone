@@ -23,6 +23,9 @@ fn keep(r: &mut &'a usize, l: &'a List[usize]) usize {
   0usize
 }
 fn take(o: Owner) usize { 0usize }
+alias Numbers = List[usize];
+fn takeNumbers(l: Numbers) usize { 0usize }
+fn takeArray(a: Array[Uni[Item], 2]) usize { 0usize }
 
 // A list, and the right side's index borrows an element of it
 fn listElement() {
@@ -140,6 +143,34 @@ fn movedOnAPath(c: bool) {
   o.x <-> us[{if c { let i = take(o); } 0usize}];  //~ ErrorMove "may have been moved out"
 }
 
+// A move on a straight line. The left side's address is made before the index runs, so
+// the swap would hand 'ls[0usize]' the buffer 'takeNumbers' has freed
+fn movedByIndex() {
+  var l = nums();
+  var ls = [nums()];
+  l <-> ls[takeNumbers(l)];                     //~ ErrorMove "may have been moved out"
+}
+
+fn fieldOwnerMoved() {
+  var o = Owner(Uni[Item](item()));
+  var us = [Uni[Item](item())];
+  o.x <-> us[take(o)];                          //~ ErrorMove "may have been moved out"
+}
+
+// What the left side's owner points at is moved out, which leaves it as unusable
+fn hollowedByIndex() {
+  var u = Uni[Owner](Owner(Uni[Item](item())));
+  var us = [Uni[Owner](Owner(Uni[Item](item())))];
+  u <-> us[{let o = *u; 0usize}];               //~ ErrorMove "may have been moved out"
+}
+
+// The left side's own index moves the array the place is in
+fn movedByOwnIndex() {
+  var a = [Uni[Item](item()), Uni[Item](item())];
+  var x = Uni[Item](item());
+  a[takeArray(a)] <-> x;                        //~ ErrorMove "may have been moved out"
+}
+
 fn main() {
   listElement();
   owned();
@@ -152,4 +183,8 @@ fn main() {
   elementStored();
   referenceMoved();
   movedOnAPath(false);
+  movedByIndex();
+  fieldOwnerMoved();
+  hollowedByIndex();
+  movedByOwnIndex();
 }
