@@ -894,11 +894,18 @@ void varDclFlow(FlowState *fstate, VarDclNode **vardclnode) {
     // The temporary an operator changing its operand in place borrows it
     // through ('x += 1', 'v <- (a, b)') is the operator's own, as a method's
     // receiver is, and holds nothing past it
-    if ((*vardclnode)->namesym != tempName)
+    int optemp = (*vardclnode)->namesym == tempName;
+    if (!optemp)
         flowGateHolder(fstate, (*vardclnode)->vtype);
     if ((*vardclnode)->value) {
+        // So its borrow waits as a receiver's does, to the end of the
+        // operator's block (blockFlow): 'l[0] <- 1, {l = List[T](); 5}'
+        if (optemp)
+            flowGateOperandNext(fstate, (*vardclnode)->value);
         flowLoadValue(fstate, &((*vardclnode)->value));
         flowHandleMoveOrCopyLast(&((*vardclnode)->value));  // initialization copies/moves value
+        if (optemp)
+            flowGateOperand(fstate, (*vardclnode)->value);
         (*vardclnode)->flowtempflags |= VarInitialized;
     }
     else if (!((*vardclnode)->flowtempflags & VarInitialized))

@@ -174,6 +174,8 @@ void flowGateResultAsk(FlowState *fstate, INode *type);
 void flowGateCallAsk(FlowState *fstate, Nodes *args);
 // An operand just walked may be a borrow
 void flowGateOperandAsk(FlowState *fstate, INode *operand);
+// A place is stored over while operands' borrows wait
+void flowGateStoredAsk(FlowState *fstate, INode *place);
 // A conversion may make an owning virtual reference of a value holding a borrow
 void flowGateBoxedAsk(FlowState *fstate, INode *cast);
 // A literal may give a field holding only ''static' borrows a value holding one
