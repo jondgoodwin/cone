@@ -2180,6 +2180,17 @@ another `Rc[mut, List[i32]]` is refused too, as it is for `&(*o)[0]`. Not follow
 whose borrow is hidden in a trait object it owns.
 Tests: `collection_flow_reshape_shared_result`, `collection_reshape_shared_result_success`.
 
+**What a call stores is marked as what it returns** (`pwStoreReach`, from `pwPartsStore`).
+A store through a `&mut` place is a handing out, as a result is, so for each place a call may
+store into, each other argument is asked what a result is asked, from its parameter's type,
+with the place's contents (the referent of the place's parameter) where the result's type
+stood. The loans are the argument's second loans again, one set per place (`pwReachLoan`'s
+`store`), and are given to the place's holder after the call has been asked what it may
+reshape (`pwStoreMarks`), so a call that replaces a list and then stores a view of the new
+one is accepted, as one returning it is. An arena as the place (`arenaplace`) and the parts
+of one value (`pwJoinStores`) are not asked.
+Tests: `collection_flow_reshape_shared_stored`, `collection_reshape_shared_stored_success`.
+
 **A trait object a function is handed** (`pwReachTrait`, wherever the walk above meets a virtual
 reference: a parameter, a field or element within one, borrowed, or owned). The call is judged by
 its signature, and a trait object's signature is its trait's public methods and fields (the
