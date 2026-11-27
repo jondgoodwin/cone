@@ -84,7 +84,6 @@ pub fn mirrorPlaneFrom(points: &Array[Vec3], samples: u32, starts: u32) MirrorPl
   c0 = c0 * (1.0 / f64.from(ns));
   let box = Aabb3.fromPoints(points);
   let bc = DVec3.from((box.min + box.max) * 0.5);
-  var cost = PlaneCost(tree, sx, sy, sz, c0, List[f64]());
   // The starting directions: principal axes (least spread first), then coordinates
   var dirs = List[DVec3]();
   if (starts & StartsPrincipal) != 0u32 {
@@ -121,6 +120,7 @@ pub fn mirrorPlaneFrom(points: &Array[Vec3], samples: u32, starts: u32) MirrorPl
     dirs.push(DVec3(0.0, 1.0, 0.0));
     dirs.push(DVec3(0.0, 0.0, 1.0));
   }
+  var cost = PlaneCost(tree, sx, sy, sz, c0, List[f64](), List[usize](), List[f64]());
   var bestCost = 1.0e300;
   var best = DVec3(0.0, 0.0, 0.0);
   var s = 0usize;
@@ -165,6 +165,8 @@ struct PlaneCost {
   sz: List[f64];
   c0: DVec3;
   dist: List[f64];     // scratch: the distances of the last evaluation
+  stack: List[usize];  // scratch of the tree's search
+  bound: List[f64];
 
   // Fill 'dist' with each sample's reflection's distance to the nearest point
   fn measure(self: &mut, x: DVec3) {
@@ -175,7 +177,7 @@ struct PlaneCost {
       let p = DVec3(*sx[i], *sy[i], *sz[i]);
       let h = 2.0 * ((p - c0).dot(nn) - x.z);
       let q = p - nn * h;
-      self.dist.push(self.tree.nearest(q.x, q.y, q.z));
+      self.dist.push(self.tree.nearest(q.x, q.y, q.z, &mut self.stack, &mut self.bound));
       i = i + 1usize;
     }
   }
@@ -409,10 +411,10 @@ struct PointTree {
   }
 
   // The distance from (x, y, z) to the nearest point
-  fn nearest(self: &, x: f64, y: f64, z: f64) f64 {
+  fn nearest(self: &, x: f64, y: f64, z: f64, stack: &mut List[usize], bound: &mut List[f64]) f64 {
     var best = 1.0e300;
-    var stack = List[usize]();
-    var bound = List[f64]();
+    stack.clear();
+    bound.clear();
     stack.push(0usize);
     stack.push(idx.len());
     bound.push(0.0);

@@ -25,22 +25,19 @@ import mesh use *;
 import sculpt use *;
 import shapefit use *;
 import fs;
-import path use Path;
+import path;
 import time use Instant;
 
 let OutDir = "C:/src/zz-w77/out";
 
 fn seconds(t: &Instant) f64 { t.elapsed().secondsF64() }
 
-fn readOrDie(name: &str) Mesh {
-  var problems = List[String]();
-  let m = readStl(&Path.from(name), &mut problems);
+fn report(problems: &List[String]) {
   var i = 0usize;
   while i < problems.len() {
     print <- "  problem: ", (*problems[i]).view(), "\n";
     i = i + 1usize;
   }
-  m
 }
 
 // The vertices as text lines
@@ -60,7 +57,8 @@ fn writeVerts(m: &Mesh, name: &str) {
   var cpath = String.from(name);
   let f = libc.fopen(cpath.cstr(), "wb");
   if f {
-    libc.fwrite(&s.view()[0usize], 1usize, s.view().len, f);
+    let v = s.view() as &Array[u8];
+    libc.fwrite(&v[0usize], 1usize, v.len, f);
     libc.fclose(f);
   }
 }
@@ -81,10 +79,10 @@ fn topShells(parts: &Shells) usize {
   var rank = 0usize;
   print <- "  largest shells (triangles):";
   while rank < 5usize && rank < parts.len() {
-    var at = NoIndex as usize;
+    var at = parts.len();
     var j = 0usize;
     while j < parts.len() {
-      if !*used[j] && (at == (NoIndex as usize) || parts[j].indices.len() > parts[at].indices.len()) { at = j; }
+      if !*used[j] && (at == parts.len() || parts[j].indices.len() > parts[at].indices.len()) { at = j; }
       j = j + 1usize;
     }
     if rank == 0usize { best = at; }
@@ -196,9 +194,11 @@ fn drawShells(cv: &mut Canvas, vp: &Viewport, m: &Mesh, ids: &List[u32], v: &Vie
 }
 
 fn main() i32 {
-  if let Err(e) = fs.makeDirAll(&Path.from(OutDir)) { print <- "could not make ", OutDir, ": ", e, "\n"; return 1; }
+  if let Err(e) = fs.makeDirAll(&path.Path.from(OutDir)) { print <- "could not make ", OutDir, ": ", e, "\n"; return 1; }
   var t = Instant.now();
-  let horse = readOrDie("C:/src/knight-ref/horse-all.stl");
+  var problems = List[String]();
+  let horse = readStl("C:/src/knight-ref/horse-all.stl", &mut problems);
+  report(&problems);
   print <- "horse-all.stl: ", u64.from(horse.positions.len()), " vertices, ", u64.from(horse.indices.len() / 3usize),
     " triangles  [read+weld ", numberText(f32.from(seconds(&t)), 2).view(), " s]\n";
 
@@ -224,8 +224,8 @@ fn main() i32 {
   print <- "  with the normal alone: ", u64.from(keep0.len()), " triangles  [", numberText(f32.from(seconds(&t)), 2).view(), " s]\n";
   let skin = takeTriangles(shell, keep.view());
   print <- "  the skin as a mesh: ", u64.from(skin.positions.len()), " vertices\n";
-  writeStl(shell, &Path.from("C:/src/zz-w77/out/horse-shell.stl"));
-  writeStl(&skin, &Path.from("C:/src/zz-w77/out/horse-skin.stl"));
+  writeStl(shell, "C:/src/zz-w77/out/horse-shell.stl");
+  writeStl(&skin, "C:/src/zz-w77/out/horse-skin.stl");
   writeVerts(&skin, "C:/src/zz-w77/out/horse-skin-verts.txt");
 
   t = Instant.now();
@@ -241,8 +241,49 @@ fn main() i32 {
   let planeShell = mirrorPlane(shell.positions.view());
   planeLine("mirror plane, horse largest shell (not skinned)", &planeShell, seconds(&t));
 
+  // The horse's head alone (267 shells), where the principal axes alone once failed (a tilted plane)
   t = Instant.now();
-  let knight = readOrDie("C:/src/knight-ref/Knight-avalli.stl");
+  let head = readStl("C:/src/knight-ref/horse-head.stl", &mut problems);
+  report(&problems);
+  let headParts = splitShells(&head);
+  print <- "horse-head.stl: ", u64.from(head.positions.len()), " vertices, ", u64.from(head.indices.len() / 3usize), " triangles, ",
+    u64.from(headParts.len()), " shells  [read, weld and split ", numberText(f32.from(seconds(&t)), 2).view(), " s]\n";
+  let headBig = topShells(&headParts);
+  let headSkin = takeTriangles(&headParts[headBig], outerTriangles(&headParts[headBig], 64u32).view());
+  print <- "  outer skin of its largest shell: ", u64.from(headSkin.indices.len() / 3usize), " triangles\n";
+  writeVerts(&head, "C:/src/zz-w77/out/head-verts.txt");
+  writeVerts(&headSkin, "C:/src/zz-w77/out/head-skin-verts.txt");
+  t = Instant.now();
+  let planeHead = mirrorPlane(head.positions.view());
+  planeLine("mirror plane, horse-head.stl, every shell", &planeHead, seconds(&t));
+  t = Instant.now();
+  let pcaHead = mirrorPlaneFrom(head.positions.view(), 4000u32, StartsPrincipal);
+  planeLine("  principal starts only        ", &pcaHead, seconds(&t));
+  t = Instant.now();
+  let coHead = mirrorPlaneFrom(head.positions.view(), 4000u32, StartsCoordinate);
+  planeLine("  coordinate starts only       ", &coHead, seconds(&t));
+  t = Instant.now();
+  let planeHeadSkin = mirrorPlane(headSkin.positions.view());
+  planeLine("mirror plane, head skin shell", &planeHeadSkin, seconds(&t));
+  t = Instant.now();
+  let pcaHeadSkin = mirrorPlaneFrom(headSkin.positions.view(), 4000u32, StartsPrincipal);
+  planeLine("  principal starts only        ", &pcaHeadSkin, seconds(&t));
+
+  // The whole file, every shell: the start sets again (principal axes alone failed here in Python)
+  t = Instant.now();
+  let planeAll = mirrorPlane(horse.positions.view());
+  planeLine("mirror plane, horse-all.stl, every shell", &planeAll, seconds(&t));
+  t = Instant.now();
+  let pcaAll = mirrorPlaneFrom(horse.positions.view(), 4000u32, StartsPrincipal);
+  planeLine("  principal starts only        ", &pcaAll, seconds(&t));
+  t = Instant.now();
+  let coAll = mirrorPlaneFrom(horse.positions.view(), 4000u32, StartsCoordinate);
+  planeLine("  coordinate starts only       ", &coAll, seconds(&t));
+  writeVerts(&horse, "C:/src/zz-w77/out/horse-all-verts.txt");
+
+  t = Instant.now();
+  let knight = readStl("C:/src/knight-ref/Knight-avalli.stl", &mut problems);
+  report(&problems);
   print <- "Knight-avalli.stl: ", u64.from(knight.positions.len()), " vertices, ", u64.from(knight.indices.len() / 3usize),
     " triangles  [read+weld ", numberText(f32.from(seconds(&t)), 2).view(), " s]\n";
   writeVerts(&knight, "C:/src/zz-w77/out/avalli-verts.txt");
