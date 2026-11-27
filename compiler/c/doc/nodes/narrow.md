@@ -46,6 +46,16 @@ narrowing of this pass (`NarrowFact.depth`).
 whatever the permission of `p`. A borrow of that borrow (`&mut &mut p`) is reached through it,
 so ends nothing more. One made before the test and still held there is the loan walk's, below.
 
+**A change in a later operand of a condition.** The tests of a condition are asked again once
+an operand is checked, for the one after it (`narrowAssumeLocal`), and once the whole is, for
+the branches (`narrowAssume`). A test whose name has changed since it was checked says nothing
+then: `narrowNoteTest` notes with each test how many changes had been made (`gChanged`, every
+`narrowKill`, whether or not it ended a narrowing), and `narrowAssumeCond` passes over a test
+whose name is among those made since. In `if s is Circle && reset(&mut s)` neither the block
+nor an operand after `reset` knows `s` from that test. What the environment holds stands: the
+change, so a use is `ErrorNarrowStale`, or nothing, where paths met after a store of a known
+variant. A test after the change (`reset(&mut s) && s is Circle`) narrows as any other.
+
 **What is narrowed.** A local or a parameter that is named in source (a hidden variable's name
 starts with `-`, or is `_`), of a closed enum (`narrowClosedEnum`: a trait with no base that has
 a tag or is `SameSize`, at most 64 variants), held by value or through a borrowed reference.
@@ -120,6 +130,14 @@ name (`FlagNarrowed`, `pwPlace`), where the refusal, `ErrorVariantReshape`, name
 borrow. What is borrowed through such a member, and a narrowed reference handed on as the
 receiver, carries the loan too (`Place.narrow`, `pwLend`). Where none is held, nothing is done.
 
+Where the name is a reference and the `mut` borrow is of the variable itself (`&mut p`), that
+borrow can also point the name elsewhere (`*r = other`, or a call handed `r` that does it),
+which changes which enum is read. The stand-in then holds a second loan, of the variable,
+marked with the reference's type as an owner's is (`reshapeOwnerCont`): a store of such a
+reference over it, or a call that may, is refused where the name is next used as the variant.
+This loan is the name's alone (`pwNarrowCarried`): what was borrowed through a member before,
+or copied from the reference, stays where it pointed.
+
 A test or store that establishes the variant by itself drops what earlier ones held, so a name
 tested again after a change is accepted. Where what is known past a test rests on earlier ones
 too (`FlagNarrowKeeps`: two tests leaving one of three variants), their loans are kept beside
@@ -148,14 +166,6 @@ what it writes.
 - **It never proves a call harmless for a name held by value or through `uni`, `imm`, `mut1`,
   in type check.** Only the name's own assignments, writable borrows of the whole enum and
   swaps end the narrowing there; what another name may change is the loan walk's, above.
-- **It does not see the name pointed at another value through a `mut` borrow held at the test.**
-  With `let r = &mut p;` before `if p is Circle`, the loan walk's stand-in follows changes of
-  the enum `p` reaches, and `*r = other`, or a call handed `r` that does it, changes which enum
-  that is.
-- **A change in a later operand of a condition is forgotten** for a name held by value or through
-  `uni`, `imm`, `mut1`. The block of `if s is Circle && reset(&mut s)`, and an operand after
-  `reset`, are narrowed again from the `is` tests of the whole condition (`narrowAssume`,
-  `narrowAssumeLocal`).
 - **It does not retype the name.** Only a member of the variant named on it sees the variant.
   Passing the name where the variant is wanted is still a type error, since the name is the
   original value (4c).
@@ -163,6 +173,11 @@ what it writes.
   owner typed as the variant (cast.md); no name of an owner is narrowed.
 - **It does not follow a closure that changes a captured name,** or a pointer made of one, past
   the writable borrow that made it (`narrowBorrowed` ends the narrowing at the borrow).
+- **It does not see a shared name (`ro`, `mut`) pointed at another value within a condition,**
+  through a `mut` borrow of it made before the test. The hidden local is declared after the
+  whole condition, and a transient copy is made at the use, from what the name points at by
+  then, while the call log asks only what could store over the enum. In
+  `if p is Circle && repoint(r)` the block reads the new value as a `Circle`.
 
 ## Hazards
 

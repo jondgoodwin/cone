@@ -1,0 +1,103 @@
+// What is accepted beside enum_typecheck_narrow_later_operand: a condition whose later
+// operand leaves the variant alone, or that tests the name again after the change
+
+mod enum_narrow_later_operand_success;
+
+import stdio use *;
+
+enum Slot {
+  struct Text {
+    pub s: &str;
+  }
+
+  struct Num {
+    pub a: usize;
+    pub b: usize;
+  }
+}
+use Slot;
+
+fn set(r: &mut Slot) bool {
+  *r = Num(40usize, 2usize);
+  true
+}
+
+fn rename(r: &mut Slot) bool {
+  *r = Text("again");
+  true
+}
+
+fn look(r: &Slot) bool { true }
+
+fn showText(t: &str) {
+  printStr(t);
+  printStr("\n");
+}
+
+fn showSum(a: usize, b: usize) {
+  printInt(i64.from(a + b));
+  printStr("\n");
+}
+
+// A later operand that only reads, the name or the variant
+fn reads(var s: Slot) {
+  if s is Text && look(&s) && s.s.len > 0usize {
+    showText(s.s);
+  }
+}
+
+// And one that changes some other name
+fn otherName(var s: Slot) {
+  var t: Slot = Text("t");
+  if s is Text && set(&mut t) {
+    showText(s.s);
+  }
+}
+
+// The change comes before the test
+fn changedFirst(var s: Slot) {
+  if set(&mut s) && s is Num {
+    showSum(s.a, s.b);
+  }
+}
+
+// Tested again after the change
+fn testedAgain(var s: Slot) {
+  if s is Text && rename(&mut s) && s is Text {
+    showText(s.s);
+  }
+}
+
+// And again, where what was stored is the other variant
+fn testedOther(var s: Slot) {
+  if s is Text && set(&mut s) && s is Num && s.a > s.b {
+    showSum(s.a, s.b);
+  }
+}
+
+// The same through '||' and '!': past the 'if', the last test of the name holds
+fn orAgain(var s: Slot) {
+  if !(s is Text) || !rename(&mut s) || !(s is Text) {
+    return;
+  }
+  showText(s.s);
+}
+
+// A 'while' whose later operand reads
+fn looped(var s: Slot) {
+  var n = 0;
+  while s is Text && n < 2 {
+    showText(s.s);
+    n += 1;
+  }
+}
+
+fn main() {
+  reads(Text("reads"));
+  otherName(Text("other"));
+  changedFirst(Text("first"));
+  testedAgain(Text("before"));
+  testedOther(Text("before"));
+  orAgain(Text("before"));
+  looped(Text("loop"));
+}
