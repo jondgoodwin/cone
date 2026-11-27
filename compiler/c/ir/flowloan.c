@@ -50,7 +50,11 @@ typedef struct {
                         // until then the loan is exclusive as an 'uni' source's always was
     INode *lazycont;    // a borrow into a collection or enum that changes shape through a source no other name
                         // reaches yet: the container it is marked for if one does (loanShapePromote)
-    uint8_t nroots;     // a shape loan whose collection is function-local storage: how many of 'roots' (else 0)
+    INode *refcont;     // a view through a reference ('*r', '**m') not marked as it was made: the container
+                        // it is marked for once the reference has another name (loanShapeRefView)
+    uint8_t refway;     // such a view read through a 'mut' borrow of the reference, marked as it is made:
+                        // its roots are the locals along that way (loanRootsNote)
+    uint8_t nroots;    // a shape loan whose collection is function-local storage: how many of 'roots' (else 0)
     uint8_t rootsext;   // a shape loan's collection may be storage the function does not own
     uint8_t globalview; // a shape loan's collection is a 'var' global, or reached from one: any call may write it
     uint8_t elemview;   // a receiver's loan whose method returned an element out of the receiver's own block
@@ -291,6 +295,8 @@ uint32_t loanMake(INode *site, Place *pl, INode *perm) {
     // Another name for the source met by the access that made this borrow: it is one of several
     loan->aliased = loan->uniq && lastEventVar == pl->var;
     loan->lazycont = NULL;
+    loan->refcont = NULL;
+    loan->refway = 0;
     loan->nroots = 0;
     loan->rootsext = 0;
     loan->globalview = 0;
@@ -341,6 +347,8 @@ uint32_t loanCaller(uint32_t var, uint32_t part) {
     loan->uniq = 0;
     loan->aliased = 0;
     loan->lazycont = NULL;
+    loan->refcont = NULL;
+    loan->refway = 0;
     loan->nroots = 0;
     loan->rootsext = 0;
     loan->globalview = 0;
@@ -2257,6 +2265,47 @@ static void loanShapePromote() {
     }
 }
 
+// A view through a reference, frozen rather than followed by the shape check -- through
+// a 'uni' one, or a 'mut' one nothing else writes by yet -- is frozen against the name it
+// was taken by alone. Once the reference has another name, a writable borrow of where it
+// is held, the storage can be changed by a name the freezing does not see ('**m' for a
+// view of '*r', '*r' for one of '**m'), so the view is marked for the shape check, which
+// asks of every store and call that reaches it. A view through a 'uni' reference read
+// through a 'mut' borrow of it has that name already and is marked now; any other when
+// the variable is next lent (loanShapeRefLent). The freezing stays either way.
+// 'container' is what the view is into
+void loanShapeRefView(uint32_t loan, INode *container) {
+    Loan *l = &loans[loan];
+    if (!l->place.deref)
+        return;
+    if (!l->place.shared && l->place.far && loanHoldsUniqAlias(pathVars[l->place.var].holds)) {
+        l->refway = 1;
+        loanShapeMark(loan, container);
+    }
+    else
+        l->refcont = container;
+}
+
+// Each view recorded among what a value carries: those it points at ('near')
+void loanShapeRefViews(PathSet *holds, INode *container) {
+    if (holds == NULL)
+        return;
+    for (uint32_t i = 0; i < holds->cnt; ++i) {
+        if (!(holds->ids[i] & LoanFar) && loans[loanOf(holds->ids[i])].kind != LoanCaller)
+            loanShapeRefView(loanOf(holds->ids[i]), container);
+    }
+}
+
+// The variable 'var' is lent by a borrow that writes, of its own storage, which a
+// reference in it may be: each view held through such a reference now has a second
+// name for what it is into, and is marked
+void loanShapeRefLent(uint32_t var) {
+    for (uint32_t id = pathVars[var].loans; id; id = loans[id].next) {
+        if (loans[id].refcont && loans[id].shapecont == NULL && loanHeldNow(id))
+            loanShapeMark(id, loans[id].refcont);
+    }
+}
+
 int loanAliasedAt(Place *pl) {
     return loanAliasHeld(pl->var);
 }
@@ -2333,6 +2382,21 @@ static void loanRootsNote(uint32_t id) {
     Place *p = loanShapePlace(l);
     if (loanPlaceInGlobal(p))
         l->globalview = 1;
+    // Read through a 'mut' borrow of the reference (loanShapeRefView): reached by the variable
+    // the way starts at and each local it borrows, near and far -- the reference, and what the
+    // reference borrows -- so a store or call by any of those names reaches it
+    if (l->refway && !p->owned) {
+        loanRootsAdd(l, p->var);
+        PathSet *way = pathVars[p->var].holds;
+        for (uint32_t i = 0; way && i < way->cnt; ++i) {
+            Loan *h = &loans[loanOf(way->ids[i])];
+            if (h->kind == LoanCaller || h->place.owned || h->place.far || loanVarIsGlobal(pathVars[h->place.var].var))
+                l->rootsext = 1;
+            else if (!h->place.deref || !h->place.shared)
+                loanRootsAdd(l, h->place.var);
+        }
+        return;
+    }
     if (p->owned || p->far) {
         l->rootsext = 1;
         // A borrow into what an owner points at, the owner a local's own ('Rc[mut]', others may own the
