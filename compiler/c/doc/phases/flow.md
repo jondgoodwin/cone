@@ -852,6 +852,16 @@ dereference of an owning reference. Two places overlap when they share a root
 and one path is a prefix of the other, step by step; only two different fields
 are disjoint. Nothing is tracked through a raw pointer.
 
+**`*&x` is `x`.** A borrow written where it is dereferenced makes no root of its own
+and no loan: the place is the one borrowed (`pwDeref`, which still drop-checks and
+accesses that place as the borrow would), so `&(**&o)[0usize]` borrows what
+`&(*o)[0usize]` does, and a store or a narrowing through one is judged by the place's
+own name. The checks that read a place expression without walking it strip the pair
+too (`reshapeUnborrow`: `pwStoreTarget`, `pwReceiverFieldOwner`, `pwStoreOverField`,
+`reshapeLocalRoot`). The borrow an index with `FlagBorrow` is made on is not such a
+dereference: its result is that borrow's. A borrow that a block, an `if` or a call
+yields is still a value, not a place.
+
 **Cone's `mut` is not Rust's `&mut`.** `uni` is Rust's `&mut` (one active
 reference); `mut` is shared mutable within a thread, `ro` a view others may
 change (`mem-permissions.html`). So how a place is reached decides what a borrow of it

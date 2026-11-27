@@ -81,6 +81,10 @@ enum ReshapeReach {
 // of what can be written: a read-only reference (`&`, `&imm`) is not followed.
 unsigned reshapeReach(INode *type, INode *cont, int writable);
 
+// '*&x' is 'x': what the expression 'e' names once each dereference of a borrow
+// written where it is dereferenced is taken as the place borrowed
+INode *reshapeUnborrow(INode *e);
+
 // Is this place one the function owns whole: a local (or a by-value parameter)
 // that is no reference, and a field or array element of one? Nothing else can
 // reach it, so it is no other name for a value reached through a shared path.
