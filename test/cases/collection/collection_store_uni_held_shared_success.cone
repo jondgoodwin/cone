@@ -1,0 +1,117 @@
+// What a '&uni' held in an 'Rc[mut, ..]' with two holders still allows, beside the
+// refusals of collection_flow_store_uni_held_shared: a borrow used up before the store,
+// one taken after it, a borrow into some other list, and reads through the other holder
+// while a borrow is live.
+
+mod collection_store_uni_held_shared_success;
+
+import collections use *;
+import stdio use *;
+import sync use Arc, Mutex;
+
+enum Shape {
+  struct Circle { pub r: i32; }
+  struct Square { pub s: i32; }
+}
+use Shape;
+
+fn listOf(n: i32) List[i32] {
+  var l = List[i32]();
+  l.push(n);
+  l
+}
+
+// The borrow is used for the last time before the store through the other holder: 7 + 100
+fn usedFirst() i32 {
+  var l = listOf(7i32);
+  var r = &uni l;
+  let o = Rc[mut, &uni List[i32]](r);
+  let o2 = o;
+  let v = &(**o)[0usize];
+  let seen = *v;
+  **o2 = listOf(100i32);
+  let after = &(**o)[0usize];
+  seen + *after
+}
+
+// The store is made with no borrow live; one is taken after it: the pushed 3
+fn viewAfter() i32 {
+  var l = listOf(7i32);
+  var r = &uni l;
+  let o = Rc[mut, &uni List[i32]](r);
+  let o2 = o;
+  **o2 = listOf(20i32);
+  (**o).push(3i32);
+  let v = &(**o)[1usize];
+  *v
+}
+
+// The borrow is into another list, which nothing here changes: 40 + 1
+fn otherList() i32 {
+  var l = listOf(7i32);
+  var k = listOf(40i32);
+  var r = &uni l;
+  let o = Rc[mut, &uni List[i32]](r);
+  let o2 = o;
+  let v = &k[0usize];
+  **o2 = listOf(1i32);
+  let w = &(**o)[0usize];
+  *v + *w
+}
+
+// Read and viewed through the other holder while the borrow is live: 70 + 100 + 7
+fn readOther() i32 {
+  var l = listOf(7i32);
+  var r = &uni l;
+  let o = Rc[mut, &uni List[i32]](r);
+  let o2 = o;
+  let v = &(**o)[0usize];
+  let n = i32.from((**o2).len());
+  let x = &(**o2)[0usize];
+  *v * 10i32 + n * 100i32 + *x
+}
+
+// An enum stored over before it is matched: 99
+fn storedThenMatched() i32 {
+  var s: Shape = Circle(5);
+  var r = &uni s;
+  let o = Rc[mut, &uni Shape](r);
+  let o2 = o;
+  **o2 = Square(99);
+  match &**o {
+    case let &Square(q) {
+      return q.s;
+    }
+    else {}
+  }
+  0i32
+}
+
+// Through a lock, the borrow made through it is the only way in while it is held, so the
+// '&uni' read there is reached by no one else, and the view survives a call that is
+// handed another list to change (compiled, not run). The borrow of the lock is a read-only
+// one here: a '&mut' one makes the view one read through a 'mut' borrow of the '&uni'
+// (collection_flow_store_ref_second_name), where any call that could reach a list is refused
+fn locked(o: Arc[Mutex, &uni List[i32]], k: &mut List[i32]) i32 {
+  let g = &*o;
+  let v = &(**g)[0usize];
+  k.push(1i32);
+  *v
+}
+
+// A compound assignment through a held '&uni' whose right side only reads, or was made
+// into a local first, is accepted (compiled, not run)
+fn compound(o: Rc[mut, &uni List[i32]], o2: Rc[mut, &uni List[i32]]) {
+  (**o)[0usize] += 5i32;
+  (**o)[0usize] += (**o2)[0usize];
+  let n = {(**o2).push(1i32); 1i32};
+  (**o)[0usize] += n;
+}
+
+fn main() {
+  printInt(i64.from(usedFirst())); printStr("\n");
+  printInt(i64.from(viewAfter())); printStr("\n");
+  printInt(i64.from(otherList())); printStr("\n");
+  printInt(i64.from(readOther())); printStr("\n");
+  printInt(i64.from(storedThenMatched())); printStr("\n");
+}
