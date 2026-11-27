@@ -1565,7 +1565,7 @@ own storage rests on no borrow, so `arr[bump(&mut arr)]` is accepted, as is a
 gate marks a function for a lent or owned place indexed so (`flowGateIndex`).
 Only the index's own place is held: a swap reaches its first side before the
 second side's index, and nothing asks that index about the first
-(`n.a <=> x[change(m)]` compiles).
+(`n.a <-> x[change(m)]` compiles).
 
 A borrow a
 call returns carries its receiver's loan as the receiver was reached: through a
