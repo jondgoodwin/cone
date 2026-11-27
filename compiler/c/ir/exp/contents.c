@@ -561,6 +561,11 @@ static void contentsLowerEntries(TypeCheckState *pstate, FnCallNode **nodep) {
         nodesAdd(&blk->stmts, (INode*)hoisted[i]);
     VarDclNode *recv = contentsVar(haseach ? contentsRecvName() : tempName, unknownType, immPerm, lval,
         (uint16_t)(pstate->scope + 1), (INode*)node);
+    // The receiver was checked above, which its type was needed for: checking it
+    // again would lower an index or a method call in it twice. Not so for a text
+    // sink's list: this block's statements end their temporaries one by one, and
+    // the second check is what makes one the receiver borrows from a hidden local
+    recv->valuechecked = !eachTemps;
     nodesAdd(&blk->stmts, (INode*)recv);
 
     int bad = 0;

@@ -24,6 +24,7 @@ typedef struct VarDclNode {
     uint16_t flowdepth;        // Data flow: the conditional depth it was declared at (flowDepth)
     uint8_t flowtracked;       // Data flow: 0 not yet asked, 1 its state is not followed for drops, 2 it is (flowDropTracked)
     uint8_t flowlend;          // Data flow: what generation's lending asks of a local (VarFlowLend)
+    uint8_t valuechecked;      // 'value' was type checked before a lowering declared the variable, and is not checked again
     uint8_t userlocal;         // Parse: a 'let' or 'var' the reader wrote as a statement of a block (WarnUnusedVar looks at these alone)
     uint8_t nwrites;           // Type check: how many of 'nuses' were the target of a plain '=' (stops at 255)
     uint8_t nuses;             // Type check: how many uses of it were checked (stops at 255); generation asks it of an inline function's parameter (genlInlineParm)
