@@ -1,0 +1,27 @@
+// What is read through a borrow of a variable that was then given a local's
+// borrow may be that borrow: it may not leave the function.
+//
+// Verdict: refuse, ErrorEscape at each return or store.
+// Basis: the lifetime invariant (references-and-regions.md), and the flow rule
+// (2 Oct 2026): a variable that may hold a local's borrow may not be returned,
+// and neither may what is read of it through a reference.
+// Master 6e9ae3d48: all accepted, and 'returned' dangles -- run, the value read
+// after another call is not the local's. Row 913.
+
+mod lifetime_mix_borrowed_var_repointed_returned;
+
+fn returned(a: &usize) &usize {
+  var b = 2usize;
+  var h = a;
+  var p = &mut h;
+  h = &b;
+  return *p;                  //~ ErrorEscape
+}
+
+fn stored(out: &mut &'a usize, x: &'a usize) {
+  var h = x;
+  var p = &mut h;
+  var b = 2usize;
+  h = &b;
+  *out = *p;                  //~ ErrorEscape
+}

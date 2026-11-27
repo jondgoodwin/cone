@@ -302,6 +302,13 @@ void loanUse(uint32_t var, INode *usenode);
 // loan's place finds the holders to ask
 void loanHeldBy(uint32_t var, PathSet *holds);
 
+// The loans of a borrow of the variable 'var's own storage, one at a time: the
+// one after 'loan' (0 for the first), or 0 after the last
+uint32_t loanOwnNext(uint32_t var, uint32_t loan);
+
+// The 'k'th variable that may hold this loan, or 0 after the last
+uint32_t loanMayHolder(uint32_t loan, uint32_t k);
+
 // A method's returned borrow carries this loan: name the method in a message
 void loanReturnedBy(uint32_t loan, Name *method);
 
