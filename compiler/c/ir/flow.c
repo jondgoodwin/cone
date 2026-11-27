@@ -2539,21 +2539,24 @@ void flowGateGlobalOwner(FlowState *fstate, Nodes *args) {
     uint32_t cnt;
     for (nodesFor(args, cnt, argsp)) {
         INode *place = *argsp;
-        while (place->tag == CastTag && !(place->flags & FlagConvert))
-            place = ((CastNode *)place)->exp;
-        if (place->tag != BorrowTag && place->tag != ArrayBorrowTag)
+        INode *lent = iexpGetTypeDcl(place);
+        if ((lent->tag != RefTag && lent->tag != ArrayRefTag && lent->tag != VirtRefTag) || !flowGateIsBorrowRef(lent))
             continue;
-        place = ((RefNode *)place)->vtexp;
+        // Down the way to what is lent. An owner on it is one dereferenced, or one converted
+        // to the borrow ('t.task.run()')
         while (1) {
             INode *from;
-            if (place->tag == CastTag)
+            if (place->tag == BorrowTag || place->tag == ArrayBorrowTag)
+                from = ((RefNode *)place)->vtexp;
+            else if (place->tag == CastTag)
                 from = ((CastNode *)place)->exp;
-            else if (place->tag == FldAccessTag)
+            else if (place->tag == FldAccessTag || place->tag == ArrIndexTag)
                 from = ((FnCallNode *)place)->objfn;
-            else if (place->tag == ArrIndexTag)
-                from = ((FnCallNode *)place)->objfn;
-            else if (place->tag == DerefTag) {
+            else if (place->tag == DerefTag)
                 from = ((StarNode *)place)->vtexp;
+            else
+                break;
+            if (place->tag == DerefTag || place->tag == CastTag) {
                 INode *type = iexpGetTypeDcl(from);
                 if ((type->tag == RefTag || type->tag == ArrayRefTag || type->tag == VirtRefTag)
                         && !flowGateIsBorrowRef(type)
@@ -2563,8 +2566,6 @@ void flowGateGlobalOwner(FlowState *fstate, Nodes *args) {
                     return;
                 }
             }
-            else
-                break;
             place = from;
         }
     }

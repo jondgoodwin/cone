@@ -3,7 +3,8 @@
 // lent. Each way the function can come by the owner from the global is held: the global's pattern
 // binding, a copy of the global, what a function that names the global answers, the owner passed on
 // to a function that stores through it, the whole global passed on, and a function that reaches it
-// only through another. No other argument shows the owner, so the call itself has the caller walked.
+// only through another; the last lends it as a method's receiver. No other argument shows the owner,
+// so the call itself has the caller walked.
 // Each was accepted, and freed 'self' while it was in use (ErrorShapeReshape now).
 //
 // The globals' own declarations are of an 'Option', which the shareable-globals check does not look
@@ -13,7 +14,13 @@ mod collection_flow_reshape_global_owner;
 
 import stdio use *;
 
-struct Idle { pub count: i64; }
+struct Idle {
+  pub count: i64;
+  pub fn tick(self: &mut) {
+    replace();
+    count += 1;
+  }
+}
 struct Tcb { pub task: Rc[mut, Idle]; }
 
 var cur: Option[Rc[mut, Tcb]] = None[Rc[mut, Tcb]];
@@ -116,7 +123,14 @@ fn callee() {
   byCallee(&mut *t1.task);                      //~ ErrorShapeReshape "through a global"
 }
 
+fn method() {
+  let t1 = Rc[mut, Tcb](Rc[mut, Idle](7));
+  cur = Some(t1);
+  t1.task.tick();                               //~ ErrorShapeReshape "through a global"
+}
+
 fn main() {
+  method();
   binding();
   copied();
   answered();
