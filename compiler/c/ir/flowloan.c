@@ -50,8 +50,8 @@ typedef struct {
                         // until then the loan is exclusive as an 'uni' source's always was
     INode *lazycont;    // a borrow into a collection or enum that changes shape through a source no other name
                         // reaches yet: the container it is marked for if one does (loanShapePromote)
-    INode *refcont;     // a view through a reference that nothing else reaches ('*r' of a '&uni', '**m'):
-                        // the container it is marked for once the reference has another name (loanShapeRefView)
+    INode *refcont;     // a view through a reference ('*r', '**m') not marked as it was made: the container
+                        // it is marked for once the reference has another name (loanShapeRefView)
     uint8_t refway;     // such a view read through a 'mut' borrow of the reference, marked as it is made:
                         // its roots are the locals along that way (loanRootsNote)
     uint8_t nroots;    // a shape loan whose collection is function-local storage: how many of 'roots' (else 0)
@@ -2223,20 +2223,20 @@ static void loanShapePromote() {
     }
 }
 
-// A view through a reference that nothing else reaches -- a 'uni' one held in a
-// variable ('*r'), or read through a borrow ('**m') -- freezes what is behind it
-// against the name it was taken by alone. Once the reference has another name, a
-// writable borrow of where it is held, the storage can be changed by a name the
-// freezing does not see ('**m' for a view of '*r', '*r' for one of '**m'), so the
-// view is marked for the shape check, which asks of every store and call that
-// reaches it. Read through a 'mut' borrow of the reference, it has that name
-// already and is marked now; else when the variable is next lent (loanShapeRefLent).
-// The freezing stays either way. 'container' is what the view is into
+// A view through a reference, frozen rather than followed by the shape check -- through
+// a 'uni' one, or a 'mut' one nothing else writes by yet -- is frozen against the name it
+// was taken by alone. Once the reference has another name, a writable borrow of where it
+// is held, the storage can be changed by a name the freezing does not see ('**m' for a
+// view of '*r', '*r' for one of '**m'), so the view is marked for the shape check, which
+// asks of every store and call that reaches it. A view through a 'uni' reference read
+// through a 'mut' borrow of it has that name already and is marked now; any other when
+// the variable is next lent (loanShapeRefLent). The freezing stays either way.
+// 'container' is what the view is into
 void loanShapeRefView(uint32_t loan, INode *container) {
     Loan *l = &loans[loan];
-    if (!l->place.deref || l->place.shared)
+    if (!l->place.deref)
         return;
-    if (l->place.far && loanHoldsUniqAlias(pathVars[l->place.var].holds)) {
+    if (!l->place.shared && l->place.far && loanHoldsUniqAlias(pathVars[l->place.var].holds)) {
         l->refway = 1;
         loanShapeMark(loan, container);
     }

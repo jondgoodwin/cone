@@ -108,6 +108,10 @@ static inline int castSumNarrows(INode *cast) {
     return cast->tag == CastTag && (cast->flags & FlagVariantNarrow) != 0;
 }
 
+// The enum a cast narrows a reference to into one of its variants, whatever the
+// reference's permission, else NULL
+INode *castNarrowedSum(INode *cast);
+
 // Name resolution of cast node
 void castNameRes(NameResState *pstate, CastNode *node);
 

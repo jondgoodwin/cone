@@ -389,9 +389,9 @@ uint32_t loanMutAliasOf(PathSet *holds);
 void loanShapeAliasBy(uint32_t loan, uint32_t alias);
 int loanIsExclusive(uint32_t entry);
 void loanShapeMark(uint32_t loan, INode *container);
-// A view through a reference nothing else reaches ('*r' of a '&uni', '**m'), marked for the
-// shape check once the reference has another name: one loan, or each a value points at; and
-// the call that says a variable's own storage is lent writably
+// A view through a reference ('*r', '**m') not marked as it was made, marked for the shape
+// check once the reference has another name: one loan, or each a value points at; and the
+// call that says a variable's own storage is lent writably
 void loanShapeRefView(uint32_t loan, INode *container);
 void loanShapeRefViews(PathSet *holds, INode *container);
 void loanShapeRefLent(uint32_t var);

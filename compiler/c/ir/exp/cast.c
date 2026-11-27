@@ -721,6 +721,18 @@ static int castIsSumNarrow(RefNode *from, RefNode *to) {
         && (fromstr->flags & (HasTagField | SameSize));
 }
 
+// The enum a cast narrows a reference to into one of its variants, whatever the
+// reference's permission, else NULL
+INode *castNarrowedSum(INode *cast) {
+    if (cast->tag != CastTag || (cast->flags & FlagConvert))
+        return NULL;
+    INode *to = iexpGetTypeDcl(cast);
+    INode *from = iexpGetTypeDcl(((CastNode *)cast)->exp);
+    if (to->tag != RefTag || from->tag != RefTag || !castIsSumNarrow((RefNode *)from, (RefNode *)to))
+        return NULL;
+    return itypeGetTypeDcl(((RefNode *)from)->vtexp);
+}
+
 // Mark a borrowed reference narrowed into a variant for the loan walk, unless its own
 // permission rules out a change of variant
 static void castMarkSumNarrow(CastNode *node, RefNode *from, RefNode *to) {

@@ -4557,13 +4557,6 @@ static PathSet *pwValue(INode **nodep, int move) {
             uint32_t alias = pwNarrowAliased((CastNode *)node);
             if (alias)
                 return pwNarrowShared((CastNode *)node, alias);
-            // None is held yet. What the match's own borrow is of, a reference nothing else
-            // reaches, may be lent while the narrowed reference is still used
-            VarDclNode *hidden = pwNamedVar(((CastNode *)node)->exp);
-            if (hidden) {
-                INode *fromtype = iexpGetTypeDcl(((CastNode *)node)->exp);
-                loanShapeRefViews(pathVars[pathVar(hidden)].holds, itypeGetTypeDcl(((RefNode *)fromtype)->vtexp));
-            }
         }
         if (!(node->flags & FlagConvert) && pwIsOwnedLent((CastNode *)node))
             return pwOwnedLent((CastNode *)node);
@@ -4571,6 +4564,12 @@ static PathSet *pwValue(INode **nodep, int move) {
         // its value holds came from its operand ('case let Some(e)' converts
         // the matched 'Option[&T]' to its 'Some[&T]'), of no struct's slot
         PathSet *holds = pwValue(&((CastNode *)node)->exp, flowCastCarries(node) ? move : 0);
+        // A reference narrowed into a variant and not followed above (a 'uni' one, or a
+        // match's own '&' with no 'mut' borrow held): where what it is narrowed from is a
+        // reference nothing else reaches, that may be given another name while it is used
+        INode *sum = pathLoans ? castNarrowedSum(node) : NULL;
+        if (sum)
+            loanShapeRefViews(holds, sum);
         // One into an owning virtual reference ('Uni[Trait]' from a 'Uni[H]')
         // keeps its operand's value under a type that names no lifetime, so
         // nothing after follows what it holds: it may hold only global
