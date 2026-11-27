@@ -3605,28 +3605,37 @@ static int pwReachMatch(PwReach *r, INode *type) {
     return 0;
 }
 
-#define PwHandsMax 128
+// What one asking of a trait's methods may walk. Each type is walked once for how it was
+// reached, and types are many behind a trait whose methods are handed a library's values,
+// so the bound is far past any program's: a lower one answers yes for an unrelated type
+#define PwHandsVisits 100000
 
-// The types one asking of a trait's methods has walked, with how each was reached
 typedef struct {
-    INode *types[PwHandsMax];
-    uint8_t how[PwHandsMax];        // 1, through a borrow; 2, as a trait object
-    int ntypes;
+    INode *type;
+    uint8_t how;                    // 1, through a borrow; 2, as a trait object
+} PwHandsAt;
+
+// The types walked so far, the list kept for the next asking
+static PwHandsAt *pwHandsList = NULL;
+static uint32_t pwHandsCap = 0;
+
+typedef struct {
+    uint32_t ntypes;                // the types walked, in 'pwHandsList'
     int visits;
 } PwHands;
 
 static int pwTraitHands(PwReach *r, INode *trait, int lent, int fields, PwHands *h, int depth);
 
-// Was this type walked so already? Else it is recorded. A full record answers -1
+// Was this type walked so already? Else it is recorded
 static int pwHandsSeen(PwHands *h, INode *type, int how) {
-    for (int i = 0; i < h->ntypes; ++i) {
-        if (h->types[i] == type && h->how[i] == how)
+    for (uint32_t i = 0; i < h->ntypes; ++i) {
+        if (pwHandsList[i].type == type && pwHandsList[i].how == how)
             return 1;
     }
-    if (h->ntypes == PwHandsMax)
-        return -1;
-    h->types[h->ntypes] = type;
-    h->how[h->ntypes++] = (uint8_t)how;
+    if (h->ntypes >= pwHandsCap)
+        pwHandsList = (PwHandsAt *)pathGrow(pwHandsList, &pwHandsCap, sizeof(PwHandsAt));
+    pwHandsList[h->ntypes].type = type;
+    pwHandsList[h->ntypes++].how = (uint8_t)how;
     return 0;
 }
 
@@ -3637,13 +3646,12 @@ static int pwHands(PwReach *r, INode *type, int lent, PwHands *h, int depth) {
     type = type ? itypeGetTypeDcl(type) : NULL;
     if (type == NULL)
         return 0;
-    if (depth > 32 || ++h->visits > PwReachVisits)
+    if (depth > 200 || ++h->visits > PwHandsVisits)
         return 1;
     if (lent && pwReachMatch(r, type))
         return 1;
-    int seen = pwHandsSeen(h, type, lent);
-    if (seen)
-        return seen < 0;
+    if (pwHandsSeen(h, type, lent))
+        return 0;
 
     INode **nodesp;
     uint32_t cnt;
@@ -3711,13 +3719,10 @@ static int pwTraitHands(PwReach *r, INode *trait, int lent, int fields, PwHands 
     trait = itypeGetTypeDcl(trait);
     if (trait == NULL || trait->tag != StructTag)
         return 0;
-    if (depth > 32 || ++h->visits > PwReachVisits)
+    if (depth > 200 || ++h->visits > PwHandsVisits)
         return 1;
-    if (fields) {
-        int seen = pwHandsSeen(h, trait, lent | 2);
-        if (seen)
-            return seen < 0;
-    }
+    if (fields && pwHandsSeen(h, trait, lent | 2))
+        return 0;
     Vtable *vtable = ((StructNode *)trait)->vtable;
     if (vtable == NULL)
         return 1;
