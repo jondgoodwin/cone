@@ -1925,6 +1925,82 @@ static int pwPlaceLevel(Place *pl) {
     return pl->deref ? (pl->far ? 2 : 1) : 0;
 }
 
+static int pwReachesPtr(INode *type, int depth);
+
+// Can a value of this type read a borrow through a borrowed reference in it,
+// from what that reference points at? Not where each one it holds points at a
+// value that holds none ('&i64', and an 'Option', a tuple or a struct of such).
+// What it cannot see into (a raw pointer, a virtual reference, a type past
+// 'depth') may.
+static int pwReadsBorrows(INode *type, int depth) {
+    if (type == NULL || depth > 8)
+        return 1;
+    INode *dcl = itypeGetTypeDcl(type);
+    switch (dcl->tag) {
+    case RefTag:
+    case ArrayRefTag: {
+        INode *vtexp = ((RefNode *)dcl)->vtexp;
+        if (pwIsBorrowed(dcl))
+            return pwCarries(vtexp) || pwIsNoLoanMut(vtexp);
+        return pwReadsBorrows(vtexp, depth + 1);
+    }
+    case ArrayTag:
+        return pwReadsBorrows(arrayElemType(dcl), depth + 1);
+    case TTupleTag: {
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(((TupleNode *)dcl)->elems, cnt, nodesp)) {
+            if (pwCarries(*nodesp) && pwReadsBorrows(*nodesp, depth + 1))
+                return 1;
+        }
+        return 0;
+    }
+    case StructTag: {
+        StructNode *strnode = (StructNode *)dcl;
+        if (pwIsNoLoanMut(dcl) || (strnode->flags & TraitType && !strnode->derived) || pwReachesPtr(dcl, 0))
+            return 1;
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodelistFor(&strnode->fields, cnt, nodesp)) {
+            INode *ftype = ((IExpNode *)*nodesp)->vtype;
+            if (pwCarries(ftype) && pwReadsBorrows(ftype, depth + 1))
+                return 1;
+        }
+        if (strnode->derived) {
+            for (nodesFor(strnode->derived, cnt, nodesp)) {
+                if (pwReadsBorrows(*nodesp, depth + 1))
+                    return 1;
+            }
+        }
+        return 0;
+    }
+    default:
+        return 1;
+    }
+}
+
+// A value carrying 'holds' is stored into the variable 'var', whole or in part.
+// Whatever holds a borrow of its storage can read that value there, so holds
+// its loans too, further on: as a borrow made after the store would (pwLend),
+// whether the store names the variable or reaches it through another reference.
+static void pwLentGains(uint32_t var, PathSet *holds) {
+    if (!pathLoans || holds == NULL)
+        return;
+    for (uint32_t loan = loanOwnNext(var, 0); loan; loan = loanOwnNext(var, loan)) {
+        uint32_t holder;
+        for (uint32_t k = 0; (holder = loanMayHolder(loan, k)) != 0; ++k) {
+            PathVar *pv = &pathVars[holder];
+            if (holder == var || !pathSetHasLoan(pv->holds, loan) || !pwReadsBorrows(pv->var->vtype, 0))
+                continue;
+            PathSet *gain = pathSetLoansAs(pwPlaceSlots(loanPlaceOf(loan), holds), 1);
+            if (pathSetWithin(gain, pv->holds))
+                continue;
+            pathSetFacts(holder, pathSetUnion(pv->holds, gain), pv->pending);
+            pwLentGains(holder, gain);
+        }
+    }
+}
+
 // A store of a value carrying 'holds' lands where a value holding 'refholds'
 // points: in each place its near loans borrow (every loan's, for 'beyond').
 // The holder rooted there holds those loans: as they are, where the loan
@@ -1948,6 +2024,7 @@ static void pwStoreLands(PathSet *refholds, int beyond, PathSet *holds, uint32_t
         if (!loanWhole(loan))
             put = pathSetUntagged(put);
         pathSetFacts(root, pathSetUnion(rv->holds, put), rv->pending);
+        pwLentGains(root, put);
     }
 }
 
@@ -2013,7 +2090,9 @@ static void pwStoreInto(uint32_t var, int from, int to, PathSet *holds) {
     if (pwIsParm(pv->var) || pwHoldsParmReach(pv->holds))
         pwNoteReach(holds, PwReachStored);
     PathSet *held = pv->holds;
-    pathSetFacts(var, pathSetUnion(held, from == 0 ? holds : pathSetLoansAs(holds, 1)), pv->pending);
+    PathSet *put = from == 0 ? holds : pathSetLoansAs(holds, 1);
+    pathSetFacts(var, pathSetUnion(held, put), pv->pending);
+    pwLentGains(var, put);
     if (to > 0)
         pwStoreLands(held, to > 1, holds, var);
 }
@@ -4201,6 +4280,7 @@ static void pwStore(INode **lvalp, PathSet *holds, INode **rvalp) {
         if (pathVars[index].holder) {
             pwHolderDies(index);
             pathSetFacts(index, pathSetWithoutThrough(holds, index), NULL);
+            pwLentGains(index, pathVars[index].holds);
         }
         // Nor was any other variable stored over whole live before: a seam's
         // live mark on it is dropped (pwSeam)
@@ -4432,6 +4512,7 @@ static void pwSwap(SwapNode *node) {
                 pathSetFacts(whole[i], holds[other], i == 0 ? pending1 : pending0);
             else
                 pathSetFacts(whole[i], pathSetUnion(holds[i], holds[other]), pathVars[whole[i]].pending);
+            pwLentGains(whole[i], holds[other]);
         }
     }
 }
