@@ -1,0 +1,655 @@
+// ======== displaceRegion: a height patch laid on a region, the region refined first ========
+//
+// A relief (a nostril pit, a vein, a brow: a height over a smooth base, zero outside its footprint) is put on a
+// base surface BEFORE the mesh is final. No face is deleted and nothing is welded, so there is no seam: the base's
+// skin round the footprint is refined by edge splitting until every edge, MEASURED AFTER the displacement, is
+// under 'maxEdge'; then each vertex of the region moves along the patch's axis by the patch's height at its own
+// place. A new vertex takes the height at its own place, so a steep wall is sampled where it is steep. This is
+// "join 1" of the nostril-seam experiment (27 Nov 2026: 17 off-model sharp edges against 151 for the best late
+// join). It needs the relief to be a function over the base along one axis: an overhang or a cavity is not.
+//
+// HeightPatch is a height field over a rectangle in a local frame: 'origin' is the rectangle's corner, 'u' and
+// 'v' its two sides (their lengths are its extent; they are taken as at right angles), 'axis' the direction the
+// heights move along (the caller gives it unit, and it is used as it is), and 'heights' the nu x nv samples, row
+// by row (sample (i, j) is at i / (nu - 1) of 'u' and j / (nv - 1) of 'v'). 'heightAt' reads it with a bicubic
+// Catmull-Rom spline in the rectangle's coordinates (it passes through every sample; away from the samples its
+// error is the interpolation's, (sqrt 3 / 216) h^3 |f'''| per direction for samples h apart in that direction's
+// own units, for a smooth f), and is 0 outside the rectangle. Beyond the rectangle's own samples the spline reads
+// 0, so a patch whose border samples are 0 is smooth into the 0 outside.
+//
+// displaceRegion(m, faces, patch, maxEdge, maxPasses, problems):
+//   1. The region's faces (once each) are cut into triangles as PolyMesh.cutFace cuts them. A region of
+//      triangles is used as it is; a face that is not a triangle becomes triangles only if the region has an
+//      edge to split (if none, nothing is cut: see 5).
+//   2. A PASS: every edge of a region triangle whose length AFTER displacement (both ends moved by the patch's
+//      height at their places) is over 'maxEdge' is split at its middle, all in one pass, the new vertices numbered
+//      longest edge first (ties by the two vertex numbers). A new vertex lies on the base, at the middle of the
+//      edge's undisplaced ends. Each triangle with 1, 2 or 3 split edges is cut as the reference script cut it
+//      (one split: 2 triangles; two: 3; three: 4, the middle one of the three midpoints). Passes repeat until no
+//      edge is over, or 'maxPasses' have been made: then a problem line says how many edges are still over.
+//   3. CONFORMING RING. A face outside the region that shares a split edge is cut into triangles
+//      (PolyMesh.cutFace; a triangle stays as it is) and split by the same rule on that edge, so no crack opens.
+//      The ring's other edges are never candidates: only an edge with a region triangle on one side is measured,
+//      so a ring triangle's far side may stay over 'maxEdge'. A split of the ring is repeated in later passes
+//      whenever the region's edge beside it is split again.
+//   4. Every vertex that a region face has, and every vertex made, moves by patch.heightAt(its place) * axis (a
+//      height of 0 moves it by nothing, bit for bit). A vertex that no region face has is never moved, even where
+//      the patch reaches it, so the region should be wider than the patch. A ring face keeps its other vertices.
+//   5. Nothing over 'maxEdge' on entry (or maxPasses 0): the result is the input with the region's vertices moved,
+//      the faces as they were (a quad stays a quad). A patch of zero is so a bit-for-bit copy.
+//
+// NUMBERING. The input's vertices keep their numbers, the new ones follow in the order made. The faces outside
+// the region and the ring come first, in their order, each as it was; then the region's and the ring's
+// triangles, pass by pass in the order the previous pass left them. Everything outside is bit for bit the input.
+//
+// CHANNELS. As refine.cone blends them for the middle of an edge, linearly: a new vertex's vertex values are the
+// mean of its two ends'; a new corner's corner values the mean of the two corners it lies between in that face;
+// each half of a split edge takes the edge's own values (a "crease" stays); an edge made inside a face takes
+// each channel's fill; a triangle takes its source face's face values.
+//
+// A refusal is a problem line and an unchanged copy of the mesh: 'maxEdge' at or below 0 (or not a number); a face
+// number outside the mesh; 'heights' not nu * nv (or nu or nv under 2); an estimated result over 2,000,000 faces
+// (the region's displaced area over 0.2436 maxEdge^2, a triangle with edges of 3/4 of maxEdge, added to the
+// faces outside; stopped again if the faces made pass 2,000,000). An empty list of faces is a silent copy.
+
+pub struct HeightPatch {
+  pub origin: Vec3;
+  pub u: Vec3;
+  pub v: Vec3;
+  pub axis: Vec3;
+  pub nu: u32;
+  pub nv: u32;
+  pub heights: List[f32];
+
+  // The sample (i, j), 0 beyond the grid
+  fn sample(self: &, i: i32, j: i32) f32 {
+    if i < 0i32 || j < 0i32 || i >= i32.from(nu) || j >= i32.from(nv) { return 0.; }
+    *heights[usize.from(u32.from(j)) * usize.from(nu) + usize.from(u32.from(i))]
+  }
+
+  // Catmull-Rom through p1 (t = 0) and p2 (t = 1), p0 and p3 the samples beyond
+  fn crom(p0: f32, p1: f32, p2: f32, p3: f32, t: f32) f32 {
+    0.5 * (2. * p1 + (p2 - p0) * t + (2. * p0 - 5. * p1 + 4. * p2 - p3) * t * t + (3. * p1 - p0 - 3. * p2 + p3) * t * t * t)
+  }
+
+  // The height at p: the bicubic Catmull-Rom of the samples about p's place in the rectangle, 0 outside it
+  pub fn heightAt(self: &, p: Vec3) f32 {
+    if nu < 2u32 || nv < 2u32 || heights.len() != usize.from(nu) * usize.from(nv) { return 0.; }
+    let uu = u.dot(u);
+    let vv = v.dot(v);
+    if !(uu > 0.) || !(vv > 0.) { return 0.; }
+    let d = p - origin;
+    let s = d.dot(u) / uu;
+    let t = d.dot(v) / vv;
+    if !(s >= 0. && s <= 1. && t >= 0. && t <= 1.) { return 0.; }
+    let gx = s * f32.from(nu - 1u32);
+    let gy = t * f32.from(nv - 1u32);
+    var i = i32.from(libc.floorf(gx));
+    var j = i32.from(libc.floorf(gy));
+    if i > i32.from(nu) - 2i32 { i = i32.from(nu) - 2i32; }
+    if j > i32.from(nv) - 2i32 { j = i32.from(nv) - 2i32; }
+    let fx = gx - f32.from(i);
+    let fy = gy - f32.from(j);
+    var col = List[f32].withCapacity(4usize);
+    var r = -1i32;
+    while r <= 2i32 {
+      col.push(HeightPatch.crom(self.sample(i - 1i32, j + r), self.sample(i, j + r), self.sample(i + 1i32, j + r),
+        self.sample(i + 2i32, j + r), fx));
+      r = r + 1i32;
+    }
+    HeightPatch.crom(*col[0usize], *col[1usize], *col[2usize], *col[3usize], fy)
+  }
+}
+
+const DsMaxFaces = 2000000.0;
+
+// The working triangles: three corners each. A corner's 'node' says where its corner values come from: below the
+// input's half-edge count it is that half-edge; above, a blend of two earlier nodes.
+struct DsTris {
+  tv: List[u32];   // 3 a triangle: vertices
+  tc: List[u32];   // 3 a triangle: corner nodes
+  te: List[u32];   // 3 a triangle: the input edge the side into the corner (from the corner before) runs along, or NoIndex
+  tf: List[u32];   // per triangle: the input face its face values come from
+  tr: List[bool];  // per triangle: in the region (true), or the conforming ring
+}
+
+struct DsWork {
+  pos: List[Vec3];     // per vertex, undisplaced
+  hgt: List[f32];      // per vertex: its height (0 when it does not move)
+  moved: List[bool];   // per vertex: a region vertex
+  pa: List[u32];       // per vertex: the two vertices a new one is the middle of (NoIndex for the input's)
+  pb: List[u32];
+  nh: u32;             // the input's half-edge count
+  cA: List[u32];       // per blended corner node (number nh + k): the two nodes it is the mean of
+  cB: List[u32];
+  corners: bool;       // whether there is any corner channel at all
+}
+
+fn dsEmpty() DsTris {
+  DsTris(List[u32](), List[u32](), List[u32](), List[u32](), List[bool]())
+}
+
+fn dsTri(o: &mut DsTris, f: u32, r: bool, v0: u32, c0: u32, e0: u32, v1: u32, c1: u32, e1: u32, v2: u32, c2: u32, e2: u32) {
+  o.tv.push(v0); o.tv.push(v1); o.tv.push(v2);
+  o.tc.push(c0); o.tc.push(c1); o.tc.push(c2);
+  o.te.push(e0); o.te.push(e1); o.te.push(e2);
+  o.tf.push(f);
+  o.tr.push(r);
+}
+
+fn dsRefused(m: &PolyMesh, problems: &mut List[String], why: &str) PolyMesh {
+  var s = String.from("displaceRegion: ");
+  s.append(why);
+  problems.push(s);
+  m.clone()
+}
+
+fn dsKey(a: u32, b: u32) u64 {
+  if a < b { u64.from(a) * 4294967296u64 + u64.from(b) } else { u64.from(b) * 4294967296u64 + u64.from(a) }
+}
+fn dsKeyA(k: u64) u32 { u32.from(k / 4294967296u64) }
+fn dsKeyB(k: u64) u32 { u32.from(k - (k / 4294967296u64) * 4294967296u64) }
+
+// The index of key in the ascending list, or NoIndex
+fn dsFind(keys: &List[u64], k: u64) u32 {
+  var lo = 0usize;
+  var hi = keys.len();
+  while lo < hi {
+    let mid = (lo + hi) / 2usize;
+    let x = *keys[mid];
+    if x == k { return u32.from(mid); }
+    if x < k { lo = mid + 1usize; } else { hi = mid; }
+  }
+  NoIndex
+}
+
+// A vertex's place after the patch moves it
+fn dsPlace(w: &DsWork, axis: Vec3, v: u32) Vec3 {
+  let p = *w.pos[usize.from(v)];
+  let h = *w.hgt[usize.from(v)];
+  if h != 0. { p + axis * h } else { p }
+}
+
+// Longest first, ties by the key: the order new vertices are numbered in
+struct DsOrder['a] {
+  lens: &'a List[f32];
+  keys: &'a List[u64];
+  pub fn `()`(self: &, a: &u32, b: &u32) i32 {
+    let la = *lens[usize.from(*a)];
+    let lb = *lens[usize.from(*b)];
+    if la > lb { -1i32 } else if la < lb { 1i32 } else if *keys[usize.from(*a)] < *keys[usize.from(*b)] { -1i32 } else { 1i32 }
+  }
+}
+
+// The node of the corner at a new vertex between two corners
+fn dsNode(w: &mut DsWork, a: u32, b: u32) u32 {
+  if !w.corners { return a; }
+  w.cA.push(a);
+  w.cB.push(b);
+  w.nh + u32.from(w.cA.len() - 1usize)
+}
+
+fn dsLeaf(w: &DsWork, n: u32) u32 {
+  var x = n;
+  while x >= w.nh { x = *w.cA[usize.from(x - w.nh)]; }
+  x
+}
+
+// Triangle t of s cut for the middles m0 (of side 0 -> 1), m1 (1 -> 2), m2 (2 -> 0) that are split (NoIndex if not)
+fn dsSplitTri(w: &mut DsWork, o: &mut DsTris, s: &DsTris, t: usize, m0: u32, m1: u32, m2: u32) {
+  let a = *s.tv[3usize * t];
+  let b = *s.tv[3usize * t + 1usize];
+  let c = *s.tv[3usize * t + 2usize];
+  let ca = *s.tc[3usize * t];
+  let cb = *s.tc[3usize * t + 1usize];
+  let cc = *s.tc[3usize * t + 2usize];
+  let ea = *s.te[3usize * t];          // c -> a
+  let eb = *s.te[3usize * t + 1usize]; // a -> b
+  let ec = *s.te[3usize * t + 2usize]; // b -> c
+  let f = *s.tf[t];
+  let r = *s.tr[t];
+  let no = NoIndex;
+  var k = 0u32;
+  var n0 = ca;
+  var n1 = cb;
+  var n2 = cc;
+  if m0 != no { k = k + 1u32; n0 = dsNode(w, ca, cb); }
+  if m1 != no { k = k + 1u32; n1 = dsNode(w, cb, cc); }
+  if m2 != no { k = k + 1u32; n2 = dsNode(w, cc, ca); }
+  if k == 0u32 {
+    dsTri(o, f, r, a, ca, ea, b, cb, eb, c, cc, ec);
+  } else if k == 3u32 {
+    dsTri(o, f, r, a, ca, ea, m0, n0, eb, m2, n2, no);
+    dsTri(o, f, r, m0, n0, no, b, cb, eb, m1, n1, ec);
+    dsTri(o, f, r, m2, n2, ea, m1, n1, no, c, cc, ec);
+    dsTri(o, f, r, m0, n0, no, m1, n1, no, m2, n2, no);
+  } else if k == 1u32 {
+    if m0 != no {
+      dsTri(o, f, r, a, ca, ea, m0, n0, eb, c, cc, no);
+      dsTri(o, f, r, m0, n0, no, b, cb, eb, c, cc, ec);
+    } else if m1 != no {
+      dsTri(o, f, r, a, ca, no, b, cb, eb, m1, n1, ec);
+      dsTri(o, f, r, a, ca, ea, m1, n1, no, c, cc, ec);
+    } else {
+      dsTri(o, f, r, a, ca, ea, b, cb, eb, m2, n2, no);
+      dsTri(o, f, r, m2, n2, ea, b, cb, no, c, cc, ec);
+    }
+  } else if m0 == no {
+    dsTri(o, f, r, m2, n2, ea, m1, n1, no, c, cc, ec);
+    dsTri(o, f, r, a, ca, no, b, cb, eb, m1, n1, ec);
+    dsTri(o, f, r, a, ca, ea, m1, n1, no, m2, n2, no);
+  } else if m1 == no {
+    dsTri(o, f, r, a, ca, ea, m0, n0, eb, m2, n2, no);
+    dsTri(o, f, r, m0, n0, no, b, cb, eb, c, cc, ec);
+    dsTri(o, f, r, m0, n0, no, c, cc, no, m2, n2, ea);
+  } else {
+    dsTri(o, f, r, m0, n0, no, b, cb, eb, m1, n1, ec);
+    dsTri(o, f, r, a, ca, ea, m0, n0, eb, c, cc, no);
+    dsTri(o, f, r, m0, n0, no, m1, n1, no, c, cc, ec);
+  }
+}
+
+// Face f of the input cut into triangles, as ring (not region) triangles
+fn dsAddFace(m: &PolyMesh, f: u32, region: bool, t: &mut DsTris, cut: &mut List[u32]) {
+  let hs = m.faceHalfedges(f);
+  let vs = m.faceVertices(f);
+  let n = hs.len();
+  cut.clear();
+  m.cutFace(f, cut);
+  var k = 0usize;
+  while k + 2usize < cut.len() {
+    let j0 = usize.from(*cut[k]);
+    let j1 = usize.from(*cut[k + 1usize]);
+    let j2 = usize.from(*cut[k + 2usize]);
+    let e0 = if j0 == (j2 + 1usize) % n { m.edge(*hs[j0]) } else { NoIndex };
+    let e1 = if j1 == (j0 + 1usize) % n { m.edge(*hs[j1]) } else { NoIndex };
+    let e2 = if j2 == (j1 + 1usize) % n { m.edge(*hs[j2]) } else { NoIndex };
+    dsTri(t, f, region, *vs[j0], *hs[j0], e0, *vs[j1], *hs[j1], e1, *vs[j2], *hs[j2], e2);
+    k = k + 3usize;
+  }
+}
+
+// The input's edge between two input vertices, or NoIndex
+fn dsInputEdge(m: &PolyMesh, a: u32, b: u32) u32 {
+  let hs = m.vertexOutgoing(a);
+  var i = 0usize;
+  while i < hs.len() {
+    if m.toVertex(*hs[i]) == b { return m.edge(*hs[i]); }
+    i = i + 1usize;
+  }
+  NoIndex
+}
+
+// The unique keys (ascending) of the region triangles' edges whose displaced length is over maxEdge
+fn dsOver(w: &DsWork, t: &DsTris, axis: Vec3, maxEdge: f32) List[u64] {
+  var keys = List[u64]();
+  var i = 0usize;
+  while i < t.tr.len() {
+    if *t.tr[i] {
+      var k = 0usize;
+      while k < 3usize {
+        let a = *t.tv[3usize * i + k];
+        let b = *t.tv[3usize * i + (k + 1usize) % 3usize];
+        if (dsPlace(w, axis, a) - dsPlace(w, axis, b)).length() > maxEdge { keys.push(dsKey(a, b)); }
+        k = k + 1usize;
+      }
+    }
+    i = i + 1usize;
+  }
+  keys.sort();
+  var out = List[u64]();
+  i = 0usize;
+  while i < keys.len() {
+    if i == 0usize || *keys[i] != *keys[i - 1usize] { out.push(*keys[i]); }
+    i = i + 1usize;
+  }
+  out
+}
+
+pub fn displaceRegion(m: &PolyMesh, faces: &Array[u32], patch: &HeightPatch, maxEdge: f32, maxPasses: u32,
+    problems: &mut List[String]) PolyMesh {
+  if faces.len() == 0usize { return m.clone(); }
+  if !(maxEdge > 0.) { return dsRefused(m, problems, "maxEdge is not above 0"); }
+  if patch.nu < 2u32 || patch.nv < 2u32 || patch.heights.len() != usize.from(patch.nu) * usize.from(patch.nv) {
+    return dsRefused(m, problems, "heights are not nu * nv (nu and nv at least 2)");
+  }
+  let nv = m.vertexCount();
+  let nf = m.faceCount();
+  let axis = patch.axis;
+
+  var inRegion = List[bool].withCapacity(nf);
+  var i = 0usize;
+  while i < nf {
+    inRegion.push(false);
+    i = i + 1usize;
+  }
+  i = 0usize;
+  while i < faces.len() {
+    if usize.from(faces[i]) >= nf { return dsRefused(m, problems, "a face is not in the mesh"); }
+    inRegion.set(usize.from(faces[i]), true);
+    i = i + 1usize;
+  }
+
+  var w = DsWork(copyList(&m.positions), List[f32].withCapacity(nv), List[bool].withCapacity(nv), List[u32].withCapacity(nv),
+    List[u32].withCapacity(nv), u32.from(m.halfedgeCount()), List[u32](), List[u32](), false);
+  i = 0usize;
+  while i < nv {
+    w.hgt.push(0.);
+    w.moved.push(false);
+    w.pa.push(NoIndex);
+    w.pb.push(NoIndex);
+    i = i + 1usize;
+  }
+  var c = 0usize;
+  while c < m.floats.len() { if m.floats[c].domain == CornerDomain { w.corners = true; } c = c + 1usize; }
+  c = 0usize;
+  while c < m.vec2s.len() { if m.vec2s[c].domain == CornerDomain { w.corners = true; } c = c + 1usize; }
+  c = 0usize;
+  while c < m.vec3s.len() { if m.vec3s[c].domain == CornerDomain { w.corners = true; } c = c + 1usize; }
+
+  // The region's triangles, and its vertices' heights
+  var tris = dsEmpty();
+  var cut = List[u32]();
+  var f = 0usize;
+  while f < nf {
+    if *inRegion[f] {
+      dsAddFace(m, u32.from(f), true, &mut tris, &mut cut);
+      let vs = m.faceVertices(u32.from(f));
+      var j = 0usize;
+      while j < vs.len() {
+        let v = usize.from(*vs[j]);
+        if !*w.moved[v] {
+          w.moved.set(v, true);
+          w.hgt.set(v, patch.heightAt(*w.pos[v]));
+        }
+        j = j + 1usize;
+      }
+    }
+    f = f + 1usize;
+  }
+  var area: f32 = 0.;
+  i = 0usize;
+  while i < tris.tr.len() {
+    let a = dsPlace(&w, axis, *tris.tv[3usize * i]);
+    let b = dsPlace(&w, axis, *tris.tv[3usize * i + 1usize]);
+    let cc = dsPlace(&w, axis, *tris.tv[3usize * i + 2usize]);
+    area = area + (b - a).cross(cc - a).length() * 0.5;
+    i = i + 1usize;
+  }
+  var nOut = 0usize;
+  f = 0usize;
+  while f < nf {
+    if !*inRegion[f] { nOut = nOut + 1usize; }
+    f = f + 1usize;
+  }
+  if f64.from(nOut) + f64.from(area) / (0.4330127 * 0.5625 * f64.from(maxEdge) * f64.from(maxEdge)) > DsMaxFaces {
+    return dsRefused(m, problems, "the result would have over 2,000,000 faces");
+  }
+
+  // The passes
+  var converted = List[bool].withCapacity(nf);
+  f = 0usize;
+  while f < nf {
+    converted.push(false);
+    f = f + 1usize;
+  }
+  var split = false;
+  var pass = 0u32;
+  var capHit = 0usize;
+  var go = true;
+  while go {
+    let keys = dsOver(&w, &tris, axis, maxEdge);
+    if keys.len() == 0usize { go = false; }
+    else if pass >= maxPasses { capHit = keys.len(); go = false; }
+    else {
+      split = true;
+      // New vertices, longest edge first
+      var lens = List[f32].withCapacity(keys.len());
+      var order = List[u32].withCapacity(keys.len());
+      i = 0usize;
+      while i < keys.len() {
+        let a = dsKeyA(*keys[i]);
+        let b = dsKeyB(*keys[i]);
+        lens.push((dsPlace(&w, axis, a) - dsPlace(&w, axis, b)).length());
+        order.push(u32.from(i));
+        i = i + 1usize;
+      }
+      order.sortBy(&DsOrder(&lens, &keys));
+      var mid = List[u32].withCapacity(keys.len());
+      i = 0usize;
+      while i < keys.len() {
+        mid.push(NoIndex);
+        i = i + 1usize;
+      }
+      i = 0usize;
+      while i < order.len() {
+        let ki = usize.from(*order[i]);
+        let a = dsKeyA(*keys[ki]);
+        let b = dsKeyB(*keys[ki]);
+        let p = (*w.pos[usize.from(a)] + *w.pos[usize.from(b)]) * 0.5;
+        mid.set(ki, u32.from(w.pos.len()));
+        w.pos.push(p);
+        w.hgt.push(patch.heightAt(p));
+        w.moved.push(true);
+        w.pa.push(a);
+        w.pb.push(b);
+        i = i + 1usize;
+      }
+      // The ring: input faces beside a split edge between input vertices
+      i = 0usize;
+      while i < keys.len() {
+        let a = dsKeyA(*keys[i]);
+        let b = dsKeyB(*keys[i]);
+        if usize.from(a) < nv && usize.from(b) < nv {
+          let e = dsInputEdge(m, a, b);
+          if e != NoIndex {
+            var side = 0u32;
+            while side < 2u32 {
+              let g = m.face(2u32 * e + side);
+              if g != NoIndex && !*inRegion[usize.from(g)] && !*converted[usize.from(g)] {
+                converted.set(usize.from(g), true);
+                dsAddFace(m, g, false, &mut tris, &mut cut);
+              }
+              side = side + 1u32;
+            }
+          }
+        }
+        i = i + 1usize;
+      }
+      // Every triangle cut for the middles of its split sides
+      var next = dsEmpty();
+      var t = 0usize;
+      while t < tris.tr.len() {
+        let a = *tris.tv[3usize * t];
+        let b = *tris.tv[3usize * t + 1usize];
+        let cc = *tris.tv[3usize * t + 2usize];
+        let k0 = dsFind(&keys, dsKey(a, b));
+        let k1 = dsFind(&keys, dsKey(b, cc));
+        let k2 = dsFind(&keys, dsKey(cc, a));
+        dsSplitTri(&mut w, &mut next, &tris, t,
+          if k0 == NoIndex { NoIndex } else { *mid[usize.from(k0)] },
+          if k1 == NoIndex { NoIndex } else { *mid[usize.from(k1)] },
+          if k2 == NoIndex { NoIndex } else { *mid[usize.from(k2)] });
+        t = t + 1usize;
+      }
+      tris = next;
+      if f64.from(nOut) + f64.from(tris.tr.len()) > DsMaxFaces {
+        return dsRefused(m, problems, "the result would have over 2,000,000 faces");
+      }
+      pass = pass + 1u32;
+    }
+  }
+  if capHit > 0usize {
+    var s = String.from("displaceRegion: maxPasses reached with ");
+    s.appendUInt(u64.from(capHit));
+    s.append(" edges still over maxEdge");
+    problems.push(s);
+  }
+
+  // Nothing split: the input with the region's vertices moved
+  if !split {
+    var out = m.clone();
+    i = 0usize;
+    while i < nv {
+      if *w.moved[i] && *w.hgt[i] != 0. { out.positions.set(i, dsPlace(&w, axis, u32.from(i))); }
+      i = i + 1usize;
+    }
+    return out;
+  }
+
+  // The result: the faces outside first, then the triangles
+  var pos = List[Vec3].withCapacity(w.pos.len());
+  var vSrc = List[u32].withCapacity(w.pos.len());
+  i = 0usize;
+  while i < w.pos.len() {
+    pos.push(dsPlace(&w, axis, u32.from(i)));
+    var s = u32.from(i);
+    while usize.from(s) >= nv { s = *w.pa[usize.from(s)]; }
+    vSrc.push(s);
+    i = i + 1usize;
+  }
+  var counts = List[u32]();
+  var idx = List[u32]();
+  var cSrc = List[u32]();
+  var cNode = List[u32]();
+  var eSrc = List[u32]();
+  var fSrc = List[u32]();
+  f = 0usize;
+  while f < nf {
+    if !*inRegion[f] && !*converted[f] {
+      let hs = m.faceHalfedges(u32.from(f));
+      let vs = m.faceVertices(u32.from(f));
+      counts.push(u32.from(vs.len()));
+      var j = 0usize;
+      while j < vs.len() {
+        idx.push(*vs[j]);
+        cSrc.push(*hs[j]);
+        cNode.push(*hs[j]);
+        eSrc.push(m.edge(*hs[j]));
+        j = j + 1usize;
+      }
+      fSrc.push(u32.from(f));
+    }
+    f = f + 1usize;
+  }
+  i = 0usize;
+  while i < tris.tr.len() {
+    counts.push(3u32);
+    var k = 0usize;
+    while k < 3usize {
+      idx.push(*tris.tv[3usize * i + k]);
+      cSrc.push(dsLeaf(&w, *tris.tc[3usize * i + k]));
+      cNode.push(*tris.tc[3usize * i + k]);
+      eSrc.push(*tris.te[3usize * i + k]);
+      k = k + 1usize;
+    }
+    fSrc.push(*tris.tf[i]);
+    i = i + 1usize;
+  }
+  var out = assemble(m, &pos, &vSrc, &counts, &idx, &cSrc, &eSrc, &fSrc);
+  if out.faceCount() != counts.len() {
+    return dsRefused(m, problems, "a face was refused (the region's edge is not a manifold boundary)");
+  }
+  dsCarry(m, &mut out, &w, &cNode, &eSrc);
+  out
+}
+
+// The values assemble cannot give: a new vertex's and a new corner's blends, a new edge's fill
+fn dsCarry(m: &PolyMesh, out: &mut PolyMesh, w: &DsWork, cNode: &List[u32], eSrc: &List[u32]) {
+  let nv = m.vertexCount();
+  // Each flat corner's half-edge in the result
+  var hOf = List[u32].withCapacity(cNode.len());
+  var f = 0usize;
+  while f < out.faceCount() {
+    let hs = out.faceHalfedges(u32.from(f));
+    var q = 0usize;
+    while q < hs.len() {
+      hOf.push(*hs[q]);
+      q = q + 1usize;
+    }
+    f = f + 1usize;
+  }
+  var c = 0usize;
+  while c < m.floats.len() {
+    let vals = floatChannelVec3s(m, c);
+    dsCarryOne(m, out, w, nv, &hOf, cNode, 0u32, c, m.floats[c].domain, &vals);
+    c = c + 1usize;
+  }
+  c = 0usize;
+  while c < m.vec2s.len() {
+    let vals = vec2ChannelVec3s(m, c);
+    dsCarryOne(m, out, w, nv, &hOf, cNode, 1u32, c, m.vec2s[c].domain, &vals);
+    c = c + 1usize;
+  }
+  c = 0usize;
+  while c < m.vec3s.len() {
+    let vals = vec3ChannelVec3s(m, c);
+    dsCarryOne(m, out, w, nv, &hOf, cNode, 2u32, c, m.vec3s[c].domain, &vals);
+    c = c + 1usize;
+  }
+  // An edge no face names from the input takes each edge channel's fill
+  var named = List[bool].withCapacity(out.edgeCount());
+  var e = 0usize;
+  while e < out.edgeCount() {
+    named.push(false);
+    e = e + 1usize;
+  }
+  var k = 0usize;
+  while k < eSrc.len() {
+    if *eSrc[k] != NoIndex { named.set(usize.from(*hOf[k] / 2u32), true); }
+    k = k + 1usize;
+  }
+  e = 0usize;
+  while e < out.edgeCount() {
+    if !*named[e] {
+      c = 0usize;
+      while c < out.floats.len() {
+        if out.floats[c].domain == EdgeDomain { out.setFloat(u32.from(c), u32.from(e), out.floats[c].fill); }
+        c = c + 1usize;
+      }
+      c = 0usize;
+      while c < out.vec2s.len() {
+        if out.vec2s[c].domain == EdgeDomain { out.setVec2(u32.from(c), u32.from(e), out.vec2s[c].fill); }
+        c = c + 1usize;
+      }
+      c = 0usize;
+      while c < out.vec3s.len() {
+        if out.vec3s[c].domain == EdgeDomain { out.setVec3(u32.from(c), u32.from(e), out.vec3s[c].fill); }
+        c = c + 1usize;
+      }
+    }
+    e = e + 1usize;
+  }
+}
+
+// One channel (type 0 f32, 1 Vec2, 2 Vec3): new vertices and blended corners
+fn dsCarryOne(m: &PolyMesh, out: &mut PolyMesh, w: &DsWork, nv: usize, hOf: &List[u32], cNode: &List[u32], type_: u32,
+    c: usize, domain: u32, vals: &List[Vec3]) {
+  if domain == VertexDomain {
+    var ext = copyList(vals);
+    var v = nv;
+    while v < w.pos.len() {
+      let b = (*ext[usize.from(*w.pa[v])] + *ext[usize.from(*w.pb[v])]) * 0.5;
+      ext.push(b);
+      putValue(out, type_, c, u32.from(v), b);
+      v = v + 1usize;
+    }
+  } else if domain == CornerDomain && w.cA.len() > 0usize {
+    var nodes = List[Vec3].withCapacity(w.cA.len());
+    var k = 0usize;
+    while k < w.cA.len() {
+      let na = usize.from(*w.cA[k]);
+      let nb = usize.from(*w.cB[k]);
+      let va = if u32.from(na) < w.nh { *vals[na] } else { *nodes[na - usize.from(w.nh)] };
+      let vb = if u32.from(nb) < w.nh { *vals[nb] } else { *nodes[nb - usize.from(w.nh)] };
+      nodes.push((va + vb) * 0.5);
+      k = k + 1usize;
+    }
+    k = 0usize;
+    while k < cNode.len() {
+      let n = *cNode[k];
+      if n >= w.nh { putValue(out, type_, c, *hOf[k], *nodes[usize.from(n - w.nh)]); }
+      k = k + 1usize;
+    }
+  }
+}
