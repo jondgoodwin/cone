@@ -2433,7 +2433,10 @@ static void loanRootsNote(uint32_t id) {
     // what it points at, and by nothing else, the caller having frozen the rest
     if (!p->shared) {
         loanRootsAdd(l, p->var);
-        return;
+        // A 'uni' reference others may reach (Place.uniway): what it borrows has their names too,
+        // so it is followed as a shared one is, beside the name it was read by
+        if (!p->uniway)
+            return;
     }
     PathSet *holds = pathVars[p->var].holds;
     if (holds == NULL) {
