@@ -509,6 +509,7 @@ static uint32_t pathVar(VarDclNode *var) {
     pv->narrow = 0;
     pv->narrowed = 0;
     pv->compound = 0;
+    pv->indexed = 0;
     pv->tracked = pathDrops && flowDropTracked(var) && !flowMatchBound((INode *)var);
     pv->dies = pv->tracked && itypeNeedsFinal(var->vtype);
     // A holder is a local variable or a parameter whose type carries a
@@ -853,6 +854,77 @@ static void pwTempsEnd(uint32_t mark, PathSet *value) {
     }
     loanFlightPop(flight);
     ntemps = mark;
+}
+
+// What the address of the place 'pl', already walked, rests on: what a borrow of it
+// would hold (pwLend), with no access of its own. 'site' keys the loan of what an
+// owner points at, where the place is there
+static PathSet *pwPlaceRests(INode *site, Place *pl) {
+    PathSet *held = NULL;
+    // (what a variable holds in its own storage is not where that storage is)
+    if (pl->deref) {
+        held = pathVars[pl->var].holds;
+        if (pl->far)
+            held = pl->shared ? pathSetThrough(held) : pathSetUnsure(held);
+        held = pwPlaceSlots(pl, held);
+    }
+    if (pl->ownertype) {
+        uint32_t id = loanMake(site, pl, (INode *)mutPerm);
+        if (id) {
+            pwOwnerLent(pl, id);
+            held = pathSetAdd(held, id);
+        }
+    }
+    if (pl->narrow)
+        held = pathSetUnion(held, pathVars[pl->narrow].holds);
+    return held;
+}
+
+// A place's address is made before its index and used after it (genlAddr; an element
+// borrowed where it lies is reached the same way), so the address is a borrow held
+// while the index is walked: a stand-in holds the borrows it rests on, and reaching the
+// element is its use. A change of shape or variant the index made is refused, as is a
+// move, a replacement, a store or a mutable borrow of what was borrowed; reading it is
+// not (loanUse). 'rests' is what the address rests on: nothing, for a place in a
+// variable's own storage, which none of those moves. Returns the stand-in, or 0
+static uint32_t pwIndexStandIn(INode *index, PathSet *rests) {
+    PathSet *holds = NULL;
+    for (uint32_t i = 0; rests && i < rests->cnt; ++i) {
+        // (a far loan is of what the place holds, not of where the place is)
+        if (!(rests->ids[i] & LoanFar))
+            holds = pathSetAdd(holds, rests->ids[i]);
+    }
+    if (holds == NULL)
+        return 0;
+    VarDclNode *var = newVarDclFull(tempName, VarDclTag, ((IExpNode *)index)->vtype, (INode *)immPerm, NULL);
+    inodeLexCopy((INode *)var, index);
+    var->scope = 2;
+    var->flowtracked = 1;
+    uint32_t stand = pathVar(var);
+    pathVars[stand].holder = 1;
+    pathVars[stand].tracked = 0;
+    pathVars[stand].dies = 0;
+    pathVars[stand].indexed = 1;
+    pathSetFacts(stand, holds, NULL);
+    return stand;
+}
+
+static void pwIndexUse(uint32_t stand, INode *index) {
+    if (stand) {
+        loanUse(stand, index);
+        pathSetFacts(stand, NULL, NULL);
+    }
+}
+
+// Does an index (each dimension's, a range's two ends) do no more than read?
+static int pwIndexOnlyReads(INode *index) {
+    INode **argsp;
+    uint32_t cnt;
+    for (nodesFor(((FnCallNode *)index)->args, cnt, argsp)) {
+        if (!flowGateOnlyReads(*argsp))
+            return 0;
+    }
+    return 1;
 }
 
 static void pwStep(Place *pl, uintptr_t step) {
@@ -1334,6 +1406,10 @@ static int pwPlace(INode **nodep, Place *pl, PathSet **base) {
         else if (objtag == PtrTag)
             indexed = ((StarNode *)indexed)->vtexp;
         int holdsrefs = pathGpuChoices && pwCarries(indexed);
+        // The address of what is indexed is made already: what the index changes
+        // must leave it good ('n.r[change(m)]', 'l[0].a[grow(&mut l)]')
+        uint32_t stand = pathLoans && !seamfirst && !pwIndexOnlyReads(node)
+            ? pwIndexStandIn(node, found ? pwPlaceRests(node, pl) : *base) : 0;
         INode **argsp;
         uint32_t cnt;
         for (nodesFor(index->args, cnt, argsp)) {
@@ -1342,6 +1418,7 @@ static int pwPlace(INode **nodep, Place *pl, PathSet **base) {
             if (holdsrefs && !pwIsLitIndex(*argsp))
                 loanIndexedRefs(node);
         }
+        pwIndexUse(stand, node);
         if (found)
             pwStep(pl, PlaceStepElem);
         pwPreCnt = premark;
@@ -1589,15 +1666,20 @@ static int pwElemBorrowPlace(INode *node, Place *pl, PathSet **base, INode **per
     return 1;
 }
 
-// The arguments of the indexes, the innermost first
-static void pwElemBorrowIndexes(INode *node) {
+// The arguments of the indexes, the innermost first. The array's address is made before
+// them (pwIndexStandIn): 'pl' is its place, or NULL where it is no place the walk
+// tracks, and 'base' then what it carries
+static void pwElemBorrowIndexes(INode *node, Place *pl, PathSet *base) {
     INode *arr = ((FnCallNode *)node)->objfn;
     if (arr->tag != BorrowTag)
-        pwElemBorrowIndexes(arr);
+        pwElemBorrowIndexes(arr, pl, base);
+    uint32_t stand = pathLoans && !pwIndexOnlyReads(node)
+        ? pwIndexStandIn(node, pl ? pwPlaceRests(node, pl) : base) : 0;
     INode **argsp;
     uint32_t cnt;
     for (nodesFor(((FnCallNode *)node)->args, cnt, argsp))
         pwValue(argsp, 0);
+    pwIndexUse(stand, node);
 }
 
 // A method's receiver taken by reference: a loan of the receiver's place,
@@ -1640,12 +1722,12 @@ static PathSet *pwLendRef(INode **recvp, INode *selftype, int lvalop, int reserv
         INode *perm;
         INode *site;
         if (!pwElemBorrowPlace(recv, pl, &base, &perm, &site)) {
-            pwElemBorrowIndexes(recv);
+            pwElemBorrowIndexes(recv, NULL, base);
             return base;
         }
         *access = lvalop ? AccessWrite : loanBorrowAccess(perm);
         PathSet *lent = pwLend(site, pl, perm, reserve ? pwReserved(*access) : *access, loan);
-        pwElemBorrowIndexes(recv);
+        pwElemBorrowIndexes(recv, pl, NULL);
         return lent;
     }
     if (!pwIsBorrowed(iexpGetTypeDcl(recv)) || selftype->tag != RefTag)
@@ -4637,11 +4719,11 @@ static PathSet *pwValue(INode **nodep, int move) {
         INode *perm;
         INode *site;
         if (!pwElemBorrowPlace(node, &pl, &base, &perm, &site)) {
-            pwElemBorrowIndexes(node);
+            pwElemBorrowIndexes(node, NULL, base);
             return base;
         }
         PathSet *lent = pwLend(site, &pl, perm, loanBorrowAccess(perm), NULL);
-        pwElemBorrowIndexes(node);
+        pwElemBorrowIndexes(node, &pl, NULL);
         return lent;
     }
     if (pwNamedVar(node) || node->tag == DerefTag || node->tag == ArrIndexTag

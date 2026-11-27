@@ -1,0 +1,147 @@
+// The address of a place is made before its index, and used after. Where the place is a
+// member of the variant an enum was narrowed to, an index that could change the variant is
+// refused, whether the element is then stored into, read or borrowed, or the element would
+// be reached in another variant's bytes. enum_narrow_index_success holds what is accepted
+// beside each.
+
+mod enum_flow_narrow_index;
+
+enum Slot {
+  struct Text {
+    pub s: &str;
+  }
+
+  struct Num {
+    pub r: Array[usize, 3];
+    pub g: Array[Array[usize, 3], 2];
+    pub u: Uni[Array[usize, 3]];
+  }
+}
+use Slot;
+
+struct Changer {
+  pub give: usize;
+
+  pub fn change(self, m: &mut Slot) usize {
+    *m = Text("0123456789");
+    return self.give;
+  }
+}
+
+fn change(m: &mut Slot) usize {
+  *m = Text("0123456789");
+  return 0usize;
+}
+
+fn use1(p: &mut usize) {
+  *p = 1usize;
+}
+
+fn num() Slot {
+  return Num([1usize, 2usize, 3usize], [[1usize, 2usize, 3usize], [4usize, 5usize, 6usize]],
+    Uni[Array[usize, 3]]([7usize, 8usize, 9usize]));
+}
+
+// Narrowed through a reference others may share, each the only use of the name after its test
+fn store(n: &mut Slot, m: &mut Slot) {
+  if n is Num {
+    n.r[change(m)] = 100000usize;       //~ ErrorVariantReshape "made in the index, could change which variant"
+  }
+}
+
+fn compound(n: &mut Slot, m: &mut Slot) {
+  if n is Num {
+    n.r[change(m)] += 1usize;           //~ ErrorVariantReshape "The place this index picks from"
+  }
+}
+
+fn secondIndex(n: &mut Slot, m: &mut Slot) {
+  if n is Num {
+    n.g[1usize][change(m)] = 1usize;    //~ ErrorVariantReshape "made in the index"
+  }
+}
+
+fn firstIndex(n: &mut Slot, m: &mut Slot) {
+  if n is Num {
+    n.g[change(m)][1usize] = 1usize;    //~ ErrorVariantReshape "made in the index"
+  }
+}
+
+fn methodInIndex(n: &mut Slot, m: &mut Slot, c: Changer) {
+  if n is Num {
+    n.r[c.change(m)] = 1usize;          //~ ErrorVariantReshape "made in the index"
+  }
+}
+
+fn storeInIndex(n: &mut Slot, m: &mut Slot) {
+  if n is Num {
+    n.r[{*m = Text("x"); 0usize}] = 1usize; //~ ErrorVariantReshape "the store at"
+  }
+}
+
+fn read(n: &mut Slot, m: &mut Slot) usize {
+  if n is Num {
+    return n.r[change(m)];              //~ ErrorVariantReshape "made in the index"
+  }
+  return 0usize;
+}
+
+fn borrowed(n: &mut Slot, m: &mut Slot) {
+  if n is Num {
+    let p = &n.r[change(m)];            //~ ErrorVariantReshape "made in the index"
+  }
+}
+
+fn lentToCall(n: &mut Slot, m: &mut Slot) {
+  if n is Num {
+    use1(&mut n.r[change(m)]);          //~ ErrorVariantReshape "made in the index"
+  }
+}
+
+fn slicedTo(n: &mut Slot, m: &mut Slot) {
+  if n is Num {
+    let s = &n.r[0usize..<change(m)];   //~ ErrorVariantReshape "made in the index"
+  }
+}
+
+// What an owner in the variant holds is freed with the variant
+fn ownedInVariant(n: &mut Slot, m: &mut Slot) {
+  if n is Num {
+    n.u[change(m)] = 1usize;            //~ ErrorVariantReshape "made in the index"
+  }
+}
+
+// A reference bound into the variant, indexed
+fn boundReference(n: &mut Slot, m: &mut Slot) {
+  if n is Num {
+    let p = &mut n.r;
+    p[change(m)] = 1usize;              //~ ErrorVariantReshape "made in the index"
+  }
+}
+
+// A pattern's binding of the variant
+fn patternBinding(n: &mut Slot, m: &mut Slot) {
+  if let Num(c) = n {
+    c.r[change(m)] = 1usize;            //~ ErrorVariantReshape "made in the index"
+  }
+}
+
+// A name held by value and narrowed by a test, beside a 'mut' borrow of it
+fn byValue() {
+  var s: Slot = num();
+  let m = &mut s;
+  if s is Num {
+    s.r[change(m)] = 100000usize;       //~ ErrorVariantReshape "while the 'mut' borrow made"
+  }
+}
+
+fn byValueTwoDeep() {
+  var s: Slot = num();
+  let m = &mut s;
+  if s is Num {
+    s.g[0usize][change(m)] = 1usize;    //~ ErrorVariantReshape "while the 'mut' borrow made"
+  }
+}
+
+fn main() {
+}

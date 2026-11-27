@@ -1570,6 +1570,13 @@ static void loanReport(Pending *pend, INode *usenode) {
     else
         snprintf(used, sizeof(used), "at %u:%u", usenode->linenbr, loanColumn(usenode));
     char *mutably = loan->writes ? " mutably" : "";
+    // The holder is the stand-in for the place an index picks from, which has no name
+    if (pathVars[pend->holder].indexed) {
+        errorMsgNode(pend->access, ErrorFrozen,
+            "'%s' is borrowed%s (%s) to reach the place an index picks from, before the index is made. It may not be %s in the index, or the place would be reached through what is no longer there. Make the index first, into a local of its own ('let i = ...; x[i]').",
+            srcname, mutably, where, loanAttempt(pend->kind));
+        return;
+    }
     // A borrow a 'yield' handed to the caller, who may keep it as long as the
     // generator lives
     if (pend->holder == yieldHolder) {
@@ -1708,6 +1715,10 @@ void loanUse(uint32_t var, INode *usenode) {
             loanShapeFire(pend, usenode);
             continue;
         }
+        // The place an index picks from is only reached after the index: what the index
+        // read, or borrowed to read, leaves it where it was (pwIndexStandIn)
+        if (pathVars[var].indexed && (pend->kind < AccessBorrowMut || pend->kind == AccessBorrowOpaq))
+            continue;
         loanAccessFire(pend, usenode);
     }
 }
@@ -2725,6 +2736,25 @@ static void loanShapeReport(Pending *pend, INode *usenode) {
         snprintf(msg, sizeof(msg),
             "This %s could change the shape of a %s while the generator's caller may still hold a borrow into it that a 'yield' handed out (made %s, %s): %s. A %s that changes shape may move or free what it lent. Yield a copy, or yield the borrow only once the generator has done changing the %s.",
             what, cont, where, through, loanShapeReason(note, cont, sum, reason, sizeof(reason)), cont, cont);
+        loanShapeEmit(pend->access, pend->loan, note->why, msg);
+        return;
+    }
+    if (pathVars[pend->holder].indexed) {
+        // The holder is the stand-in for the place an index picks from, which has no name
+        char change[40];
+        snprintf(change, sizeof(change), "%u:%u", pend->access->linenbr, loanColumn(pend->access));
+        if (sum)
+            snprintf(msg, sizeof(msg),
+                "The place this index picks from is in one of the variants of a %s (borrowed %s, %s), and is reached before the index is made, but the %s at %s, made in the index, could change which variant the %s holds: %s. The place would then be another variant's bytes. Do what changes it before the 'is' test or pattern.",
+                cont, where, through, what, change, cont, loanShapeReason(note, cont, sum, reason, sizeof(reason)));
+        else if (loanShapeIsOwner(pend->loan))
+            snprintf(msg, sizeof(msg),
+                "The place this index picks from is in what a %s owns (borrowed %s, %s), and is reached before the index is made, but the %s at %s, made in the index, could replace the %s: %s. Replacing an owner frees what it points at, so the place would be in freed storage. Make the index first, into a local of its own ('let i = ...; x[i]').",
+                cont, where, through, what, change, cont, loanShapeReason(note, cont, 1, reason, sizeof(reason)));
+        else
+            snprintf(msg, sizeof(msg),
+                "The place this index picks from is in what a %s lent (borrowed %s, %s), and is reached before the index is made, but the %s at %s, made in the index, could change the shape of the %s: %s. A %s that changes shape may move or free what it lent, so the place would be in freed storage. Make the index first, into a local of its own ('let i = ...; x[i]').",
+                cont, where, through, what, change, cont, loanShapeReason(note, cont, sum, reason, sizeof(reason)), cont);
         loanShapeEmit(pend->access, pend->loan, note->why, msg);
         return;
     }

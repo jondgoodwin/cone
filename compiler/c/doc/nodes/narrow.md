@@ -166,6 +166,14 @@ from, or a store or swap over it by its own name, is `ErrorFrozen` (`l[0] += tak
 `u.x += {u = ...; 5}`): the stand-in's write is the borrow's later use. Nothing else is
 asked of it (`loanUseCompound`): `x += x` reads what it writes.
 
+## A call in an index
+
+`n.r[change(m)]`: generation takes the place's base, then its index (`genlAddr`), and uses the
+element after both, so a variant the index changes leaves the base in another variant's bytes,
+whether the element is stored into, read or borrowed. The walk holds what the base rests on in
+a stand-in while the index is walked, and reaching the element is its use (flow.md, "What is not
+held"): `ErrorVariantReshape`.
+
 ## What it does not do
 
 - **It never proves a call harmless for a name held by value or through `uni`, `imm`, `mut1`,
