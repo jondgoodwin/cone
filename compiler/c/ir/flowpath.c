@@ -1610,13 +1610,15 @@ static int pwElemBorrowPlace(INode *node, Place *pl, PathSet **base, INode **per
     return 1;
 }
 
-// The arguments of the indexes, the innermost first. 'rests' is what the address of
-// the array rests on: the borrow of the element, made before them (pwIndexStandIn)
-static void pwElemBorrowIndexes(INode *node, PathSet *rests) {
+// The arguments of the indexes, the innermost first. The array's address is made before
+// them (pwIndexStandIn): 'pl' is its place, or NULL where it is no place the walk
+// tracks, and 'base' then what it carries
+static void pwElemBorrowIndexes(INode *node, Place *pl, PathSet *base) {
     INode *arr = ((FnCallNode *)node)->objfn;
     if (arr->tag != BorrowTag)
-        pwElemBorrowIndexes(arr, rests);
-    uint32_t stand = pathLoans && !pwIndexOnlyReads(node) ? pwIndexStandIn(node, rests) : 0;
+        pwElemBorrowIndexes(arr, pl, base);
+    uint32_t stand = pathLoans && !pwIndexOnlyReads(node)
+        ? pwIndexStandIn(node, pl ? pwPlaceRests(node, pl) : base) : 0;
     INode **argsp;
     uint32_t cnt;
     for (nodesFor(((FnCallNode *)node)->args, cnt, argsp))
@@ -1664,12 +1666,12 @@ static PathSet *pwLendRef(INode **recvp, INode *selftype, int lvalop, int reserv
         INode *perm;
         INode *site;
         if (!pwElemBorrowPlace(recv, pl, &base, &perm, &site)) {
-            pwElemBorrowIndexes(recv, base);
+            pwElemBorrowIndexes(recv, NULL, base);
             return base;
         }
         *access = lvalop ? AccessWrite : loanBorrowAccess(perm);
         PathSet *lent = pwLend(site, pl, perm, reserve ? pwReserved(*access) : *access, loan);
-        pwElemBorrowIndexes(recv, lent);
+        pwElemBorrowIndexes(recv, pl, NULL);
         return lent;
     }
     if (!pwIsBorrowed(iexpGetTypeDcl(recv)) || selftype->tag != RefTag)
@@ -4627,11 +4629,11 @@ static PathSet *pwValue(INode **nodep, int move) {
         INode *perm;
         INode *site;
         if (!pwElemBorrowPlace(node, &pl, &base, &perm, &site)) {
-            pwElemBorrowIndexes(node, base);
+            pwElemBorrowIndexes(node, NULL, base);
             return base;
         }
         PathSet *lent = pwLend(site, &pl, perm, loanBorrowAccess(perm), NULL);
-        pwElemBorrowIndexes(node, lent);
+        pwElemBorrowIndexes(node, &pl, NULL);
         return lent;
     }
     if (pwNamedVar(node) || node->tag == DerefTag || node->tag == ArrIndexTag
