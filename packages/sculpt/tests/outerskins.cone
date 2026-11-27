@@ -1,0 +1,288 @@
+// Shells, takeTriangles and the outer skin, checked with the testing package
+// against numbers worked out by hand; only a failure prints, so outerskins.out
+// holds the summary alone.
+//
+// The cube 'addCube' makes: vertices v = x + 2y + 4z at lo + (x, y, z) size,
+// twelve outward triangles, two a face, in the order -z, +z, -y, +y, -x, +x
+// (the same table as mesh's stl test, each checked there by the right-hand
+// rule); inward, each triangle's last two corners swap. A cube's triangles
+// are numbered 0 to 11 from its first, its top (+z) face's two being 2 and 3.
+//
+// - Two disjoint cubes (0..1 and 3..4): triangles 0 to 11 are shell 0, 12 to
+//   23 shell 1: 2 shells of 12 triangles and 8 vertices each.
+// - A cube and an octahedron sharing the cube's corner (1, 1, 1) as one
+//   vertex, the octahedron's -x tip: its 8 triangles join along edges, the
+//   cube's 12 likewise, and the one shared vertex joins nothing: 2 shells,
+//   12 and 8 triangles, in the order of their lowest triangles (cube first).
+//   The octahedron's own vertex count is 6, so the second shell has 6
+//   vertices, the shared one among them.
+// - The same two with the octahedron's tip a vertex of its own (the same place):
+//   still 2 shells. And one triangle (0, 1, 2) beside another (2, 1, 3): they
+//   share the edge 1-2 (run 1 to 2 by one, 2 to 1 by the other): 1 shell; with
+//   (2, 3, 4) instead they share only vertex 2: 2 shells.
+// - Channels: two cubes with uvs (v / 8, 0.5) and colors, material groups
+//   (cube 0: material 5, cube 1: material 7). Shell 1 has 8 vertices, 36
+//   indices, one group (start 0, count 36, material 7); its vertex 0 is the
+//   second cube's first named, the cube's vertex 0, whose uv is (0, 0.5)
+//   and the cube's vertex 2 (named second, so its vertex 1) has uv (0.25, 0.5).
+//   takeTriangles with [14, 2] makes the second cube's triangle 2 first, then
+//   the first cube's: the groups are one of each material, 3 indices each.
+// - The outer skin of a cube 0..2 holding a cube 0.5..1.5 of the same winding:
+//   64 rays keep the outer cube's 12 triangles and none of the inner one's
+//   (every ray of an inner face meets a wall of the outer cube). The inner
+//   cube wound inward: the same 12.
+// - A cube 0..1 with a plate, two triangles in z = 1.5 over x, y in 0.2..0.5,
+//   facing up (14 triangles): the top face's triangle 2 has corners (0, 0, 1),
+//   (1, 0, 1), (0, 1, 1) and its centre (1/3, 1/3, 1) lies under the plate, so
+//   its normal ray (straight up) meets the plate and is blocked; a ray at
+//   less than about 70 degrees from the vertical clears the plate's edge (the
+//   plate reaches 0.17 sideways from the centre at a height of 0.5, so a slope
+//   under 0.17 / 0.5 rises past it: the hemisphere's rays have heights z = (i +
+//   0.5) / 64 and some slope at 45 degrees), so with 64 rays all 14 are kept;
+//   with 0 rays (the normal alone) triangle 2 is dropped: 13 kept.
+// - The same run twice gives the same list.
+
+mod outerskins;
+
+import testing use *;
+import collections use *;
+import geomath use *;
+import mesh use *;
+import sculpt use *;
+
+fn cornerOf(lo: Vec3, size: f32, v: u32) Vec3 {
+  lo + Vec3(f32.from(v & 1u32), f32.from((v >> 1u32) & 1u32), f32.from((v >> 2u32) & 1u32)) * size
+}
+
+// A cube's twelve triangles added to the mesh, its 8 vertices after the mesh's own; the vertex v's number is returned as the first
+fn addCube(m: &mut Mesh, lo: Vec3, size: f32, inward: bool) u32 {
+  let base = u32.from(m.positions.len());
+  var v = 0u32;
+  while v < 8u32 {
+    m.positions.push(cornerOf(lo, size, v));
+    v = v + 1u32;
+  }
+  let t = [0u32, 2u32, 1u32, 1u32, 2u32, 3u32, 4u32, 5u32, 6u32, 5u32, 7u32, 6u32,
+    0u32, 1u32, 4u32, 1u32, 5u32, 4u32, 2u32, 6u32, 3u32, 3u32, 6u32, 7u32,
+    0u32, 4u32, 2u32, 2u32, 4u32, 6u32, 1u32, 3u32, 5u32, 3u32, 7u32, 5u32];
+  var i = 0usize;
+  while i < 12usize {
+    m.indices.push(base + t[3usize * i]);
+    if inward {
+      m.indices.push(base + t[3usize * i + 2usize]);
+      m.indices.push(base + t[3usize * i + 1usize]);
+    } else {
+      m.indices.push(base + t[3usize * i + 1usize]);
+      m.indices.push(base + t[3usize * i + 2usize]);
+    }
+    i = i + 1usize;
+  }
+  base
+}
+
+fn tri(m: &mut Mesh, a: u32, b: u32, c: u32) {
+  m.indices.push(a);
+  m.indices.push(b);
+  m.indices.push(c);
+}
+
+// An octahedron of radius 1 about (2, 1, 1), its -x tip being vertex 'tip' of
+// the mesh when that is under the mesh's size, else a vertex of its own
+fn addOctahedron(m: &mut Mesh, tip: u32) {
+  let base = u32.from(m.positions.len());
+  // Vertices: 0 the -x tip, 1 +x, 2 +y, 3 -y, 4 +z, 5 -z
+  var ids = Array[u32, 6]() <- fill 0u32;
+  let pts = [Vec3(1., 1., 1.), Vec3(3., 1., 1.), Vec3(2., 2., 1.), Vec3(2., 0., 1.), Vec3(2., 1., 2.), Vec3(2., 1., 0.)];
+  var k = 0usize;
+  while k < 6usize {
+    if k == 0usize && tip < base {
+      ids[0usize] = tip;
+    } else {
+      ids[k] = u32.from(m.positions.len());
+      m.positions.push(pts[k]);
+    }
+    k = k + 1usize;
+  }
+  var sx = 0usize;
+  while sx < 2usize {
+    var sy = 2usize;
+    while sy < 4usize {
+      var sz = 4usize;
+      while sz < 6usize {
+        tri(m, ids[sx], ids[sy], ids[sz]);
+        sz = sz + 1usize;
+      }
+      sy = sy + 1usize;
+    }
+    sx = sx + 1usize;
+  }
+}
+
+fn countOf(ids: &List[u32], shell: u32) i64 {
+  var n = 0i64;
+  var i = 0usize;
+  while i < ids.len() {
+    if *ids[i] == shell { n = n + 1i64; }
+    i = i + 1usize;
+  }
+  n
+}
+
+fn shellsOf() {
+  var two = Mesh();
+  addCube(&mut two, Vec3(0., 0., 0.), 1., false);
+  addCube(&mut two, Vec3(3., 3., 3.), 1., false);
+  let ids = triangleShells(&two);
+  expectInt(i64.from(ids.len()), 24, "two cubes: 24 triangles numbered");
+  expectInt(countOf(&ids, 0u32), 12, "two cubes: shell 0 has 12");
+  expectInt(countOf(&ids, 1u32), 12, "two cubes: shell 1 has 12");
+  expectInt(i64.from(*ids[0usize]), 0, "two cubes: triangle 0 is shell 0");
+  expectInt(i64.from(*ids[12usize]), 1, "two cubes: triangle 12 is shell 1");
+  let parts = splitShells(&two);
+  expectInt(i64.from(parts.len()), 2, "two cubes: 2 shells");
+  expectInt(i64.from(parts[1usize].positions.len()), 8, "two cubes: a shell has 8 vertices");
+  expectInt(i64.from(parts[1usize].indices.len()), 36, "two cubes: and 12 triangles");
+
+  // A cube and an octahedron sharing one vertex (the cube's vertex 7, at (1, 1, 1))
+  var touch = Mesh();
+  addCube(&mut touch, Vec3(0., 0., 0.), 1., false);
+  addOctahedron(&mut touch, 7u32);
+  expectInt(i64.from(touch.positions.len()), 13, "touching: 8 + 5 vertices");
+  let tids = triangleShells(&touch);
+  expectInt(i64.from(tids.len()), 20, "touching: 20 triangles");
+  expectInt(countOf(&tids, 0u32), 12, "touching: the cube is shell 0");
+  expectInt(countOf(&tids, 1u32), 8, "touching: the octahedron is shell 1");
+  expectInt(countOf(&tids, 2u32), 0, "touching: no third shell");
+  let tparts = splitShells(&touch);
+  expectInt(i64.from(tparts.len()), 2, "touching at a vertex: 2 shells");
+  expectInt(i64.from(tparts[1usize].positions.len()), 6, "touching: the octahedron shell has 6 vertices");
+  // The same with the tip a vertex of its own
+  var apart = Mesh();
+  addCube(&mut apart, Vec3(0., 0., 0.), 1., false);
+  addOctahedron(&mut apart, NoIndex);
+  expectInt(i64.from(splitShells(&apart).len()), 2, "touching in place only: 2 shells");
+
+  // Edges join, whichever way each triangle runs them; a vertex does not
+  var e = Mesh();
+  var i = 0usize;
+  while i < 5usize { e.positions.push(Vec3(f32.from(i), 0., 0.)); i = i + 1usize; }
+  tri(&mut e, 0u32, 1u32, 2u32);
+  tri(&mut e, 2u32, 1u32, 3u32);
+  expectInt(i64.from(splitShells(&e).len()), 1, "an edge run both ways joins: 1 shell");
+  var f = Mesh();
+  i = 0usize;
+  while i < 5usize { f.positions.push(Vec3(f32.from(i), 0., 0.)); i = i + 1usize; }
+  tri(&mut f, 0u32, 1u32, 2u32);
+  tri(&mut f, 2u32, 3u32, 4u32);
+  expectInt(i64.from(splitShells(&f).len()), 2, "a vertex does not join: 2 shells");
+  var g = Mesh();
+  i = 0usize;
+  while i < 5usize { g.positions.push(Vec3(f32.from(i), 0., 0.)); i = i + 1usize; }
+  tri(&mut g, 0u32, 1u32, 2u32);
+  tri(&mut g, 1u32, 2u32, 3u32);
+  expectInt(i64.from(splitShells(&g).len()), 1, "an edge run the same way joins: 1 shell");
+}
+
+fn channels() {
+  var m = Mesh();
+  addCube(&mut m, Vec3(0., 0., 0.), 1., false);
+  addCube(&mut m, Vec3(3., 3., 3.), 1., false);
+  var i = 0usize;
+  while i < 16usize {
+    m.uvs.push(Vec2(f32.from(i % 8usize) / 8., 0.5));
+    m.colors.push(Color(f32.from(i) / 16., 0., 0., 1.));
+    i = i + 1usize;
+  }
+  m.addGroup(0u32, 36u32, 5u32);
+  m.addGroup(36u32, 36u32, 7u32);
+  let parts = splitShells(&m);
+  expectInt(i64.from(parts.len()), 2, "channels: 2 shells");
+  let s = &parts[1usize];
+  expectInt(i64.from(s.positions.len()), 8, "channels: shell 1 has 8 vertices");
+  expectInt(i64.from(s.uvs.len()), 8, "channels: and 8 uvs");
+  expectInt(i64.from(s.colors.len()), 8, "channels: and 8 colors");
+  expectInt(i64.from(s.groups.len()), 1, "channels: one group");
+  expectInt(i64.from(s.groups[0usize].start), 0, "channels: starting at 0");
+  expectInt(i64.from(s.groups[0usize].count), 36, "channels: of 36 indices");
+  expectInt(i64.from(s.groups[0usize].material), 7, "channels: material 7");
+  // The second cube's first triangle (0 2 1) names its vertices 0, 2, 1: shell vertex 0 is cube vertex 0 (uv.x 0), 1 is cube vertex 2 (uv.x 2 / 8)
+  expectFloat(f64.from(s.uvs[0usize].x), 0.0, 0.000001, "channels: shell vertex 0's uv");
+  expectFloat(f64.from(s.uvs[1usize].x), 0.25, 0.000001, "channels: shell vertex 1's uv");
+  expectFloat(f64.from(s.colors[0usize].red), 0.5, 0.000001, "channels: shell vertex 0's color is the second cube's vertex 0 (8 / 16)");
+  expectFloat(f64.from(s.positions[0usize].x), 3.0, 0.000001, "channels: shell vertex 0's position");
+  // takeTriangles in a given order: the second cube's triangle 2, then the first cube's 2
+  let pick = [14u32, 2u32];
+  let t = takeTriangles(&m, &pick);
+  expectInt(i64.from(t.indices.len()), 6, "take: 2 triangles");
+  expectInt(i64.from(t.groups.len()), 2, "take: a group of each material");
+  expectInt(i64.from(t.groups[0usize].material), 7, "take: the second cube's triangle first, material 7");
+  expectInt(i64.from(t.groups[1usize].start), 3, "take: the next group starts at 3");
+  expectInt(i64.from(t.groups[1usize].material), 5, "take: material 5");
+}
+
+fn skins() {
+  var m = Mesh();
+  addCube(&mut m, Vec3(0., 0., 0.), 2., false);
+  addCube(&mut m, Vec3(0.5, 0.5, 0.5), 1., false);
+  let keep = outerTriangles(&m, 64u32);
+  expectInt(i64.from(keep.len()), 12, "skin: the outer cube's 12 triangles");
+  var ok = keep.len() == 12usize;
+  var i = 0usize;
+  while ok && i < 12usize {
+    if *keep[i] != u32.from(i) { ok = false; }
+    i = i + 1usize;
+  }
+  expect(ok, "skin: they are triangles 0 to 11 and none of the inner cube's");
+  let skin = takeTriangles(&m, keep.view());
+  expectInt(i64.from(skin.positions.len()), 8, "skin: as a mesh, 8 vertices");
+  var w = Mesh();
+  addCube(&mut w, Vec3(0., 0., 0.), 2., false);
+  addCube(&mut w, Vec3(0.5, 0.5, 0.5), 1., true);
+  expectInt(i64.from(outerTriangles(&w, 64u32).len()), 12, "skin: an inward-wound inner cube is dropped too");
+  expectInt(i64.from(outerTriangles(&m, 0u32).len()), 12, "skin: the normal alone drops the inner cube too");
+
+  // A plate over the top face's first triangle
+  var p = Mesh();
+  addCube(&mut p, Vec3(0., 0., 0.), 1., false);
+  let b = u32.from(p.positions.len());
+  p.positions.push(Vec3(0.2, 0.2, 1.5));
+  p.positions.push(Vec3(0.5, 0.2, 1.5));
+  p.positions.push(Vec3(0.2, 0.5, 1.5));
+  p.positions.push(Vec3(0.5, 0.5, 1.5));
+  tri(&mut p, b, b + 1u32, b + 2u32);
+  tri(&mut p, b + 1u32, b + 3u32, b + 2u32);
+  let all = outerTriangles(&p, 64u32);
+  expectInt(i64.from(all.len()), 14, "plate: 64 rays keep all 14");
+  let normalOnly = outerTriangles(&p, 0u32);
+  expectInt(i64.from(normalOnly.len()), 13, "plate: the normal alone keeps 13");
+  var dropped = NoIndex;
+  i = 0usize;
+  while i < 14usize {
+    var found = false;
+    var k = 0usize;
+    while k < normalOnly.len() {
+      if *normalOnly[k] == u32.from(i) { found = true; }
+      k = k + 1usize;
+    }
+    if !found { dropped = u32.from(i); }
+    i = i + 1usize;
+  }
+  expectInt(i64.from(dropped), 2, "plate: the one it drops is the top face's triangle 2");
+
+  // The same run twice
+  let again = outerTriangles(&p, 64u32);
+  var same = again.len() == all.len();
+  i = 0usize;
+  while same && i < all.len() {
+    if *again[i] != *all[i] { same = false; }
+    i = i + 1usize;
+  }
+  expect(same, "skin: the same run twice gives the same list");
+}
+
+fn main() i32 {
+  shellsOf();
+  channels();
+  skins();
+  done()
+}

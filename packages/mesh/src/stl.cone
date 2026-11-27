@@ -1,0 +1,250 @@
+// ======== STL (stereolithography) files ========
+
+// A Mesh from STL bytes, binary or ASCII. Binary: an 80-byte header, a
+// little-endian u32 triangle count, then per triangle twelve little-endian
+// f32 (the normal, then the three corners) and a 2-byte attribute. A file whose
+// length is exactly 84 + 50 * count is binary, even if its header starts with
+// "solid" (many exporters write that); otherwise a file starting with "solid"
+// is ASCII ('vertex x y z' lines, three to a 'facet'), and any other file at
+// least that long is binary with bytes to spare. A file too short for its
+// count, an ASCII file whose 'vertex' lines are not a multiple of three or
+// that has none, and a triangle with a coordinate that is not finite are
+// reported in 'problems' (the last leaves that triangle out; the others give
+// an empty mesh).
+//
+// The triangles' corners are welded by exact position, as trimesh's
+// 'merge_vertices' does: corners with the same three f32 values (-0 and 0
+// equal) become one vertex, numbered by the first corner that names it, so
+// a closed STL is a closed mesh. A triangle whose corners weld together is kept.
+// The stored facet normals are ignored: the mesh has positions and indices
+// only (call 'computeSmoothNormals' or 'computeFlatNormals' for normals).
+pub fn meshFromStl(bytes: &Array[u8], problems: &mut List[String]) Mesh {
+  var raw = List[Vec3]();
+  let n = bytes.len;
+  var binary = false;
+  var count = 0usize;
+  if n >= 84usize {
+    count = usize.from(readU32(bytes, 80usize));
+    if n == 84usize + 50usize * count { binary = true; }
+  }
+  let solid = n >= 5usize && bytes[0usize] == 115u8 && bytes[1usize] == 111u8 && bytes[2usize] == 108u8
+    && bytes[3usize] == 105u8 && bytes[4usize] == 100u8;
+  if !binary && !solid && n >= 84usize && n >= 84usize + 50usize * count { binary = true; }
+  if binary {
+    var t = 0usize;
+    while t < count {
+      let at = 84usize + 50usize * t + 12usize;
+      var ok = true;
+      var k = 0usize;
+      var tri = Array[Vec3, 3]() <- fill Vec3(0., 0., 0.);
+      while k < 3usize {
+        let p = Vec3(readF32(bytes, at + 12usize * k), readF32(bytes, at + 12usize * k + 4usize), readF32(bytes, at + 12usize * k + 8usize));
+        if !finite3(p) { ok = false; }
+        tri[k] = p;
+        k = k + 1usize;
+      }
+      if ok {
+        raw.push(tri[0usize]);
+        raw.push(tri[1usize]);
+        raw.push(tri[2usize]);
+      } else {
+        problems.push(stlProblem("triangle ", t, " has a coordinate that is not finite"));
+      }
+      t = t + 1usize;
+    }
+  } else if solid {
+    var at = 0usize;
+    var vertexLines = 0usize;
+    while at < n {
+      var e = at;
+      while e < n && bytes[e] != 10u8 { e = e + 1usize; }
+      let s = skipBlanks(bytes, at, e);
+      let w = tokenEnd(bytes, s, e);
+      if w - s == 6usize && bytes[s] == 118u8 && bytes[s + 1usize] == 101u8 && bytes[s + 2usize] == 114u8
+        && bytes[s + 3usize] == 116u8 && bytes[s + 4usize] == 101u8 && bytes[s + 5usize] == 120u8 {
+        var p = w;
+        var xyz = Array[f64, 3]() <- fill 0.0;
+        var k = 0usize;
+        while k < 3usize {
+          p = skipBlanks(bytes, p, e);
+          let q = tokenEnd(bytes, p, e);
+          xyz[k] = parseObjNumber(bytes, p, q);
+          p = q;
+          k = k + 1usize;
+        }
+        raw.push(Vec3(f32.from(xyz[0usize]), f32.from(xyz[1usize]), f32.from(xyz[2usize])));
+        vertexLines = vertexLines + 1usize;
+      }
+      at = e + 1usize;
+    }
+    if vertexLines == 0usize || vertexLines % 3usize != 0usize {
+      problems.push(stlProblem("ASCII STL with ", vertexLines, " 'vertex' lines, not a positive multiple of three"));
+      return Mesh();
+    }
+  } else {
+    problems.push(String.from("not an STL file: too short for its triangle count, and not ASCII"));
+    return Mesh();
+  }
+  weldCorners(&raw)
+}
+
+// The STL file at 'path' as a mesh (see 'meshFromStl'); a file that cannot be
+// read gives an empty mesh and says so in 'problems'
+pub fn readStl(path: &Path, problems: &mut List[String]) Mesh {
+  var cpath = String.from(path.view());
+  let f = libc.fopen(cpath.cstr(), "rb");
+  if !f {
+    var msg = String.from("cannot open ");
+    msg.append(path.view());
+    problems.push(msg);
+    return Mesh();
+  }
+  var data = List[u8]();
+  var buf = Array[u8, 65536]() <- fill 0u8;
+  var got = libc.fread(&mut buf[0], 1usize, 65536usize, f);
+  while got > 0usize {
+    var i = 0usize;
+    while i < got { data.push(buf[i]); i = i + 1usize; }
+    got = libc.fread(&mut buf[0], 1usize, 65536usize, f);
+  }
+  libc.fclose(f);
+  meshFromStl(data.view(), problems)
+}
+
+// A mesh as binary STL bytes: an 80-byte header ("cone mesh"), the triangle
+// count, then per triangle its unit normal (by the right-hand rule on its
+// corners; zero if it has no area), its three corners and a zero attribute.
+// Indices past the last vertex are not checked; a trailing partial triangle is left out.
+pub fn stlBytes(m: &Mesh) List[u8] {
+  let nt = m.indices.len() / 3usize;
+  var out = List[u8].withCapacity(84usize + 50usize * nt);
+  let head = "cone mesh";
+  var i = 0usize;
+  while i < 80usize {
+    out.push(if i < head.len { head[i] } else { 0u8 });
+    i = i + 1usize;
+  }
+  putU32(&mut out, u32.from(nt));
+  var t = 0usize;
+  while t < nt {
+    let nrm = m.triangleNormal(t);
+    putF32(&mut out, nrm.x);
+    putF32(&mut out, nrm.y);
+    putF32(&mut out, nrm.z);
+    var k = 0usize;
+    while k < 3usize {
+      let p = *m.positions[usize.from(*m.indices[3usize * t + k])];
+      putF32(&mut out, p.x);
+      putF32(&mut out, p.y);
+      putF32(&mut out, p.z);
+      k = k + 1usize;
+    }
+    out.push(0u8);
+    out.push(0u8);
+    t = t + 1usize;
+  }
+  out
+}
+
+// Write a mesh's binary STL to the file at 'path', replacing it; false if the
+// file could not be written
+pub fn writeStl(m: &Mesh, path: &Path) bool {
+  let bytes = stlBytes(m);
+  writeFile(path, bytes.view())
+}
+
+// ---- helpers ----
+
+fn stlProblem(a: &str, n: usize, b: &str) String {
+  var s = String.from(a);
+  s.appendUInt(u64.from(n));
+  s.append(b);
+  s
+}
+
+fn finite3(p: Vec3) bool {
+  p.x - p.x == 0. && p.y - p.y == 0. && p.z - p.z == 0.
+}
+
+fn readU32(d: &Array[u8], at: usize) u32 {
+  u32.from(d[at]) | (u32.from(d[at + 1usize]) << 8u32) | (u32.from(d[at + 2usize]) << 16u32) | (u32.from(d[at + 3usize]) << 24u32)
+}
+
+fn readF32(d: &Array[u8], at: usize) f32 { f32.fromBits(readU32(d, at)) }
+
+fn putU32(out: &mut List[u8], v: u32) {
+  out.push(u8.from(v & 255u32));
+  out.push(u8.from((v >> 8u32) & 255u32));
+  out.push(u8.from((v >> 16u32) & 255u32));
+  out.push(u8.from((v >> 24u32) & 255u32));
+}
+
+fn putF32(out: &mut List[u8], v: f32) { putU32(out, v.bits()); }
+
+// Corners ordered by position (x, then y, then z), ties by corner number: a
+// total order on finite values, so the weld does not depend on the sort
+struct CornerOrder['a] {
+  raw: &'a List[Vec3];
+  pub fn `()`(self: &, a: &u32, b: &u32) i32 {
+    let p = *raw[usize.from(*a)];
+    let q = *raw[usize.from(*b)];
+    if p.x < q.x { return -1i32; }
+    if p.x > q.x { return 1i32; }
+    if p.y < q.y { return -1i32; }
+    if p.y > q.y { return 1i32; }
+    if p.z < q.z { return -1i32; }
+    if p.z > q.z { return 1i32; }
+    *a <=> *b
+  }
+}
+
+// A Mesh of the triangles whose corners are 'raw' (three each), equal positions
+// made one vertex, numbered in the order the corners first name them
+fn weldCorners(raw: &List[Vec3]) Mesh {
+  var m = Mesh();
+  let nc = raw.len();
+  var order = List[u32].withCapacity(nc);
+  var rep = List[u32].withCapacity(nc);
+  var i = 0usize;
+  while i < nc {
+    order.push(u32.from(i));
+    rep.push(0u32);
+    i = i + 1usize;
+  }
+  order.sortBy(&CornerOrder(raw));
+  // Each corner's representative: the lowest-numbered corner at its position
+  var start = 0usize;
+  while start < nc {
+    let first = *order[start];
+    let p = *raw[usize.from(first)];
+    var end = start + 1usize;
+    while end < nc {
+      let q = *raw[usize.from(*order[end])];
+      if q.x != p.x || q.y != p.y || q.z != p.z { break; }
+      end = end + 1usize;
+    }
+    var k = start;
+    while k < end {
+      rep.set(usize.from(*order[k]), first);
+      k = k + 1usize;
+    }
+    start = end;
+  }
+  var id = List[u32].withCapacity(nc);
+  i = 0usize;
+  while i < nc {
+    id.push(NoIndex);
+    i = i + 1usize;
+  }
+  i = 0usize;
+  while i < nc {
+    let r = usize.from(*rep[i]);
+    if *id[r] == NoIndex {
+      id.set(r, u32.from(m.positions.len()));
+      m.positions.push(*raw[r]);
+    }
+    m.indices.push(*id[r]);
+    i = i + 1usize;
+  }
+  m
+}
