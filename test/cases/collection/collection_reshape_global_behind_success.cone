@@ -1,0 +1,58 @@
+// A 'var' global is a holder of what a method behind a virtual reference lends only if its type
+// could hold what is lent: a value that is one of the borrowed trait. 'Tcb' is no 'Error' and no
+// 'Shape', so core's 'Error.report', which calls through the '&<Error' a 'source' answers, and a
+// function doing the same with a trait of the program's own ('pokeAll'), are not told that 'cur'
+// may hold what was lent. Before, the first line of 'main' alone brought 14 errors from inside
+// core. (collection_flow_reshape_global_behind holds a global that could hold it.)
+// The one 'Leaf' behind 'tree' adds 10.
+
+mod collection_reshape_global_behind_success;
+
+import collections use *;
+import stdio use *;
+
+struct Tcb { pub n: i64; }
+
+var cur: Option[Rc[mut, Tcb]] = None[Rc[mut, Tcb]];
+
+trait Shape {
+  pub fn part(self: &) Option[&<Shape] { None }
+  pub fn poke(self: &, out: &uni i64);
+}
+
+struct Leaf is Shape {
+  pub fn poke(self: &, out: &uni i64) { *out = *out + 10; }
+}
+
+struct Tree is Shape {
+  pub leaf: Leaf;
+  pub fn part(self: &) Option[&<Shape] { Some[&<Shape](&leaf) }
+  pub fn poke(self: &, out: &uni i64) {}
+}
+
+fn pokeAll(s: &Tree, out: &uni i64) {
+  var at = s.part();
+  var more = true;
+  while more {
+    match at {
+      case let Some(p) {
+        p.poke(&uni *out);
+        at = p.part();
+      }
+      case is None { more = false; }
+    }
+  }
+}
+
+fn main() {
+  var zl = List[Option[i64]]();
+  zl.push(Some(1));
+  cur = Some(Rc[mut, Tcb](3));
+  let tree = Tree(Leaf());
+  var n = 0i64;
+  pokeAll(&tree, &uni n);
+  match cur {
+    case let Some(t) { print <- n, " ", t.n, " ", zl.len(), "\n"; }
+    else {}
+  }
+}
