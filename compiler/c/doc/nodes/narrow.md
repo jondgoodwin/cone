@@ -46,6 +46,16 @@ narrowing of this pass (`NarrowFact.depth`).
 whatever the permission of `p`. A borrow of that borrow (`&mut &mut p`) is reached through it,
 so ends nothing more. One made before the test and still held there is the loan walk's, below.
 
+**A change in a later operand of a condition.** The tests of a condition are asked again once
+an operand is checked, for the one after it (`narrowAssumeLocal`), and once the whole is, for
+the branches (`narrowAssume`). A test whose name has changed since it was checked says nothing
+then: `narrowNoteTest` notes with each test how many changes had been made (`gChanged`, every
+`narrowKill`, whether or not it ended a narrowing), and `narrowAssumeCond` passes over a test
+whose name is among those made since. In `if s is Circle && reset(&mut s)` neither the block
+nor an operand after `reset` knows `s` from that test. What the environment holds stands: the
+change, so a use is `ErrorNarrowStale`, or nothing, where paths met after a store of a known
+variant. A test after the change (`reset(&mut s) && s is Circle`) narrows as any other.
+
 **What is narrowed.** A local or a parameter that is named in source (a hidden variable's name
 starts with `-`, or is `_`), of a closed enum (`narrowClosedEnum`: a trait with no base that has
 a tag or is `SameSize`, at most 64 variants), held by value or through a borrowed reference.
@@ -159,10 +169,6 @@ of it: `x += x` reads what it writes.
 - **It never proves a call harmless for a name held by value or through `uni`, `imm`, `mut1`,
   in type check.** Only the name's own assignments, writable borrows of the whole enum and
   swaps end the narrowing there; what another name may change is the loan walk's, above.
-- **A change in a later operand of a condition is forgotten** for a name held by value or through
-  `uni`, `imm`, `mut1`. The block of `if s is Circle && reset(&mut s)`, and an operand after
-  `reset`, are narrowed again from the `is` tests of the whole condition (`narrowAssume`,
-  `narrowAssumeLocal`).
 - **It does not retype the name.** Only a member of the variant named on it sees the variant.
   Passing the name where the variant is wanted is still a type error, since the name is the
   original value (4c).

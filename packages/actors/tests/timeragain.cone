@@ -1,0 +1,302 @@
+// A held Timer's next() awaited again after a wrapper's cancel won (row 875).
+// The first next() stays parked with a Reply nobody reads, and the second
+// takes its place: it stopped the program, "awaited while another is".
+//
+// 1. Parked: the cancel wins, and the next next() gets the next tick: awaited
+//    plain, wrapped, under two wrappers, after a first under two, and after a
+//    second cancel (taken over twice).
+// 2. Already due when the second is awaited.
+// 3. The arrive slot in flight: the actor is held in one turn past the
+//    deadline, with the second queued behind it, ahead of the slot. Plain and
+//    wrapped; with a later move ahead of the second, so the arrival puts it
+//    back to wait; and with stop() ahead of the second: false.
+// 4. The tick racing the second await, 500 rounds: the second gets one tick
+//    each time.
+// Nothing stays owed, and every actor made is finalized when its handle goes:
+// the count a parked next() holds of its actor is neither leaked nor let go
+// twice. Two live awaits still panic: timertwice.
+
+mod timeragain;
+
+import testing use *;
+import stdio use *;
+import thread;
+import time use Duration, Instant;
+import sync use Channel, Sender, Receiver;
+import cancelgroups use CancelGroup;
+import actors use Timer;
+
+const anHour = 3600000000000i64;
+const wasFalse = 0u64;
+const wasTrue = 1u64;
+const wasErr = 2u64;
+const rounds = 500u64;
+
+let finalized = Atomic[u64].of(0u64);
+
+struct Mark is Move {
+  pub n: u64;
+  fn final(self: &uni) {
+    finalized.add(1u64);
+  }
+}
+
+fn nowNs() i64 {Instant.now().nanos()}
+fn fromNow(ns: i64) Instant {Instant.fromNanos(nowNs() + ns)}
+fn flag(v: bool) u64 {if v {wasTrue} else {wasFalse}}
+
+actor Asker {
+  mark: Mark;
+  timer: Timer;
+  woke: Sender[u64];
+  pong: Sender[u64];
+
+  // Set ns from now and await it, wrapped
+  pub async fn first(self, ns: i64) {
+    timer.set(fromNow(ns));
+    match await actors.orCancelledOp(timer.next()) {
+      case let Ok(v) {woke.send(flag(v));}
+      case let Err(c) {woke.send(wasErr);}
+    }
+  }
+
+  // ... under two wrappers
+  pub async fn firstTwice(self, ns: i64) {
+    timer.set(fromNow(ns));
+    match await actors.orCancelledOp(actors.orCancelledOp(timer.next())) {
+      case let Ok(r) {woke.send(8u64);}
+      case let Err(c) {woke.send(wasErr);}
+    }
+  }
+
+  // The second await, with no set of its own
+  pub async fn plain(self) {
+    let v = await timer.next();
+    woke.send(flag(v));
+  }
+
+  pub async fn wrapped(self) {
+    match await actors.orCancelledOp(timer.next()) {
+      case let Ok(v) {woke.send(flag(v));}
+      case let Err(c) {woke.send(wasErr);}
+    }
+  }
+
+  pub async fn twice(self) {
+    match await actors.orCancelledOp(actors.orCancelledOp(timer.next())) {
+      case let Ok(r) {
+        match r {
+          case let Ok(v) {woke.send(flag(v));}
+          case let Err(c) {woke.send(8u64);}
+        }
+      }
+      case let Err(c) {woke.send(wasErr);}
+    }
+  }
+
+  // Moved to a deadline already passed, then awaited
+  pub async fn due(self) {
+    timer.set(fromNow(-1000i64));
+    let v = await timer.next();
+    woke.send(flag(v));
+  }
+
+  // The race's second: the first may have had the tick, so a deadline is set
+  // if there is none
+  pub async fn raced(self) {
+    match timer.deadline() {
+      case let Some(t) {}
+      else {timer.set(fromNow(20000i64));}
+    }
+    let v = await timer.next();
+    woke.send(flag(v));
+  }
+
+  // One turn held for ns
+  pub async fn busy(self, ns: i64) {
+    let until = nowNs() + ns;
+    while nowNs() < until {
+      thread.yieldNow();
+    }
+  }
+
+  pub async fn later(self) {
+    timer.set(fromNow(30000000i64));
+  }
+
+  pub async fn hurry(self) {
+    timer.set(Instant.now());
+  }
+
+  pub async fn stopIt(self) {
+    timer.stop();
+  }
+
+  pub async fn ping(self) {
+    pong.send(0u64);
+  }
+}
+
+fn owed() u64 {u64.from(actors.lateAnswersOwed())}
+
+fn idle(what: &'static str) {
+  expect(actors.waitUntilIdleFor(Duration.fromSeconds(10i64)), what);
+}
+
+// Whether what is owed comes to n (the old Reply is answered by a send)
+fn owedComesTo(n: u64) bool {
+  var waited = 0u64;
+  while owed() != n && waited < 1000u64 {
+    thread.sleep(Duration.fromMillis(1i64));
+    waited = waited + 1u64;
+  }
+  owed() == n
+}
+
+// The answer of the ping runs once the behaviour sent before it has parked
+fn asked(a: &Asker, prx: &mut Receiver[u64]) {
+  a.ping();
+  let got = prx.recv() || 9u64;
+}
+
+// Park a with an await in a group of its own, then cancel it: Err, with next()
+// left parked
+fn cancelWins(a: &Asker, wrx: &mut Receiver[u64], prx: &mut Receiver[u64], two: bool) {
+  let g = CancelGroup.make();
+  if two {
+    actors.withGroup(&g, fn() [a] { a.firstTwice(anHour); });
+  } else {
+    actors.withGroup(&g, fn() [a] { a.first(anHour); });
+  }
+  asked(a, &mut *prx);
+  g.cancel();
+  expectUInt(wrx.recv() || 9u64, wasErr, "the cancel wins: Err");
+}
+
+// The second has taken the first's place: nothing owed, and the tick is its
+fn ticks(a: &Asker, wrx: &mut Receiver[u64], prx: &mut Receiver[u64], what: &'static str) {
+  asked(a, &mut *prx);
+  expect(owedComesTo(0u64), what);
+  a.hurry();
+  expectUInt(wrx.recv() || 9u64, wasTrue, what);
+}
+
+fn runAll() u64 {
+  var wtx: Sender[u64];
+  var wrx: Receiver[u64];
+  wtx, wrx = Channel[u64].make();
+  var ptx: Sender[u64];
+  var prx: Receiver[u64];
+  ptx, prx = Channel[u64].make();
+
+  // 1. parked
+  let a = Asker(Mark(1u64), Timer.make(), wtx.clone(), ptx.clone());
+  cancelWins(&a, &mut wrx, &mut prx, false);
+  a.plain();
+  ticks(&a, &mut wrx, &mut prx, "1: plain after the cancel: the next tick");
+  cancelWins(&a, &mut wrx, &mut prx, false);
+  let live = CancelGroup.make();
+  actors.withGroup(&live, fn() [a] { a.wrapped(); });
+  ticks(&a, &mut wrx, &mut prx, "1: wrapped, in a live group");
+  cancelWins(&a, &mut wrx, &mut prx, false);
+  actors.withGroup(&live, fn() [a] { a.twice(); });
+  ticks(&a, &mut wrx, &mut prx, "1: under two wrappers");
+  cancelWins(&a, &mut wrx, &mut prx, true);
+  a.plain();
+  ticks(&a, &mut wrx, &mut prx, "1: after a first under two wrappers");
+  cancelWins(&a, &mut wrx, &mut prx, false);
+  let second = CancelGroup.make();
+  actors.withGroup(&second, fn() [a] { a.wrapped(); });
+  asked(&a, &mut prx);
+  second.cancel();
+  expectUInt(wrx.recv() || 9u64, wasErr, "1: the second is cancelled too");
+  a.plain();
+  ticks(&a, &mut wrx, &mut prx, "1: taken over twice");
+  idle("1: idle");
+
+  // 2. already due
+  cancelWins(&a, &mut wrx, &mut prx, false);
+  a.due();
+  expectUInt(wrx.recv() || 9u64, wasTrue, "2: already due: true");
+  expect(owedComesTo(0u64), "2: nothing owed");
+  idle("2: idle");
+
+  // 3. the arrive slot in flight
+  // (the third and fourth: moved later ahead of the second, so that the arrival
+  // puts the second's Reply back to wait)
+  var k = 0u64;
+  while k < 5u64 {
+    let g = CancelGroup.make();
+    actors.withGroup(&g, fn() [a] { a.first(30000000i64); });
+    asked(&a, &mut prx);
+    g.cancel();
+    expectUInt(wrx.recv() || 9u64, wasErr, "3: the cancel wins");
+    a.busy(80000000i64);
+    if k == 2u64 || k == 3u64 {
+      a.later();
+    }
+    if k == 4u64 {
+      a.stopIt();
+    }
+    if k == 1u64 || k == 3u64 {
+      actors.withGroup(&live, fn() [a] { a.wrapped(); });
+    } else {
+      a.plain();
+    }
+    expectUInt(wrx.recv() || 9u64, if k == 4u64 {wasFalse} else {wasTrue},
+      "3: the slot in flight answers the second");
+    expect(owedComesTo(0u64), "3: nothing owed");
+    idle("3: idle");
+    k = k + 1u64;
+  }
+
+  // 4. the tick racing the second await
+  let r = Asker(Mark(2u64), Timer.make(), wtx.clone(), ptx.clone());
+  var seconds = 0u64;
+  var woken = 0u64;
+  k = 0u64;
+  while k < rounds {
+    let g = CancelGroup.make();
+    let due = i64.from((k * 7u64) % 80u64) * 1000i64;
+    actors.withGroup(&g, fn() [r, due] { r.first(due); });
+    let until = nowNs() + i64.from((k * 13u64) % 60u64) * 1000i64;
+    while nowNs() < until {
+      thread.yieldNow();
+    }
+    g.cancel();
+    if (wrx.recv() || 9u64) == wasErr {
+      woken = woken + 1u64;
+    }
+    r.raced();
+    if (wrx.recv() || 9u64) == wasTrue {
+      seconds = seconds + 1u64;
+    }
+    k = k + 1u64;
+  }
+  expectUInt(seconds, rounds, "4: every second await had its tick");
+  idle("4: idle");
+  expect(owedComesTo(0u64), "4: nothing owed");
+  eprint <- "4: ", woken, " woken by the cancel\n";
+  var extra = 0u64;
+  match wrx.tryRecv() {
+    case let Some(v) {extra = 1u64;}
+    else {}
+  }
+  expectUInt(extra, 0u64, "4: and nothing answered twice");
+  2u64
+}
+
+fn main() i32 {
+  initAll();
+  actors.configure(actors.Options(workers: 4u32));
+  let made = runAll();
+  idle("idle: every operation spent");
+  var waited = 0u64;
+  while (finalized.load() < made || actors.timerStats().held != 0u64) && waited < 500u64 {
+    thread.sleep(Duration.fromMillis(10i64));
+    waited = waited + 1u64;
+  }
+  expectUInt(finalized.load(), made, "every actor finalized once: no count of one left or let go twice");
+  expect(actors.timerStats().held == 0u64, "no cell held once the Timers have gone");
+  done()
+}
