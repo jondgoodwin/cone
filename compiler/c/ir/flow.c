@@ -2360,6 +2360,9 @@ static int flowGateReachesOwner(INode *type, int depth) {
         uint16_t flags = permGetFlags(ref->perm);
         if (itypeGetTypeDcl(ref->region) != borrowRef && (flags & MayAlias) && !(flags & MayIntRefSum))
             return 1;
+        // A borrowed trait object: what is behind it is not named, and may hold such an owner
+        if (type->tag == VirtRefTag && itypeGetTypeDcl(ref->region) == borrowRef)
+            return 1;
         return type->tag != VirtRefTag && flowGateReachesOwner(ref->vtexp, depth + 1);
     }
     case PtrTag:

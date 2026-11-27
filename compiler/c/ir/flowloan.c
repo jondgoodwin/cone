@@ -446,6 +446,17 @@ uint32_t loanCaller(uint32_t var, uint32_t part) {
     return id;
 }
 
+uint32_t loanOwnNext(uint32_t var, uint32_t loan) {
+    uint32_t id = loan ? loans[loan].next : pathVars[var].loans;
+    while (id && (loans[id].kind == LoanCaller || loans[id].place.deref))
+        id = loans[id].next;
+    return id;
+}
+
+uint32_t loanMayHolder(uint32_t loan, uint32_t k) {
+    return k < loans[loan].nmay ? maypool[loans[loan].mayhold + k] : 0;
+}
+
 uint32_t loanRoot(uint32_t loan) {
     return loans[loan].place.var;
 }
@@ -2819,6 +2830,13 @@ static void loanShapeEmit(INode *node, uint32_t loan, int why, char *msg) {
     errorMsgNode(node, code, "%s", msg);
 }
 
+// What to do about a borrow held across a change, less the 'before this store' that
+// follows it. Behind a virtual reference there is no path of ours to make 'imm' or 'uni'
+static const char *loanShapeAdvice(uint32_t loan) {
+    return loans[loan].unseen ? "Copy what is needed out of the result"
+        : "Reach it through an 'imm' or 'uni' reference, or copy what is needed out";
+}
+
 static void loanShapeReport(Pending *pend, INode *usenode) {
     Loan *loan = &loans[pend->loan];
     ShapeNote *note = &shapenotes[pend->other];
@@ -2955,8 +2973,9 @@ static void loanShapeReport(Pending *pend, INode *usenode) {
         return;
     }
     snprintf(msg, sizeof(msg),
-        "This %s could change the shape of a %s while '%s' still holds a borrow into it (made %s, through a path other references share), used again %s: %s. A %s that changes shape may move or free what it lent. Reach it through an 'imm' or 'uni' reference, or copy what is needed out before this %s.",
-        what, cont, &holder->namesym->namestr, where, used, loanShapeReason(note, cont, sum, reason, sizeof(reason)), cont, what);
+        "This %s could change the shape of a %s while '%s' still holds a borrow into it (made %s, through a path other references share), used again %s: %s. A %s that changes shape may move or free what it lent. %s before this %s.",
+        what, cont, &holder->namesym->namestr, where, used, loanShapeReason(note, cont, sum, reason, sizeof(reason)), cont,
+        loanShapeAdvice(pend->loan), what);
     loanShapeEmit(pend->access, pend->loan, note->why, msg);
 }
 
@@ -2985,8 +3004,9 @@ void loanShapeNow(INode *call, uint32_t loan, int why, Name *callee) {
             what, cont, where, what, loanShapeReason(&note, cont, 1, reason, sizeof(reason)), what);
     else
         snprintf(msg, sizeof(msg),
-            "This %s could change the shape of a %s while a borrow into it (made %s, through a path other references share) is still to be used by this %s or by a value around it: %s. A %s that changes shape may move or free what it lent. Reach it through an 'imm' or 'uni' reference, or copy what is needed out before this %s.",
-            what, cont, where, what, loanShapeReason(&note, cont, sum, reason, sizeof(reason)), cont, what);
+            "This %s could change the shape of a %s while a borrow into it (made %s, through a path other references share) is still to be used by this %s or by a value around it: %s. A %s that changes shape may move or free what it lent. %s before this %s.",
+            what, cont, where, what, loanShapeReason(&note, cont, sum, reason, sizeof(reason)), cont,
+            loanShapeAdvice(loan), what);
     loanShapeEmit(call, loan, why, msg);
 }
 
