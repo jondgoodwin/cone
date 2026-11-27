@@ -1,0 +1,108 @@
+// A 'mut' or 'uni' borrow, or a key, of a variant of an '@unsized' enum is given
+// where the same kind of reference to the enum is wanted, with no 'as'. What is
+// written through it, a common field, a variant's fields and a whole variant
+// reached by matching, is read back through the variant's own name. Every line
+// printed is checked against the values written here.
+
+mod enum_unsized_widen;
+
+import stdio use *;
+import arena use *;
+
+enum @unsized Node {
+  pub kind: i32;
+  pub fn mark(self: &mut) {kind = kind + 100;}
+
+  struct Lit { pub val: i32; }
+  struct Add { pub a: i64; pub b: i64; }
+}
+use Node;
+
+enum @unsized Tree[T] {
+  pub struct Leaf { pub v: T; }
+  pub struct Pair { pub x: T; pub y: T; }
+}
+
+struct Holder { pub n: &mut Node; }
+
+fn show(label: &str, n: i64) {
+  printStr(label);
+  printStr(" = ");
+  printInt(n);
+  printStr("\n");
+}
+
+fn paint(s: &mut Node) {
+  s.kind = s.kind + 1;
+  match s {
+    case let &mut Lit(l) {l.val = l.val * 2;}
+    case let &mut Add(x) {x.a = x.a + x.b;}
+  }
+}
+
+fn take(s: &uni Node) i64 {
+  match s {
+    case let &uni Lit(l) {i64.from(l.val)}
+    else {0i64}
+  }
+}
+
+fn paintKey(ar: &mut DynArena['=a], k: &'=a mut Node) {
+  paint(&mut ar[k]);
+}
+
+fn bumpLeaf(t: &mut Tree[i32]) {
+  match t {
+    case let &mut Leaf(l) {l.v = l.v + 1i32;}
+    else {}
+  }
+}
+
+fn asNode(l: &mut Lit) &mut Node {l}
+
+// A function taking the enum's reference stands for one taking a variant's
+fn apply(f: &fn(s: &mut Lit), l: &mut Lit) {f(l);}
+
+fn main() {
+  var lit = Lit(1, 5);
+  paint(&mut lit);
+  show("borrow kind", i64.from(lit.kind));      // 1 + 1
+  show("borrow val", i64.from(lit.val));        // 5 * 2
+
+  var add = Add(2, 3i64, 4i64);
+  paint(&mut add);
+  show("borrow add", add.a);                    // 3 + 4
+
+  paint(asNode(&mut lit));
+  show("returned val", i64.from(lit.val));      // 10 * 2
+
+  let h = Holder(&mut lit);
+  paint(h.n);
+  show("field val", i64.from(lit.val));         // 20 * 2
+
+  let n: &mut Node = &mut lit;
+  n.mark();
+  show("method kind", i64.from(lit.kind));      // 1 + 3 paints + 100
+
+  var other = Add(0, 1i64, 1i64);
+  let joined = if lit.kind > 0 {&mut lit} else {&mut other};
+  paint(joined);
+  show("joined val", i64.from(lit.val));        // 40 * 2
+
+  var u = Lit(0, 9);
+  show("uni val", take(&uni u));                // 9
+
+  var leaf = Tree.Leaf[i32](6i32);
+  bumpLeaf(&mut leaf);
+  show("generic leaf", i64.from(leaf.v));       // 6 + 1
+
+  var ar = DynArena.empty();
+  let k = ar.alloc(Lit(0, 11));
+  paintKey(&mut ar, k);
+  show("key val", i64.from(ar[k].val));         // 11 * 2
+  show("key kind", i64.from(ar[k].kind));       // 0 + 1
+
+  var last = Lit(0, 13);
+  apply(&paint, &mut last);
+  show("signature val", i64.from(last.val));    // 13 * 2
+}

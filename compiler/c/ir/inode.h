@@ -244,6 +244,9 @@ enum NodeTags {
 // of the value it is given. 0x2000 is free on a variable: it is a name use's FlagHollowOut.
 #define FlagDestructDcl 0x2000      // VarDcl: a name of 'let a, b = values;', hooked and typed by its assignment
 #define FlagDestructAssign 0x2000   // Assign: the assignment that declares the names before it ('let a, b = values;')
+// A store of a variant over a name held by value, which narrows the name to it (narrow.h);
+// the loan walk is told where (flowpath.c, pwNarrowName)
+#define FlagNarrowAssigned 0x1000   // Assign: the name stored is narrowed to the variant
 
 // A macro's value parameter written 'a: lazy T': its argument is substituted
 // whole wherever the parameter appears, rather than evaluated once

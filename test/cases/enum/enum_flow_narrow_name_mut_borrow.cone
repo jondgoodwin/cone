@@ -1,0 +1,317 @@
+// A name narrowed to a variant by a test ('if s is Circle { s.r }') is read as that variant
+// from its own storage: no reference is made. Nothing changes the variant by that name
+// without ending the narrowing, but a 'mut' borrow of the enum, or of the reference it is
+// reached through, is another name that may store another variant. Where one is held at the
+// test, a change of variant is refused where the name is next used as the variant, and the
+// refusal names the 'mut' borrow. enum_narrow_name_mut_borrow_success holds what is
+// accepted beside each.
+
+mod enum_flow_narrow_name_mut_borrow;
+
+import stdio use *;
+
+enum Shape {
+  struct Circle {
+    pub r: i32;
+
+    fn radius(self: &) &i32 {
+      return &self.r;
+    }
+  }
+
+  struct Square {
+    pub s: i32;
+  }
+}
+use Shape;
+
+// The payload a stale read would take for a pointer and a length
+enum Slot {
+  struct Text {
+    pub s: &str;
+  }
+
+  struct Num {
+    pub a: usize;
+    pub b: usize;
+  }
+}
+use Slot;
+
+// Three variants, so that two tests are needed to leave one
+enum Three {
+  struct One {
+    pub x: usize;
+  }
+
+  struct Two {
+    pub y: usize;
+  }
+
+  struct Many {
+    pub a: usize;
+    pub b: usize;
+  }
+}
+use Three;
+
+struct W {
+  pub sh: Shape;
+}
+
+struct Holder {
+  pub p: &mut Shape;
+
+  fn go(self: &mut) {
+    *self.p = Square(99);
+  }
+}
+
+fn set(m: &mut Shape) {
+  *m = Square(99);
+}
+
+fn setTrue(m: &mut Shape) bool {
+  *m = Square(99);
+  return true;
+}
+
+fn setNum(m: &mut Shape) i32 {
+  *m = Square(99);
+  return 1;
+}
+
+fn setPast(m: &mut &uni Shape) {
+  **m = Square(99);
+}
+
+// A local, stored over through the 'mut' borrow: the stale payload is a string's pointer
+// and length
+fn local() {
+  var s: Slot = Text("hello");
+  let m = &mut s;
+  if s is Text {
+    *m = Num(4096usize, 8usize);
+    printStr(s.s);                      //~ ErrorVariantReshape "while the 'mut' borrow made"
+  }
+}
+
+// What a 'uni' parameter points at, reborrowed 'mut'
+fn param(p: &uni Shape) {
+  let m = &mut *p;
+  if p is Circle {
+    *m = Square(99);
+    printInt(i64.from(p.r));            //~ ErrorVariantReshape "while the 'mut' borrow made"
+  }
+}
+
+// What a local 'uni' reference points at
+fn localRef() {
+  var s: Shape = Circle(5);
+  var p = &uni s;
+  let m = &mut *p;
+  if p is Circle {
+    set(m);
+    printInt(i64.from(p.r));            //~ ErrorVariantReshape "'set' is handed something that reaches a 'Shape' value"
+  }
+}
+
+// The 'mut' borrow is of the variable holding the 'uni' reference
+fn pastReference(var p: &uni Shape) {
+  let m = &mut p;
+  if p is Circle {
+    setPast(m);
+    printInt(i64.from(p.r));            //~ ErrorVariantReshape "'setPast' is handed something that reaches a 'Shape' value"
+  }
+}
+
+// A 'uni' reference to a field of a struct
+fn fieldReference() {
+  var w = W(Circle(5));
+  var p = &uni w.sh;
+  let m = &mut *p;
+  if p is Circle {
+    *m = Square(99);
+    printInt(i64.from(p.r));            //~ ErrorVariantReshape "while the 'mut' borrow made"
+  }
+}
+
+// Bound by 'if let' from the name, which narrows the name too
+fn bound() {
+  var s: Shape = Circle(5);
+  let m = &mut s;
+  if let Circle(c) = s {
+    *m = Square(99);
+    printInt(i64.from(s.r));            //~ ErrorVariantReshape "while the 'mut' borrow made"
+  }
+}
+
+// A 'while' test
+fn looped() {
+  var s: Shape = Circle(5);
+  let m = &mut s;
+  while s is Circle {
+    *m = Square(99);
+    printInt(i64.from(s.r));            //~ ErrorVariantReshape "while the 'mut' borrow made"
+  }
+}
+
+// A later test of an 'else if' chain
+fn chained() {
+  var s: Three = One(1usize);
+  let m = &mut s;
+  if s is Two {
+    printInt(i64.from(s.y));
+  }
+  else if s is One {
+    *m = Many(2usize, 3usize);
+    printInt(i64.from(s.x));            //~ ErrorVariantReshape "while the 'mut' borrow made"
+  }
+}
+
+// Narrowed by what a test failed to find
+fn otherwise() {
+  var s: Shape = Circle(5);
+  let m = &mut s;
+  if s is Square {}
+  else {
+    *m = Square(99);
+    printInt(i64.from(s.r));            //~ ErrorVariantReshape "while the 'mut' borrow made"
+  }
+}
+
+// Left by an early return
+fn leaves() {
+  var s: Shape = Circle(5);
+  let m = &mut s;
+  if !(s is Circle) {
+    return;
+  }
+  *m = Square(99);
+  printInt(i64.from(s.r));              //~ ErrorVariantReshape "while the 'mut' borrow made"
+}
+
+// Two tests leave one variant, and the change comes between them
+fn between() {
+  var s: Three = One(1usize);
+  let m = &mut s;
+  if s is Many {
+    return;
+  }
+  *m = Many(2usize, 3usize);
+  if s is Two {
+    return;
+  }
+  printInt(i64.from(s.x));              //~ ErrorVariantReshape "while the 'mut' borrow made"
+}
+
+// A 'match' by value tests the name
+fn matched() {
+  var s: Slot = Text("hello");
+  let m = &mut s;
+  match s {
+    case is Text {
+      *m = Num(4096usize, 8usize);
+      printStr(s.s);                    //~ ErrorVariantReshape "while the 'mut' borrow made"
+    }
+    else {}
+  }
+}
+
+// A variant stored over the name narrows it too
+fn assigned() {
+  var s: Slot = Num(1usize, 2usize);
+  let m = &mut s;
+  s = Text("hello");
+  *m = Num(4096usize, 8usize);
+  printStr(s.s);                        //~ ErrorVariantReshape "while the 'mut' borrow made"
+}
+
+// A call made later in the condition that narrowed it
+fn inCondition() {
+  var s: Shape = Circle(5);
+  let m = &mut s;
+  if s is Circle && setTrue(m) {
+    printInt(i64.from(s.r));            //~ ErrorVariantReshape "while the 'mut' borrow made"
+  }
+}
+
+// The value stored into the variant's field changes the variant
+fn storedInto() {
+  var s: Shape = Circle(5);
+  let m = &mut s;
+  if s is Circle {
+    s.r = setNum(m);                    //~ ErrorVariantReshape "'setNum' is handed something that reaches a 'Shape' value"
+  }
+}
+
+// A borrow of a field of the variant, and one a method of the variant returns
+fn borrowed() {
+  var s: Shape = Circle(5);
+  let m = &mut s;
+  if s is Circle {
+    let k = &s.r;
+    set(m);
+    printInt(i64.from(*k));             //~ ErrorVariantReshape "while the 'mut' borrow made"
+  }
+}
+
+fn returned(p: &uni Shape) {
+  let m = &mut *p;
+  if p is Circle {
+    let k = p.radius();
+    *m = Square(99);
+    printInt(i64.from(*k));             //~ ErrorVariantReshape "while the 'mut' borrow made"
+  }
+}
+
+// The 'mut' borrow is held in a struct, and stored through by its method
+fn held() {
+  var s: Shape = Circle(5);
+  var h = Holder(&mut s);
+  if s is Circle {
+    h.go();
+    printInt(i64.from(s.r));            //~ ErrorVariantReshape "'go' is handed something that reaches a 'Shape' value"
+  }
+}
+
+// A closure captured the 'mut' borrow
+fn captured() {
+  var s: Shape = Circle(5);
+  let m = &mut s;
+  var f = fn() [m] { set(m); };
+  if s is Circle {
+    f();
+    printInt(i64.from(s.r));            //~ ErrorVariantReshape "while the 'mut' borrow made"
+  }
+}
+
+// The 'mut' borrow is held on one path only
+fn onePath(go: bool) {
+  var s: Shape = Circle(5);
+  var other: Shape = Circle(1);
+  var m = &mut other;
+  if go {
+    m = &mut s;
+  }
+  if s is Circle {
+    *m = Square(99);
+    printInt(i64.from(s.r));            //~ ErrorVariantReshape "while the 'mut' borrow made"
+  }
+}
+
+// The 'mut' borrow is made after the test, and held when the loop comes round again
+fn around() {
+  var s: Shape = Circle(5);
+  var other: Shape = Circle(1);
+  var m = &mut other;
+  var i = 0;
+  while i < 2 {
+    if s is Circle {
+      *m = Square(99);
+      printInt(i64.from(s.r));          //~ ErrorVariantReshape "while the 'mut' borrow made"
+    }
+    m = &mut s;
+    i += 1;
+  }
+}
