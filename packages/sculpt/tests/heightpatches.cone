@@ -1,0 +1,512 @@
+// The sculpt package's displacement of a region by a height patch, displaceRegion and HeightPatch, checked with the
+// testing package against values worked out by hand; only a failure prints, so heightpatches.out holds the summary.
+// Every result must pass validate().
+//
+// THE GRID. 16 x 16 quads of 0.25 over [-2, 2]^2 in the plane z = 0 (every coordinate is a multiple of 0.25, exact in
+// f32): vertex 17 j + i at (-2 + 0.25 i, -2 + 0.25 j), face 16 j + i the cell (i, j). The region is the cells 2 to 13
+// each way (12 x 12 = 144 faces), the square [-1.5, 1.5]^2; its ring is the cells in line with it, one cell out, that
+// share an edge with it: 4 x 12 = 48 faces (the cells at the corners share only a vertex); the other 256 - 144 - 48 = 64
+// faces are untouched. The vertices the region has are the 13 x 13 = 169 with |x| and |y| at most 1.5; the other
+// 289 - 169 = 120 are never moved. Axis (0, 0, 1).
+//
+// THE BUMP. Over the rectangle [-1, 1]^2 (origin (-1, -1, 0), sides (2, 0, 0) and (0, 2, 0)), 33 x 33 samples,
+//   h(s, t) = 0.5 c(s) c(t),   c(s) = (1 - cos(2 pi s)) / 2,   s, t the rectangle's coordinates in 0..1.
+// h is 0.5 at the centre (s = t = 1/2, c = 1), and 0 with slope 0 on the rectangle's edge (c(0) = c(1) = 0, c'(0) = 0).
+// - heightAt: exact at a sample (the spline passes through them): the centre (sample 16, 16) is 0.5 to 1e-6; the
+//   rectangle's corner 0; a point outside the rectangle exactly 0.
+// - The bicubic's own error. Catmull-Rom reproduces quadratics, and for f = x^3 on four unit-spaced samples it errs by
+//   -t(2t - 1)(t - 1) at t of the way between the middle two; the largest of |t(2t - 1)(t - 1)| is sqrt 3 / 36 =
+//   0.0481 (at t = (3 -+ sqrt 3) / 6). So for a smooth f the error in one direction is about
+//   (f''' / 6) h^3 (sqrt 3 / 36) = f''' h^3 (sqrt 3 / 216), h the sample spacing in the rectangle's own 0..1 units, here
+//   1/32. For the bump, d3/ds3 of h is 0.5 c(t) c'''(s), c''' = (2 pi)^3 sin(2 pi s) / 2, so |h_sss| <= 0.5 * 124.03 = 62.0
+//   (c(t) <= 1); the same for t. Each direction errs by at most 62.0 (1/32)^3 0.008019 = 1.52e-5, the two together
+//   3.03e-5 (the next term, with h'''' h^4, is about 4e-6, and f32 rounding 1e-7). The bound used is 4e-5. It holds in
+//   every cell that reads only samples of the bump. The first and last cell of each direction read one sample beyond the
+//   rectangle as 0 (the patch is 0 there), where the bump's own continuation is c(-1/32) = (2 pi / 32)^2 / 4 = 9.6e-3
+//   times 0.5 c(t) <= 4.8e-3 (its second derivative jumps from 9.87 c(t) to 0 at the edge): the spline's weight on that
+//   sample is -t(1 - t)^2 / 2, largest in size at t = 1/3 where it is 0.074, so the error there is up to
+//   0.074 x 4.8e-3 = 3.6e-4, plus the interior 3e-5: the bound used in those cells is 4e-4 (measured 3.51e-4).
+// - Run 1, the bump at maxEdge 0.15, 8 passes: every vertex of the result with |x|, |y| at most 1.5 (the region's
+//   vertices, new ones included) has z within 4e-5 of 0.5 c(s) c(t) at its own (x, y); no edge between two such
+//   vertices is longer than 0.15 (to 1e-5), measured on the displaced mesh (the grid's sides 0.25 and diagonals 0.354
+//   are all over, and the slope adds to them, so some passes run: more than 1 and at most 8; the cap is not hit, so no
+//   problem line). The x and y of every vertex of the input are as they were; each of the 120 vertices that no region
+//   face has is bit for bit the input's; the first 64 faces are the 64 untouched ones, quads, bit for bit and in order.
+// - Reach: the same bump over [-2, 2]^2 (so nonzero on the ring's own vertices too: at x = 1.75, s = 0.9375, c = 0.038,
+//   h = 0.019 on the line y = 0): the 120 vertices that no region face has are still bit for bit the input's, because a
+//   vertex outside the region is never moved. (A version that moved every vertex the patch reaches fails this.)
+// - Steep: heights 0 at columns 0 to 3 of 9 x 9 samples over [-1, 1]^2 (cell 0.25), 0.8 at columns 4 to 7, 0 at column
+//   8 (a step up and a step down, smoothed by the spline over one cell: slope about 3 to 4). At maxEdge 0.3, 10 passes:
+//   no region edge is over 0.3 after displacement, and the base's flat edges (0.25) were already under it, so this fails
+//   a version that measures before displacement (it stops after the diagonals are cut, with edges near 0.8 across a
+//   wall).
+// - A zero patch: at maxEdge 10 (nothing over) the result is the input itself, every position and every face as it was,
+//   the quads still quads; at maxEdge 0.15 the mesh is refined (more faces) and every z is exactly 0, and the
+//   input's vertices are bit for bit.
+// - The same run twice: the same bits.
+// - Refusals (one problem line, an unchanged copy): maxEdge 0; a face number 256 (outside the mesh); heights one short of
+//   nu * nv; maxEdge 1e-4 (the region's area 9 over 0.2436 maxEdge^2 is 3.7e9 faces). The empty list is a silent copy.
+//   The cap: maxEdge 0.05 with 1 pass hits it: one problem line, the mesh valid, the region's vertices moved.
+// - Channels (the bump at 0.15): a vertex channel "w" = x, a corner "uv" channel = (x, y), a face channel "id" = cell + 1,
+//   an edge channel "crease" = 3 on the edges along y = 0, 0 elsewhere. In the result every vertex's w is its x
+//   (the mean of the ends'); every corner's uv its vertex's (x, y) to 1e-6; every face's id the cell its centre lies in,
+//   plus 1; an edge between two vertices with y = 0 has crease 3 and every other 0.
+
+mod heightpatches;
+
+import testing use *;
+import stdio use *;
+import collections use *;
+import geomath use *;
+import mesh use *;
+import sculpt use *;
+
+fn clean(m: &PolyMesh, label: &Array[u8]) {
+  let problems = m.validate();
+  expectInt(i64.from(problems.len()), 0, label);
+}
+
+fn gridOf(n: u32) PolyMesh {
+  var pts = List[Vec3]();
+  var j = 0u32;
+  while j <= n {
+    var i = 0u32;
+    while i <= n {
+      pts.push(Vec3(-2. + 0.25 * f32.from(i), -2. + 0.25 * f32.from(j), 0.));
+      i = i + 1u32;
+    }
+    j = j + 1u32;
+  }
+  var counts = List[u32]();
+  var idx = List[u32]();
+  j = 0u32;
+  while j < n {
+    var i = 0u32;
+    while i < n {
+      let a = (n + 1u32) * j + i;
+      counts.push(4u32);
+      idx.push(a); idx.push(a + 1u32); idx.push(a + n + 2u32); idx.push(a + n + 1u32);
+      i = i + 1u32;
+    }
+    j = j + 1u32;
+  }
+  var problems = List[String]();
+  PolyMesh.fromPolygons(pts.view(), counts.view(), idx.view(), &mut problems)
+}
+
+// The cells lo to hi each way
+fn cells(lo: u32, hi: u32) List[u32] {
+  var out = List[u32]();
+  var j = lo;
+  while j <= hi {
+    var i = lo;
+    while i <= hi {
+      out.push(16u32 * j + i);
+      i = i + 1u32;
+    }
+    j = j + 1u32;
+  }
+  out
+}
+
+fn cosC(s: f32) f32 { 0.5 * (1. - (2. * pi * s).cos()) }
+
+// The analytic bump over [lo, hi]^2 at (x, y)
+fn bumpAt(x: f32, y: f32, lo: f32, hi: f32) f32 {
+  let s = (x - lo) / (hi - lo);
+  let t = (y - lo) / (hi - lo);
+  if s < 0. || s > 1. || t < 0. || t > 1. { return 0.; }
+  0.5 * cosC(s) * cosC(t)
+}
+
+// The bicubic's own error at (x, y), derived in the header: 4e-5 in the cells that read only samples of the bump, 4e-4 in
+// the first and last cell of each direction (which read one sample beyond the rectangle as 0, where the bump's
+// continuation is not 0)
+fn bumpTol(x: f32, y: f32, lo: f32, hi: f32) f32 {
+  let s = (x - lo) / (hi - lo);
+  let t = (y - lo) / (hi - lo);
+  let e: f32 = 1. / 32.;
+  if s >= e && s <= 1. - e && t >= e && t <= 1. - e || s < 0. || s > 1. || t < 0. || t > 1. { 0.00004 } else { 0.0004 }
+}
+
+fn bumpPatch(lo: f32, hi: f32) HeightPatch {
+  var h = List[f32]();
+  var j = 0u32;
+  while j < 33u32 {
+    var i = 0u32;
+    while i < 33u32 {
+      h.push(0.5 * cosC(f32.from(i) / 32.) * cosC(f32.from(j) / 32.));
+      i = i + 1u32;
+    }
+    j = j + 1u32;
+  }
+  HeightPatch(Vec3(lo, lo, 0.), Vec3(hi - lo, 0., 0.), Vec3(0., hi - lo, 0.), Vec3(0., 0., 1.), 33u32, 33u32, h)
+}
+
+fn stepPatch() HeightPatch {
+  var h = List[f32]();
+  var j = 0u32;
+  while j < 9u32 {
+    var i = 0u32;
+    while i < 9u32 {
+      h.push(if i >= 4u32 && i <= 7u32 && j >= 1u32 && j <= 7u32 { 0.8 } else { 0. });
+      i = i + 1u32;
+    }
+    j = j + 1u32;
+  }
+  HeightPatch(Vec3(-1., -1., 0.), Vec3(2., 0., 0.), Vec3(0., 2., 0.), Vec3(0., 0., 1.), 9u32, 9u32, h)
+}
+
+fn zeroPatch() HeightPatch {
+  var h = List[f32]();
+  var k = 0u32;
+  while k < 81u32 {
+    h.push(0.);
+    k = k + 1u32;
+  }
+  HeightPatch(Vec3(-1., -1., 0.), Vec3(2., 0., 0.), Vec3(0., 2., 0.), Vec3(0., 0., 1.), 9u32, 9u32, h)
+}
+
+fn inZone(p: Vec3) bool { p.x.abs() <= 1.5 && p.y.abs() <= 1.5 }
+
+fn samePos(a: Vec3, b: Vec3) bool { a.x == b.x && a.y == b.y && a.z == b.z }
+
+// Whether two meshes are the same bits: positions and faces
+fn sameMesh(a: &PolyMesh, b: &PolyMesh) bool {
+  if a.vertexCount() != b.vertexCount() || a.faceCount() != b.faceCount() { return false; }
+  var i = 0usize;
+  while i < a.vertexCount() {
+    if !samePos(*a.positions[i], *b.positions[i]) { return false; }
+    i = i + 1usize;
+  }
+  var f = 0usize;
+  while f < a.faceCount() {
+    let va = a.faceVertices(u32.from(f));
+    let vb = b.faceVertices(u32.from(f));
+    if va.len() != vb.len() { return false; }
+    var k = 0usize;
+    while k < va.len() {
+      if *va[k] != *vb[k] { return false; }
+      k = k + 1usize;
+    }
+    f = f + 1usize;
+  }
+  true
+}
+
+// The longest edge, after displacement, between two vertices inside the region's square; and how many such edges
+fn longestInZone(m: &PolyMesh) f32 {
+  var best: f32 = 0.;
+  var e = 0usize;
+  while e < m.edgeCount() {
+    let a = *m.positions[usize.from(m.fromVertex(2u32 * u32.from(e)))];
+    let b = *m.positions[usize.from(m.toVertex(2u32 * u32.from(e)))];
+    if inZone(a) && inZone(b) {
+      let l = (a - b).length();
+      if l > best { best = l; }
+    }
+    e = e + 1usize;
+  }
+  best
+}
+
+fn main() i32 {
+  heights();
+  bump();
+  reach();
+  steep();
+  zero();
+  determinism();
+  refusals();
+  channels();
+  done()
+}
+
+fn heights() {
+  let p = bumpPatch(-1., 1.);
+  expectFloat(f64.from(p.heightAt(Vec3(0., 0., 5.))), 0.5, 0.000001, "heightAt: the centre is 0.5");
+  expectFloat(f64.from(p.heightAt(Vec3(-1., -1., 0.))), 0., 0.0, "heightAt: the corner is 0");
+  expectFloat(f64.from(p.heightAt(Vec3(1.2, 0., 0.))), 0., 0.0, "heightAt: outside is 0");
+  expectFloat(f64.from(p.heightAt(Vec3(0., -1.0001, 0.))), 0., 0.0, "heightAt: outside is 0 (below)");
+  // a sample exactly: sample (8, 16) is at s = 0.25, t = 0.5: x = -0.5, y = 0
+  expectFloat(f64.from(p.heightAt(Vec3(-0.5, 0., 0.))), f64.from(bumpAt(-0.5, 0., -1., 1.)), 0.000001, "heightAt: a sample");
+  // between samples: within the bicubic's own error
+  var bad = 0u32;
+  var near: f32 = 0.;
+  var k = 0u32;
+  while k < 400u32 {
+    let x = -1. + 2. * f32.from(k) / 399.;
+    let y = -1. + 2. * f32.from((k * 37u32) % 400u32) / 399.;
+    let d = (p.heightAt(Vec3(x, y, 0.)) - bumpAt(x, y, -1., 1.)).abs();
+    if d > bumpTol(x, y, -1., 1.) { bad = bad + 1u32; }
+    if bumpTol(x, y, -1., 1.) > 0.0001 && d > near { near = d; }
+    k = k + 1u32;
+  }
+  expectInt(i64.from(bad), 0, "heightAt: within the bicubic's error of the bump");
+  expectBool(near > 0.00004, true, "heightAt: the border cells do err more, as derived");
+}
+
+fn bump() {
+  let g = gridOf(16u32);
+  let region = cells(2u32, 13u32);
+  let p = bumpPatch(-1., 1.);
+  var problems = List[String]();
+  let r = displaceRegion(&g, region.view(), &p, 0.15, 8u32, &mut problems);
+  expectInt(i64.from(problems.len()), 0, "bump: no problem");
+  clean(&r, "bump: valid");
+  expectBool(r.faceCount() > 144usize + 64usize, true, "bump: refined");
+  var bad = 0u32;
+  var i = 0usize;
+  while i < r.vertexCount() {
+    let q = *r.positions[i];
+    if inZone(q) {
+      let d = (q.z - bumpAt(q.x, q.y, -1., 1.)).abs();
+      if d > bumpTol(q.x, q.y, -1., 1.) { bad = bad + 1u32; }
+    }
+    i = i + 1usize;
+  }
+  expectInt(i64.from(bad), 0, "bump: every region vertex is on the bump");
+  expectBool(longestInZone(&r) <= 0.15 * 1.00001, true, "bump: no edge over maxEdge");
+  expectBool(longestInZone(&r) > 0.075, true, "bump: not refined past need");
+  // the input's vertices: x and y as they were; those no region face has, bit for bit
+  var xy = true;
+  var out = true;
+  i = 0usize;
+  while i < g.vertexCount() {
+    let a = *g.positions[i];
+    let b = *r.positions[i];
+    if a.x != b.x || a.y != b.y { xy = false; }
+    if !inZone(a) && !samePos(a, b) { out = false; }
+    i = i + 1usize;
+  }
+  expectBool(xy, true, "bump: x and y as they were");
+  expectBool(out, true, "bump: outside the region bit for bit");
+  // the first 64 faces: the untouched ones, in order
+  var untouched = List[u32]();
+  var j = 0u32;
+  while j < 16u32 {
+    var c = 0u32;
+    while c < 16u32 {
+      let inReg = c >= 2u32 && c <= 13u32 && j >= 2u32 && j <= 13u32;
+      let ring = (c == 1u32 || c == 14u32) && j >= 2u32 && j <= 13u32 || (j == 1u32 || j == 14u32) && c >= 2u32 && c <= 13u32;
+      if !inReg && !ring { untouched.push(16u32 * j + c); }
+      c = c + 1u32;
+    }
+    j = j + 1u32;
+  }
+  expectInt(i64.from(untouched.len()), 64, "bump: 64 untouched faces");
+  var same = true;
+  var f = 0usize;
+  while f < untouched.len() {
+    let a = g.facePositions(*untouched[f]);
+    let b = r.facePositions(u32.from(f));
+    if a.len() != 4usize || b.len() != 4usize { same = false; }
+    else {
+      var k = 0usize;
+      while k < 4usize {
+        if !samePos(*a[k], *b[k]) { same = false; }
+        k = k + 1usize;
+      }
+    }
+    f = f + 1usize;
+  }
+  expectBool(same, true, "bump: the first 64 faces are the untouched quads, bit for bit");
+}
+
+fn reach() {
+  let g = gridOf(16u32);
+  let region = cells(2u32, 13u32);
+  let p = bumpPatch(-2., 2.);
+  var problems = List[String]();
+  let r = displaceRegion(&g, region.view(), &p, 0.15, 8u32, &mut problems);
+  expectInt(i64.from(problems.len()), 0, "reach: no problem");
+  clean(&r, "reach: valid");
+  var out = true;
+  var moved = false;
+  var i = 0usize;
+  while i < g.vertexCount() {
+    let a = *g.positions[i];
+    let b = *r.positions[i];
+    if !inZone(a) && !samePos(a, b) { out = false; }
+    if inZone(a) && b.z != 0. { moved = true; }
+    i = i + 1usize;
+  }
+  expectBool(out, true, "reach: a vertex no region face has is never moved");
+  expectBool(moved, true, "reach: the region's vertices move");
+}
+
+fn steep() {
+  let g = gridOf(16u32);
+  let region = cells(2u32, 13u32);
+  let p = stepPatch();
+  var problems = List[String]();
+  let r = displaceRegion(&g, region.view(), &p, 0.3, 10u32, &mut problems);
+  expectInt(i64.from(problems.len()), 0, "steep: no problem");
+  clean(&r, "steep: valid");
+  expectBool(longestInZone(&r) <= 0.3 * 1.00001, true, "steep: no edge over maxEdge after displacement");
+  var top: f32 = 0.;
+  var i = 0usize;
+  while i < r.vertexCount() {
+    if (*r.positions[i]).z > top { top = (*r.positions[i]).z; }
+    i = i + 1usize;
+  }
+  expectBool(top > 0.79, true, "steep: the plateau is there");
+}
+
+fn zero() {
+  let g = gridOf(16u32);
+  let region = cells(2u32, 13u32);
+  let p = zeroPatch();
+  var problems = List[String]();
+  let r = displaceRegion(&g, region.view(), &p, 10., 8u32, &mut problems);
+  expectInt(i64.from(problems.len()), 0, "zero: no problem");
+  expectBool(sameMesh(&g, &r), true, "zero: nothing over, the input itself");
+  expectInt(i64.from(r.faceDegree(0u32)), 4, "zero: the quads are quads");
+  let r2 = displaceRegion(&g, region.view(), &p, 0.15, 8u32, &mut problems);
+  expectInt(i64.from(problems.len()), 0, "zero refined: no problem");
+  clean(&r2, "zero refined: valid");
+  expectBool(r2.faceCount() > g.faceCount(), true, "zero refined: more faces");
+  var flat = true;
+  var kept = true;
+  var i = 0usize;
+  while i < r2.vertexCount() {
+    if (*r2.positions[i]).z != 0. { flat = false; }
+    if i < g.vertexCount() && !samePos(*r2.positions[i], *g.positions[i]) { kept = false; }
+    i = i + 1usize;
+  }
+  expectBool(flat, true, "zero refined: every z is 0");
+  expectBool(kept, true, "zero refined: the input's vertices bit for bit");
+}
+
+fn determinism() {
+  let g = gridOf(16u32);
+  let region = cells(2u32, 13u32);
+  let p = bumpPatch(-1., 1.);
+  var problems = List[String]();
+  let a = displaceRegion(&g, region.view(), &p, 0.15, 8u32, &mut problems);
+  let b = displaceRegion(&g, region.view(), &p, 0.15, 8u32, &mut problems);
+  expectBool(sameMesh(&a, &b), true, "determinism: the same bits");
+}
+
+fn refusals() {
+  let g = gridOf(16u32);
+  let region = cells(2u32, 13u32);
+  let p = bumpPatch(-1., 1.);
+  var problems = List[String]();
+  let r0 = displaceRegion(&g, region.view(), &p, 0., 8u32, &mut problems);
+  expectInt(i64.from(problems.len()), 1, "refusal: maxEdge 0 says so");
+  expectBool(sameMesh(&g, &r0), true, "refusal: maxEdge 0, unchanged");
+  problems.clear();
+  var bad = cells(2u32, 3u32);
+  bad.push(256u32);
+  let r1 = displaceRegion(&g, bad.view(), &p, 0.15, 8u32, &mut problems);
+  expectInt(i64.from(problems.len()), 1, "refusal: a face outside says so");
+  expectBool(sameMesh(&g, &r1), true, "refusal: a face outside, unchanged");
+  problems.clear();
+  var short = bumpPatch(-1., 1.);
+  short.heights.truncate(short.heights.len() - 1usize);
+  let r2 = displaceRegion(&g, region.view(), &short, 0.15, 8u32, &mut problems);
+  expectInt(i64.from(problems.len()), 1, "refusal: heights one short say so");
+  expectBool(sameMesh(&g, &r2), true, "refusal: heights one short, unchanged");
+  problems.clear();
+  let r3 = displaceRegion(&g, region.view(), &p, 0.0001, 8u32, &mut problems);
+  expectInt(i64.from(problems.len()), 1, "refusal: over 2,000,000 faces says so");
+  expectBool(sameMesh(&g, &r3), true, "refusal: over 2,000,000 faces, unchanged");
+  problems.clear();
+  let none = List[u32]();
+  let r4 = displaceRegion(&g, none.view(), &p, 0.15, 8u32, &mut problems);
+  expectInt(i64.from(problems.len()), 0, "empty: silent");
+  expectBool(sameMesh(&g, &r4), true, "empty: a copy");
+  // the cap
+  let r5 = displaceRegion(&g, region.view(), &p, 0.05, 1u32, &mut problems);
+  expectInt(i64.from(problems.len()), 1, "cap: one problem line");
+  clean(&r5, "cap: valid");
+  var moved = false;
+  var i = 0usize;
+  while i < r5.vertexCount() {
+    if (*r5.positions[i]).z > 0.4 { moved = true; }
+    i = i + 1usize;
+  }
+  expectBool(moved, true, "cap: the vertices are moved all the same");
+}
+
+fn channels() {
+  var g = gridOf(16u32);
+  let w = g.addFloatChannel(VertexDomain, "w", 0.);
+  let uv = g.addVec2Channel(CornerDomain, "uv", Vec2(0., 0.));
+  let id = g.addFloatChannel(FaceDomain, "id", 0.);
+  let cr = g.addFloatChannel(EdgeDomain, "crease", 0.);
+  var v = 0usize;
+  while v < g.vertexCount() {
+    g.setFloat(w, u32.from(v), (*g.positions[v]).x);
+    v = v + 1usize;
+  }
+  var f = 0u32;
+  while usize.from(f) < g.faceCount() {
+    g.setFloat(id, f, f32.from(f) + 1.);
+    let hs = g.faceHalfedges(f);
+    var k = 0usize;
+    while k < hs.len() {
+      let q = *g.positions[usize.from(g.toVertex(*hs[k]))];
+      g.setVec2(uv, *hs[k], Vec2(q.x, q.y));
+      k = k + 1usize;
+    }
+    f = f + 1u32;
+  }
+  var e = 0u32;
+  while usize.from(e) < g.edgeCount() {
+    let a = *g.positions[usize.from(g.fromVertex(2u32 * e))];
+    let b = *g.positions[usize.from(g.toVertex(2u32 * e))];
+    if a.y == 0. && b.y == 0. { g.setFloat(cr, e, 3.); }
+    e = e + 1u32;
+  }
+  let region = cells(2u32, 13u32);
+  let p = bumpPatch(-1., 1.);
+  var problems = List[String]();
+  let r = displaceRegion(&g, region.view(), &p, 0.15, 8u32, &mut problems);
+  expectInt(i64.from(problems.len()), 0, "channels: no problem");
+  clean(&r, "channels: valid");
+  let rw = r.findFloatChannel(VertexDomain, "w");
+  let ruv = r.findVec2Channel(CornerDomain, "uv");
+  let rid = r.findFloatChannel(FaceDomain, "id");
+  let rcr = r.findFloatChannel(EdgeDomain, "crease");
+  var okW = true;
+  v = 0usize;
+  while v < r.vertexCount() {
+    if r.float(rw, u32.from(v)) != (*r.positions[v]).x { okW = false; }
+    v = v + 1usize;
+  }
+  expectBool(okW, true, "channels: a vertex's w is its x");
+  var okUv = true;
+  var okId = true;
+  f = 0u32;
+  while usize.from(f) < r.faceCount() {
+    let hs = r.faceHalfedges(f);
+    var k = 0usize;
+    while k < hs.len() {
+      let q = *r.positions[usize.from(r.toVertex(*hs[k]))];
+      let u = r.vec2(ruv, *hs[k]);
+      if (u.x - q.x).abs() > 0.000001 || (u.y - q.y).abs() > 0.000001 { okUv = false; }
+      k = k + 1usize;
+    }
+    let c = r.faceCentroid(f);
+    let cell = u32.from((c.y + 2.) / 0.25) * 16u32 + u32.from((c.x + 2.) / 0.25);
+    if r.float(rid, f) != f32.from(cell) + 1. { okId = false; }
+    f = f + 1u32;
+  }
+  expectBool(okUv, true, "channels: a corner's uv is its vertex's (x, y)");
+  expectBool(okId, true, "channels: a face's id is its cell's");
+  var okCr = true;
+  var nCrease = 0u32;
+  e = 0u32;
+  while usize.from(e) < r.edgeCount() {
+    let a = *r.positions[usize.from(r.fromVertex(2u32 * e))];
+    let b = *r.positions[usize.from(r.toVertex(2u32 * e))];
+    let want: f32 = if a.y == 0. && b.y == 0. { 3. } else { 0. };
+    if want > 0. { nCrease = nCrease + 1u32; }
+    if r.float(rcr, e) != want { okCr = false; }
+    e = e + 1u32;
+  }
+  expectBool(okCr, true, "channels: the crease line stays, nothing else is creased");
+  expectBool(nCrease > 16u32, true, "channels: the crease line was split into more edges");
+}
