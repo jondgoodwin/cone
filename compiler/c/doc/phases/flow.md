@@ -1588,6 +1588,17 @@ borrow. A holder whose every borrowed reference points at a value holding no
 borrow (`&i64`, an `Option[&i64]` a call returned) can read none of them, and
 gains nothing (`pwReadsBorrows`).
 
+A borrow no variable holds yet is such a holder too. A value in the making is on
+the flight stack ("In flight", above), and `pwLentGains` gives it what it would
+give a variable (`loanFlightGain`), so an access that conflicts with what it was
+given is reported at once. Its builder adds what it was given to what it builds
+(`loanFlightGained`): a call's arguments and receiver, a literal's elements, an
+assignment's or parallel assignment's value while a place is walked or another
+element stored, and the reference an index reaches its place by, or the element
+borrow already made, while the index is walked. In `p = pick(&mut h, {h = &b;
+1})`, `p` holds `b`'s loan. The last three are pushed to be watched only
+(`loanFlightPushHeld`): no access is checked against what they held when pushed.
+
 **What is not held.** The temporary an operator changing its operand in place
 borrows it through (`x += 1` is `{let tmp = &mut x; *tmp = *tmp + 1}`, and
 `v <- a, b` appends through one; both named `tempName`) is an access, a write,
