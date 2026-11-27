@@ -1643,12 +1643,30 @@ static void loanShapeFire(Pending *pend, INode *usenode) {
     loanShapeReport(pend, usenode);
 }
 
-void loanUseShape(uint32_t var, INode *usenode) {
+// A pending conflict of an access meets its use
+static void loanAccessFire(Pending *pend, INode *usenode) {
+    pend->fired = 1;
+    // A candidate for its variable's last use is not, with a borrow of the
+    // variable used after it: it stays a copy (flowpath.c, pwCandidate)
+    if (pend->kind == AccessMove && pathCandFailAccess(pend->access))
+        return;
+    // One error per access, however many borrows it conflicts with
+    if (mapGet(pend->access, 0, 1))
+        return;
+    mapPut(pend->access, 0, 1, 1);
+    loanReport(pend, usenode);
+}
+
+void loanUseCompound(uint32_t var, INode *usenode) {
     PathSet *pending = pathVars[var].pending;
     for (uint32_t i = 0; pending && i < pending->cnt; ++i) {
         Pending *pend = &pendings[pending->ids[i]];
-        if (!pend->fired && pend->kind == PendingShape)
+        if (pend->fired)
+            continue;
+        if (pend->kind == PendingShape)
             loanShapeFire(pend, usenode);
+        else if (pend->kind == AccessMove || pend->kind == AccessReplace)
+            loanAccessFire(pend, usenode);
     }
 }
 
@@ -1681,16 +1699,7 @@ void loanUse(uint32_t var, INode *usenode) {
             loanShapeFire(pend, usenode);
             continue;
         }
-        pend->fired = 1;
-        // A candidate for its variable's last use is not, with a borrow of the
-        // variable used after it: it stays a copy (flowpath.c, pwCandidate)
-        if (pend->kind == AccessMove && pathCandFailAccess(pend->access))
-            continue;
-        // One error per access, however many borrows it conflicts with
-        if (mapGet(pend->access, 0, 1))
-            continue;
-        mapPut(pend->access, 0, 1, 1);
-        loanReport(pend, usenode);
+        loanAccessFire(pend, usenode);
     }
 }
 

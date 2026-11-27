@@ -1,0 +1,100 @@
+// A compound assignment borrows its place before its right side is made, and writes
+// into it after: 'l[0] += e' is '{let tmp = &mut l[0]; *tmp = *tmp + e}'. Where 'e'
+// moves away, or assigns over, the collection or the owner the place is part of, by its
+// own name, the old storage is freed before the write: refused, as the same borrow bound
+// to a name is (collection_compound_element_success holds what is accepted beside each).
+
+mod collection_flow_compound_moved;
+
+import collections use *;
+
+struct Pt { pub x: usize; pub y: usize; }
+struct Bag { pub items: List[usize]; }
+struct Num { pub n: usize; pub fn `+`(self, k: List[Num]) Num { Num(self.n + k.len()) } }
+
+fn takeList(l: List[usize]) usize { 5usize }
+fn takeDict(d: Dict[usize, usize]) usize { 5usize }
+fn takeBag(b: Bag) usize { 5usize }
+fn takePt(u: Uni[Pt]) usize { 5usize }
+
+// A list assigned over, and moved
+fn listAssigned() {
+  var l = List[usize]();
+  l.push(1usize);
+  l[0usize] += {l = List[usize](); 5usize};   //~ ErrorFrozen "It may not be changed until after that last use"
+}
+fn listMoved() {
+  var l = List[usize]();
+  l.push(1usize);
+  l[0usize] += takeList(l);                   //~ ErrorFrozen "It may not be moved until after that last use"
+}
+
+// What a Uni owns, the owner assigned over, and moved
+fn ownerAssigned() {
+  var u = Uni[Pt](Pt(1usize, 2usize));
+  u.x += {u = Uni[Pt](Pt(7usize, 8usize)); 5usize};   //~ ErrorFrozen "It may not be changed until after that last use"
+}
+fn ownerMoved() {
+  var u = Uni[Pt](Pt(1usize, 2usize));
+  u.x += takePt(u);                           //~ ErrorFrozen "It may not be moved until after that last use"
+}
+
+// A Dict's value
+fn dictAssigned() {
+  var d = Dict[usize, usize]();
+  d.insert(1usize, 1usize);
+  let k = 1usize;
+  d[&k] += {d = Dict[usize, usize](); 5usize};    //~ ErrorFrozen "It may not be changed until after that last use"
+}
+fn dictMoved() {
+  var d = Dict[usize, usize]();
+  d.insert(1usize, 1usize);
+  let k = 1usize;
+  d[&k] += takeDict(d);                       //~ ErrorFrozen "It may not be moved until after that last use"
+}
+
+// A List that is a struct's field, the struct assigned over, and moved
+fn fieldAssigned() {
+  var b = Bag(List[usize]());
+  b.items.push(1usize);
+  b.items[0usize] += {b = Bag(List[usize]()); 5usize};    //~ ErrorFrozen "It may not be changed until after that last use"
+}
+fn fieldMoved() {
+  var b = Bag(List[usize]());
+  b.items.push(1usize);
+  b.items[0usize] += takeBag(b);              //~ ErrorFrozen "It may not be moved until after that last use"
+}
+
+// Through a 'mut' borrow of the list held beside it
+fn borrowedMoved() {
+  var l = List[usize]();
+  l.push(1usize);
+  let r = &mut l;
+  r[0usize] += takeList(l);                   //~ ErrorFrozen "It may not be moved until after that last use"
+}
+
+// Through a reference bound to the element before
+fn boundAssigned() {
+  var l = List[usize]();
+  l.push(1usize);
+  let p = &mut l[0usize];
+  *p += {l = List[usize](); 5usize};          //~ ErrorFrozen "It may not be changed until after that last use"
+}
+
+// A swap replaces both of its sides
+fn swapped() {
+  var q = List[usize]();
+  var l = List[usize]();
+  l.push(1usize);
+  l[0usize] += {l <-> q; 5usize};             //~ ErrorFrozen "It may not be changed until after that last use"
+}
+
+// Moved by naming it, to a type whose '+=' is rewritten to its '+'
+fn namedMoved() {
+  var l = List[Num]();
+  l.push(Num(1usize));
+  l[0usize] += l;                             //~ ErrorFrozen "It may not be moved until after that last use"
+}
+
+fn main() {
+}

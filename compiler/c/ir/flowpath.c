@@ -3521,9 +3521,13 @@ static void pwStore(INode **lvalp, PathSet *holds, INode **rvalp) {
 // A compound assignment through a temporary ('x += e' is '{let tmp = &mut x; *tmp = *tmp + e}')
 // borrows its place before its right side is made, and writes into it after. A plain store
 // reaches its place after the value, which uses whatever the place is reached through, and so
-// refuses a change of shape or variant the value made. The temporary is no holder, so nothing
-// would pend on it: a stand-in holds the borrows it was made with into a collection, an owner
-// or a variant, from before the right side, and the write is its use. Returns it, or 0 for none
+// refuses a change of shape or variant the value made, and a move or a replacement of what the
+// place is part of. The temporary is no holder, so nothing would pend on it: where one of the
+// borrows it was made with is into a collection, an owner or a variant, a stand-in holds them
+// all (a 'mut' borrow the place was reached through, 'let r = &mut l; r[0] += ...', names what
+// a move takes away), from before the right side, and the write is its use. A place with no
+// such borrow ('x += {x = 5; 1}') is in the variable's own storage, which a move or a store
+// leaves in place. Returns it, or 0 for none
 static uint32_t pwCompoundPlace(INode *lval) {
     if (!pathLoans || lval->tag != DerefTag)
         return 0;
@@ -3533,12 +3537,15 @@ static uint32_t pwCompoundPlace(INode *lval) {
         return 0;
     PathSet *all = pathVars[pathVar(tmp)].holds;
     PathSet *holds = NULL;
+    int owned = 0;
     for (uint32_t i = 0; all && i < all->cnt; ++i) {
         // (a far loan is of what the place holds, not of where the place is)
-        if (!(all->ids[i] & LoanFar) && loanShapeMayMark(loanOf(all->ids[i])))
-            holds = pathSetAdd(holds, all->ids[i]);
+        if (all->ids[i] & LoanFar)
+            continue;
+        holds = pathSetAdd(holds, all->ids[i]);
+        owned |= loanShapeMayMark(loanOf(all->ids[i]));
     }
-    if (holds == NULL)
+    if (!owned)
         return 0;
     uint32_t stand = pwStandIn(ref, holds);
     pathVars[stand].compound = 1;
@@ -3549,7 +3556,7 @@ static PathSet *pwAssign(AssignNode *node) {
     uint32_t compound = pwCompoundPlace(node->lval);
     PathSet *holds = pwValue(&node->rval, 1);
     if (compound) {
-        loanUseShape(compound, node->lval);
+        loanUseCompound(compound, node->lval);
         pathSetFacts(compound, NULL, NULL);
     }
     if (node->lval->tag == VTupleTag) {
