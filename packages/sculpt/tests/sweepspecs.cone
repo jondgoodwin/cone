@@ -1,0 +1,186 @@
+// The sculpt package's SweepSpec, checked with the testing package against values worked out by hand; only a
+// failure prints, so sweepspecs.out holds the summary alone.
+//
+// The spec: a spine of 8 coefficients a coordinate (24 numbers), x and y all 0, z = 0.8 (k - 1) for k = 0 to 7.
+// A uniform cubic B-spline with evenly rising coefficients is a straight line, and over [0, 1] it runs from
+// coefficient 1 to coefficient 6 (the weights 1/6, 4/6, 1/6 on 3 of the 4 at each end), so z = 0 to 4. With 5
+// samples the path is (0, 0, 0) ... (0, 0, 4), one point to a unit. 2 sections, each the square of half-side 1
+// from (1, 1) counterclockwise with 4 tags, 4 creases (the second section's tag 1 crease 2), stations 0 and 1.
+//
+// - numbers: 24 (spine) + 1 (samples) + 3 (up) + 2 (stations) + 2 x 8 (profile points) + 8 (tags) + 8 (creases)
+//   = 62.
+// - path: 5 points, (0, 0, k) to 1e-5; up the one given.
+// - mesh with between 3: 5 rings of 4 columns, 20 vertices, 16 quads, vertex (r, j) at (x_j, y_j, r); equal bit
+//   for bit to loftTagged of the same sections along the same path; the crease of the tag-1 column's edges runs
+//   from 0 to 2 (the band's middle fractions, 1/8 .. 7/8, of the second's 2: 0.25, 0.75, 1.25, 1.75).
+// - Refusals: a spine that is not a multiple of 3 or has fewer than 4 coefficients a coordinate, or samples
+//   below 2, gives an empty path; mesh then gives 1 problem line and an empty mesh. A spec with no sections:
+//   1 problem line.
+
+mod sweepspecs;
+
+import testing use *;
+import collections use *;
+import geomath use *;
+import mesh use *;
+import sculpt use *;
+
+let near = 0.00001;
+
+fn floatAt(m: &PolyMesh, name: &str, v: u32) f32 {m.float(m.findFloatChannel(VertexDomain, name), v)}
+
+fn sameMesh(a: &PolyMesh, b: &PolyMesh, label: &Array[u8]) {
+  var same = a.vertexCount() == b.vertexCount() && a.faceCount() == b.faceCount()
+    && a.halfedgeCount() == b.halfedgeCount();
+  var v = 0usize;
+  while same && v < a.vertexCount() {
+    let p = *a.positions[v];
+    let q = *b.positions[v];
+    if p.x != q.x || p.y != q.y || p.z != q.z { same = false; }
+    if floatAt(a, "along", u32.from(v)) != floatAt(b, "along", u32.from(v)) { same = false; }
+    if floatAt(a, "around", u32.from(v)) != floatAt(b, "around", u32.from(v)) { same = false; }
+    v = v + 1usize;
+  }
+  var f = 0usize;
+  let ua = a.findVec2Channel(CornerDomain, "uv");
+  let ub = b.findVec2Channel(CornerDomain, "uv");
+  while same && f < a.faceCount() {
+    let ha = a.faceHalfedges(u32.from(f));
+    let hb = b.faceHalfedges(u32.from(f));
+    if ha.len() != hb.len() { same = false; }
+    var k = 0usize;
+    while same && k < ha.len() {
+      if a.toVertex(*ha[k]) != b.toVertex(*hb[k]) { same = false; }
+      let x = a.vec2(ua, *ha[k]);
+      let y = b.vec2(ub, *hb[k]);
+      if x.x != y.x || x.y != y.y { same = false; }
+      k = k + 1usize;
+    }
+    f = f + 1usize;
+  }
+  expect(same, label);
+}
+
+// The "crease" of the edge between two vertices, or -1 when there is none
+fn creaseBetween(m: &PolyMesh, a: u32, b: u32) f32 {
+  let hs = m.vertexOutgoing(a);
+  var k = 0usize;
+  while k < hs.len() {
+    if m.toVertex(*hs[k]) == b { return m.float(m.findFloatChannel(EdgeDomain, "crease"), *hs[k] / 2u32); }
+    k = k + 1usize;
+  }
+  -1.
+}
+
+fn squareFrom(h: f32) Profile {
+  let pts = List[Vec2](4) <- Vec2(h, h), Vec2(-h, h), Vec2(-h, -h), Vec2(h, -h);
+  Profile(pts, true)
+}
+
+fn straightSpine(n: usize) List[f32] {
+  var s = List[f32].withCapacity(3usize * n);
+  var c = 0usize;
+  while c < n { s.push(0.); c = c + 1usize; }
+  c = 0usize;
+  while c < n { s.push(0.); c = c + 1usize; }
+  c = 0usize;
+  while c < n { s.push(0.8 * (f32.from(u32.from(c)) - 1.)); c = c + 1usize; }
+  s
+}
+
+fn makeSpec() SweepSpec {
+  var sections = List[TaggedProfile]();
+  let sq = squareFrom(1.);
+  let tags = List[u32](4) <- 0u32, 1u32, 2u32, 3u32;
+  var a = TaggedProfile.of(&sq, tags.view());
+  var b = TaggedProfile.of(&sq, tags.view());
+  b.creases = List[f32](4) <- 0., 2., 0., 0.;
+  sections.push(a);
+  sections.push(b);
+  var st = List[f32]();
+  st.push(0.);
+  st.push(1.);
+  SweepSpec(straightSpine(8usize), 5u32, Vec3(0., 1., 0.), st, sections)
+}
+
+fn handWritten() {
+  let spec = makeSpec();
+  expectInt(i64.from(spec.numbers()), 62, "numbers");
+  let path = spec.path();
+  expectInt(i64.from(path.points.len()), 5, "path: 5 points");
+  var k = 0usize;
+  while k < path.points.len() {
+    let p = *path.points[k];
+    expectFloat(p.x, 0., near, "path: x");
+    expectFloat(p.y, 0., near, "path: y");
+    expectFloat(p.z, f32.from(u32.from(k)), near, "path: z");
+    k = k + 1usize;
+  }
+  expectFloat(path.up.y, 1., near, "path: up");
+  expect(!path.closed, "path: open");
+
+  var problems = List[String]();
+  let m = spec.mesh(3u32, false, false, &mut problems);
+  expectInt(i64.from(problems.len()), 0, "mesh: no problems");
+  expectInt(i64.from(m.vertexCount()), 20, "mesh: vertices");
+  expectInt(i64.from(m.faceCount()), 16, "mesh: faces");
+  expectInt(i64.from(m.validate().len()), 0, "mesh: validates");
+  let xs = List[f32](4) <- 1., -1., -1., 1.;
+  let ys = List[f32](4) <- 1., 1., -1., -1.;
+  var r = 0u32;
+  while r < 5u32 {
+    var j = 0u32;
+    while j < 4u32 {
+      let p = *m.positions[usize.from(r * 4u32 + j)];
+      expectFloat(p.x, *xs[usize.from(j)], near, "mesh: x");
+      expectFloat(p.y, *ys[usize.from(j)], near, "mesh: y");
+      expectFloat(p.z, f32.from(r), near, "mesh: z");
+      j = j + 1u32;
+    }
+    r = r + 1u32;
+  }
+  var again = List[String]();
+  let direct = loftTagged(&spec.sections, &path, spec.stations.view(), 3u32, false, false, &mut again);
+  sameMesh(&m, &direct, "mesh: equals loftTagged of the same");
+  // The tag-1 column: vertices 1, 5, 9, 13, 17
+  expectFloat(creaseBetween(&m, 1u32, 5u32), 0.25, near, "crease: band 0");
+  expectFloat(creaseBetween(&m, 5u32, 9u32), 0.75, near, "crease: band 1");
+  expectFloat(creaseBetween(&m, 9u32, 13u32), 1.25, near, "crease: band 2");
+  expectFloat(creaseBetween(&m, 13u32, 17u32), 1.75, near, "crease: band 3");
+  expectFloat(creaseBetween(&m, 0u32, 4u32), 0., near, "crease: tag 0 column");
+}
+
+fn refusals() {
+  var problems = List[String]();
+  var bad = makeSpec();
+  bad.spine = straightSpine(3usize);
+  expectInt(i64.from(bad.path().points.len()), 0, "refusal: short spine: no path");
+  let m1 = bad.mesh(1u32, false, false, &mut problems);
+  expectInt(i64.from(m1.vertexCount()), 0, "refusal: short spine: empty");
+  expectInt(i64.from(problems.len()), 1, "refusal: short spine: a line");
+
+  var odd = makeSpec();
+  odd.spine.push(0.);
+  expectInt(i64.from(odd.path().points.len()), 0, "refusal: odd spine: no path");
+
+  var one = makeSpec();
+  one.samples = 1u32;
+  expectInt(i64.from(one.path().points.len()), 0, "refusal: 1 sample: no path");
+  let m2 = one.mesh(1u32, false, false, &mut problems);
+  expectInt(i64.from(m2.vertexCount()), 0, "refusal: 1 sample: empty");
+  expectInt(i64.from(problems.len()), 2, "refusal: 1 sample: a line");
+
+  var none = makeSpec();
+  none.sections = List[TaggedProfile]();
+  none.stations = List[f32]();
+  let m3 = none.mesh(1u32, false, false, &mut problems);
+  expectInt(i64.from(m3.vertexCount()), 0, "refusal: no sections: empty");
+  expectInt(i64.from(problems.len()), 3, "refusal: no sections: a line");
+  expectInt(i64.from(none.numbers()), 24 + 1 + 3, "numbers: no sections");
+}
+
+fn main() i32 {
+  handWritten();
+  refusals();
+  done()
+}

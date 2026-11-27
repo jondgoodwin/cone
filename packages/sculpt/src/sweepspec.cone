@@ -1,0 +1,72 @@
+// ======== SweepSpec: a swept part stored as a few numbers ========
+//
+// A part that is a profile swept along a curve is kept as its centre line (a smoothed spline), the path's 'up',
+// and a few key sections with their tags and creases. A program hydrates it with this package alone: 'path' makes
+// the path, 'mesh' the tagged loft through the sections. (Fitting one to a mesh is not here.)
+//
+// - The spine: 3 n coefficients, n for x, then n for y, then n for z, each coordinate a uniform cubic B-spline
+//   over [0, 1] (geomath 'bsplineAt'). n is spine.len / 3; fewer than 4 a coordinate, or a length not a multiple
+//   of 3, makes the spine empty (a path of no points).
+// - The path: the spine at 'samples' points, evenly in its parameter, 'up' as given.
+// - Stations: each key section's fraction of the path's length, rising, one per section.
+// - 'mesh' is 'loftTagged' of the sections along the path at the stations, nothing else.
+// - 'numbers' counts every stored number: the spine's, 'samples', the 3 of 'up', the stations, 2 for each
+//   profile point, the tags and the creases (a profile's open or closed flag is not a number).
+
+pub struct SweepSpec {
+  // 3 n coefficients, n for x, then y, then z: uniform cubic B-splines over [0, 1]
+  pub spine: List[f32];
+  // The spine is sampled at this many points, evenly in its parameter, to make the path
+  pub samples: u32;
+  // The path's 'up'
+  pub up: Vec3;
+  // Each key section's fraction of the path's length, rising
+  pub stations: List[f32];
+  pub sections: List[TaggedProfile];
+
+  // The path: the spine sampled at 'samples' points, open. An empty path when the spine or 'samples' (below 2)
+  // cannot make one
+  pub fn path(self: &) Path {
+    var pts = List[Vec3]();
+    let n = spine.len() / 3usize;
+    if spine.len() % 3usize == 0usize && n >= 4usize && samples >= 2u32 {
+      var xs = List[f32].withCapacity(n);
+      var ys = List[f32].withCapacity(n);
+      var zs = List[f32].withCapacity(n);
+      var c = 0usize;
+      while c < n {
+        xs.push(*spine[c]);
+        ys.push(*spine[n + c]);
+        zs.push(*spine[2usize * n + c]);
+        c = c + 1usize;
+      }
+      var i = 0u32;
+      while i < samples {
+        let t = f32.from(i) / f32.from(samples - 1u32);
+        pts.push(Vec3(bsplineAt(xs.view(), 0., 1., t), bsplineAt(ys.view(), 0., 1., t), bsplineAt(zs.view(), 0., 1., t)));
+        i = i + 1u32;
+      }
+    }
+    var p = Path.fromPoints(pts.view(), false);
+    p.up = up;
+    p
+  }
+
+  // The tagged loft of the sections along the path (see taggedloft.cone), 'between' rings in each band
+  pub fn mesh(self: &, between: u32, uvByLength: bool, caps: bool, problems: &mut List[String]) PolyMesh {
+    let p = path();
+    loftTagged(&sections, &p, stations.view(), between, uvByLength, caps, problems)
+  }
+
+  // Every stored number
+  pub fn numbers(self: &) u32 {
+    var total = spine.len() + 1usize + 3usize + stations.len();
+    var k = 0usize;
+    while k < sections.len() {
+      let s = &sections[k];
+      total = total + 2usize * s.profile.points.len() + s.tags.len() + s.creases.len();
+      k = k + 1usize;
+    }
+    u32.from(total)
+  }
+}
