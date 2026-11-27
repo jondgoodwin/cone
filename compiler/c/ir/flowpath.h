@@ -64,6 +64,8 @@ typedef struct {
                         // no loan's kind and no freezing
     uint8_t owned;     // nonzero (1 + the index of the last such step, loanShapeDisjoint): a step dereferences an owning reference others may own too ('Rc'), so
                         // the place may outlive its root variable
+    uint8_t ownwrite;   // a step dereferences an owning reference others may own and write through ('Rc[mut]'), with
+                        // no borrowed reference read since: what another holder may free
     uint8_t far;        // deref: the reference was itself read through a borrowed one ('**pp',
                         // '*r.g'), so the root stands for anything a borrow or more past where
                         // the variable points (flowloan.h, LoanFar)

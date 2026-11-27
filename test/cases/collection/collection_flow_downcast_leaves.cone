@@ -1,0 +1,120 @@
+// A borrow reached from a trait object narrowed to its concrete type, and then past a shared
+// owner, leaving the function. A caller sees only the trait's signature, which hands out no
+// reference, so nothing held the result against the list another holder of the 'Rc' stores
+// over: each of these was accepted and read freed storage. The body is what is checked
+// (collection_downcast_leaves_success holds what is accepted beside each refusal).
+
+mod collection_flow_downcast_leaves;
+
+import stdio use *;
+import collections use *;
+
+trait Counter { pub fn count(self: &) i32; }
+
+struct Holder {
+  pub rc: Rc[mut, List[i32]];
+  pub n: i32;
+  pub fn count(self: &) i32 { return 1i32; }
+}
+
+fn ifLet(h: &<Counter, zero: &i32) &i32 {
+  if let Holder(c) = h { return &(*c.rc)[0usize]; }     //~ ErrorEscape:41 "reached from a 'Counter' trait object"
+  return zero;
+}
+
+fn matched(h: &<Counter, zero: &i32) &i32 {
+  match h {
+    case let Holder(c) { return &(*c.rc)[0usize]; }     //~ ErrorEscape:41 "past a shared owner"
+    else { return zero; }
+  }
+}
+
+fn letElse(h: &<Counter, zero: &i32) &i32 {
+  let Holder(c) = h else { return zero; };
+  return &(*c.rc)[0usize];                              //~ ErrorEscape:18 "past a shared owner"
+}
+
+fn matchValue(h: &<Counter, zero: &i32) &i32 {
+  let x = match h {
+    case let Holder(c) { &(*c.rc)[0usize] }
+    else { zero }
+  };
+  return x;                                             //~ ErrorEscape:10 "past a shared owner"
+}
+
+fn byLocals(h: &<Counter, zero: &i32) &i32 {
+  if let Holder(c) = h {
+    let rc = &c.rc;
+    let list = &**rc;
+    let e = &(*list)[0usize];
+    return e;                                           //~ ErrorEscape:12 "past a shared owner"
+  }
+  return zero;
+}
+
+fn storedThroughParm(h: &<Counter, out: &mut &i32) {
+  if let Holder(c) = h { *out = &(*c.rc)[0usize]; }     //~ ErrorEscape:26 "Stored here is"
+}
+
+fn put(out: &mut &'a i32, v: &'a i32) { *out = v; }
+
+fn storedByCall(h: &<Counter, out: &mut &i32) {
+  if let Holder(c) = h { put(out, &(*c.rc)[0usize]); }  //~ ErrorEscape:29 "Handed to a call that could store it"
+}
+
+fn putFrom(c: &Holder, out: &mut &i32) { *out = &(*c.rc)[0usize]; }
+
+fn storedByHelper(h: &<Counter, out: &mut &i32) {
+  if let Holder(c) = h { putFrom(c, out); }             //~ ErrorEscape:33 "Handed to a call that could store it"
+}
+
+// A function handed the narrowed value, or the owner in it, hands back what is past it
+fn atHolder(c: &Holder) &i32 { return &(*c.rc)[0usize]; }
+
+fn throughHelper(h: &<Counter, zero: &i32) &i32 {
+  if let Holder(c) = h { return atHolder(c); }          //~ ErrorEscape:41 "past a shared owner"
+  return zero;
+}
+
+fn atRc(r: &Rc[mut, List[i32]]) &i32 { return &(**r)[0usize]; }
+
+fn throughRcHelper(h: &<Counter, zero: &i32) &i32 {
+  if let Holder(c) = h { return atRc(&c.rc); }          //~ ErrorEscape:37 "past a shared owner"
+  return zero;
+}
+
+// A function that narrows and hands back the concrete value: what its caller reaches past a
+// shared owner from it is the same
+fn asHolder(h: &<Counter) Option[&Holder] {
+  if let Holder(c) = h { return Some[&Holder](c); }
+  None
+}
+
+fn throughWrapper(h: &<Counter, zero: &i32) &i32 {
+  if let Some(c) = asHolder(h) { return &(*c.rc)[0usize]; }   //~ ErrorEscape:49 "past a shared owner"
+  return zero;
+}
+
+// ... or the handle in it
+fn rcOf(h: &<Counter) Option[&Rc[mut, List[i32]]] {
+  if let Holder(c) = h { return Some[&Rc[mut, List[i32]]](&c.rc); }
+  None
+}
+
+fn throughRcOf(h: &<Counter, zero: &i32) &i32 {
+  if let Some(r) = rcOf(h) { return &(**r)[0usize]; }   //~ ErrorEscape:43 "past a shared owner"
+  return zero;
+}
+
+// The library's downcast of an owned trait object
+struct Carried is Error {
+  pub rc: Rc[mut, List[i32]];
+  pub fn toText(self: &, out: &uni TextOut) { out <- "carried"; }
+}
+
+fn throughDowncastRef(e: &AnyError, zero: &i32) &i32 {
+  if let Some(c) = e.downcastRef[Carried]() { return &(*c.rc)[0usize]; }  //~ ErrorEscape:62 "past a shared owner"
+  return zero;
+}
+
+fn main() {}

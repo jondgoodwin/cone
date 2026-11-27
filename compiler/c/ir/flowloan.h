@@ -305,6 +305,17 @@ void loanHeldBy(uint32_t var, PathSet *holds);
 // A method's returned borrow carries this loan: name the method in a message
 void loanReturnedBy(uint32_t loan, Name *method);
 
+// Downcasts (flowpath.c, "A downcast of a trait object"). The loan to hold for 'loan' in a
+// value that may point into the concrete value behind a trait object of 'trait'; the trait of
+// the first such loan in 'set', and its trait; a borrow that passed a shared owner from there,
+// which may not leave the function, and its report
+uint32_t loanNarrow(uint32_t loan, INode *trait);
+uint32_t loanNarrowedLoan(PathSet *set);
+INode *loanNarrowedIn(PathSet *set);
+void loanHiddenSet(uint32_t loan, INode *trait);
+INode *loanHidden(uint32_t loan);
+void loanHiddenLeaves(INode *node, uint32_t loan, int how);
+
 // Is the loan's place in what a shared owning reference holds, where others may write?
 int loanThroughSharedOwner(uint32_t loan);
 
