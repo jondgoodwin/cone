@@ -11,6 +11,9 @@
     congo clean [file.cone]           delete what a build wrote
     congo publish [--registry URL]    point an index registry at this package's
                                       current commit
+    congo update [--check | --rollback]
+                                      bring an installed Cone to the newest
+                                      release; say what is newest; or go back
 
 build, run and test also take -D NAME or -D NAME=123 (TEMPORARY, a provisional
 mechanism whose final design is open), passed to every conec compile.
@@ -67,12 +70,14 @@ import codecs
 import concurrent.futures
 import contextlib
 import difflib
+import errno
 import hashlib
 import json
 import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -3192,6 +3197,342 @@ def cmd_publish(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
+# congo update
+# ---------------------------------------------------------------------------
+#
+# An installed Cone (what install.ps1 and install.sh put on a machine) replaces
+# itself with the newest release. The site's latest.json, which
+# `tools/release/release.py stage` writes, names that release's commit and each
+# system's archive with its SHA-256. The release is unpacked beside the install
+# and moved into its place only once it is whole and verified, so PATH and the
+# links into it need no change, and nothing is written but the install and:
+#
+#     <install>.previous/   the install an update replaced, for --rollback
+#     <install>.update/     the download and unpacking, gone when the run ends
+#     <install>.rollback/   Windows: the middle step of a rollback
+#     <install>.lock        an empty file, locked while an install is being changed
+#
+# After a swap this Python's own library is no longer at its old paths (on
+# Windows it is inside the install), so nothing may be first imported then.
+
+UPDATE_SITE = "https://cone.jondgoodwin.com"
+UPDATE_LATEST = "latest.json"
+
+
+def installed_release(root: Path) -> tuple[str, str] | None:
+    """(commit, platform) from the VERSION a release's archive carries; None where
+    `root` has none (a checkout of the repository, say)."""
+    try:
+        text = (root / "VERSION").read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return None
+    commit = re.match(r"Cone, commit ([0-9a-f]{40})\n", text)
+    platform = re.search(r"^platform (\S+)$", text, re.MULTILINE)
+    return (commit[1], platform[1]) if commit and platform else None
+
+
+def this_install() -> tuple[Path, str, str]:
+    """The install this Congo runs from (it lives at <install>/tools/congo/), with
+    its commit and platform."""
+    found = installed_release(REPO)
+    if found is None or not (REPO / "bin" / f"conec{EXE_EXT}").is_file():
+        raise CongoError(f"{REPO} is not an installed Cone (no release's VERSION and bin/conec),"
+                         f" so there is nothing to update: a checkout of the repository is"
+                         f" updated with git")
+    return REPO, found[0], found[1]
+
+
+def update_site() -> str:
+    """Where releases are read from: the Cone site, else what CONE_UPDATE_URL
+    names (an https:// or file:// URL, or a folder)."""
+    site = os.environ.get("CONE_UPDATE_URL") or UPDATE_SITE
+    if "://" in site and not site.startswith(("https://", "file://")):
+        raise CongoError(f"CONE_UPDATE_URL is {site}: an update is read from an https:// or"
+                         f" file:// URL, or a folder")
+    return site
+
+
+@contextlib.contextmanager
+def site_file(site: str, name: str):
+    """The file `name` of the site, open for reading."""
+    import http.client
+    import urllib.request
+    where = f"{site.rstrip('/')}/{name}" if "://" in site else str(Path(site) / name)
+    try:
+        if "://" in site:
+            with urllib.request.urlopen(where, timeout=60) as response:
+                if site.startswith("https://") and not response.geturl().startswith("https://"):
+                    raise CongoError(f"{where} redirects away from https: not followed")
+                yield response
+        else:
+            with open(where, "rb") as handle:
+                yield handle
+    except (OSError, http.client.HTTPException) as exc:
+        raise CongoError(f"cannot fetch {where}: {exc}; nothing was changed") from None
+
+
+def read_latest(site: str) -> tuple[str, dict[str, tuple[str, str]]]:
+    """The newest release: its commit, and each platform's (archive name, SHA-256)."""
+    with site_file(site, UPDATE_LATEST) as stream:
+        data = stream.read(1 << 20)
+    try:
+        latest = json.loads(data)
+        commit = latest["commit"]
+        archives = {platform: (entry["file"], entry["sha256"].lower())
+                    for platform, entry in latest["archives"].items()}
+        good = re.fullmatch(r"[0-9a-f]{40}", commit) and all(
+            re.fullmatch(r"[A-Za-z0-9_-][A-Za-z0-9._-]*(\.zip|\.tar\.gz)", file)
+            and re.fullmatch(r"[0-9a-f]{64}", digest)
+            for file, digest in archives.values())
+    except (ValueError, KeyError, TypeError, AttributeError):
+        good = False
+    if not good:
+        raise CongoError(f"{UPDATE_LATEST} of {site} does not name a release as this Congo reads"
+                         f" it: run the install command again ({UPDATE_SITE}/download.html)")
+    return commit, archives
+
+
+def beside(root: Path, suffix: str) -> Path:
+    return root.with_name(root.name + suffix)
+
+
+def discard(folder: Path) -> None:
+    """Delete a folder of an update's own, if it is there. What cannot be deleted
+    now is left for the next run."""
+    if folder.exists():
+        try:
+            remove_tree(folder)
+        except OSError:
+            pass
+
+
+@contextlib.contextmanager
+def update_lock(root: Path):
+    """One run at a time changes an install. The system drops the lock with the
+    process, however it ends."""
+    try:
+        handle = open(beside(root, ".lock"), "ab")
+    except OSError as exc:
+        raise CongoError(f"cannot write beside the install ({exc}); nothing was changed") from None
+    with handle:
+        try:
+            if IS_WINDOWS:
+                import msvcrt
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            raise CongoError("another congo update is changing this install") from None
+        yield
+
+
+def rename_folder(source: Path, target: Path) -> None:
+    """os.rename, tried for a few seconds on Windows, where a virus scanner can
+    hold files just written."""
+    attempts = 10 if IS_WINDOWS else 1
+    for attempt in range(attempts):
+        try:
+            os.rename(source, target)
+            return
+        except PermissionError:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(0.3)
+
+
+def exchange_folders(first: Path, second: Path) -> bool:
+    """Swap two folders' names in one step, Linux's renameat2(RENAME_EXCHANGE);
+    False where the system or the file system has no such step."""
+    if not sys.platform.startswith("linux"):
+        return False
+    import ctypes
+    try:
+        renameat2 = ctypes.CDLL(None, use_errno=True).renameat2
+    except (OSError, AttributeError):
+        return False
+    at_fdcwd, rename_exchange = -100, 2
+    if renameat2(at_fdcwd, os.fsencode(first), at_fdcwd, os.fsencode(second), rename_exchange) == 0:
+        return True
+    error = ctypes.get_errno()
+    if error in (errno.ENOSYS, errno.EINVAL, errno.EOPNOTSUPP):
+        return False
+    raise OSError(error, os.strerror(error), str(first), None, str(second))
+
+
+def swap_folders(new: Path, root: Path, keep: Path) -> None:
+    """Put the folder `new` at `root`, leaving what was at `root` at `keep` (which
+    may be `new` itself: a rollback). Where it fails, `root` is as it was.
+
+    Linux exchanges the two in one step, so `root` is never missing. Windows has
+    no such step: `root` is renamed away and `new` renamed to it, two renames.
+    Windows renames a folder whose programs are running (this Python, a conec),
+    and refuses one that is some process's current folder or holds an open file."""
+    if Path.cwd().is_relative_to(root):
+        os.chdir(root.parent)
+    interrupt = signal.signal(signal.SIGINT, signal.SIG_IGN)
+    try:
+        if exchange_folders(new, root):
+            if new != keep:
+                try:
+                    rename_folder(new, keep)
+                except OSError:
+                    exchange_folders(new, root)
+                    raise
+            return
+        aside = keep if keep != new else beside(root, ".rollback")
+        rename_folder(root, aside)
+        try:
+            rename_folder(new, root)
+        except OSError as exc:
+            try:
+                rename_folder(aside, root)
+            except OSError:
+                raise CongoError(f"{exc}; the install is now at {aside}: rename it to"
+                                 f" {root}") from None
+            raise
+        if aside != keep:
+            rename_folder(aside, keep)
+    finally:
+        signal.signal(signal.SIGINT, interrupt)
+
+
+def recover_update(root: Path) -> None:
+    """Put right what a run that was killed left beside the install: the release
+    kept for a rollback, if it was on its way, and the unfinished download."""
+    previous = beside(root, ".previous")
+    for left in (beside(root, ".rollback"), beside(root, ".update") / "replaced"):
+        if installed_release(left) is not None:
+            if not previous.exists():
+                rename_folder(left, previous)
+            else:
+                discard(left)
+    discard(beside(root, ".update"))
+
+
+def fetch_release(site: str, commit: str, platform: str, file: str, expected: str,
+                  staging: Path) -> Path:
+    """Download the release's archive into `staging`, verify it and unpack it,
+    returning the folder that is to become the install."""
+    archive = staging / file
+    digest = hashlib.sha256()
+    say("Downloading", file)
+    with site_file(site, f"downloads/{commit[:8]}/{file}") as stream, archive.open("wb") as out:
+        while block := stream.read(1 << 20):
+            digest.update(block)
+            out.write(block)
+    if digest.hexdigest() != expected:
+        raise CongoError(f"{file} is not the release's file (SHA-256 {digest.hexdigest()},"
+                         f" expected {expected}); nothing was changed")
+    say("Verified", "SHA-256")
+    say("Unpacking", file)
+    unpacked = staging / "unpacked"
+    if file.endswith(".zip"):
+        import zipfile
+        with zipfile.ZipFile(archive) as zf:
+            zf.extractall(unpacked)
+    else:
+        import tarfile
+        with tarfile.open(archive) as tar:
+            # Python 3.11.4 and later have the filter
+            checked = {"filter": "data"} if hasattr(tarfile, "data_filter") else {}
+            tar.extractall(unpacked, **checked)
+    new = unpacked / "cone"
+    needed = [f"bin/conec{EXE_EXT}", "bin/congo.cmd" if IS_WINDOWS else "bin/congo",
+              "tools/congo/congo.py"] + (["python/python.exe"] if IS_WINDOWS else [])
+    if installed_release(new) != (commit, platform) or not all((new / n).is_file() for n in needed):
+        raise CongoError(f"{file} does not hold the {platform} release {commit[:8]};"
+                         f" nothing was changed")
+    return new
+
+
+def update_install(root: Path) -> int:
+    site = update_site()
+    with update_lock(root):
+        recover_update(root)
+        _, commit, platform = this_install()
+        latest, archives = read_latest(site)
+        if latest == commit:
+            say("Up to date", f"Cone {commit[:8]} is the newest release")
+            return 0
+        if platform not in archives:
+            raise CongoError(f"the newest release, {latest[:8]}, has no download for {platform};"
+                             f" nothing was changed")
+        previous = beside(root, ".previous")
+        if previous.exists() and installed_release(previous) is None:
+            raise CongoError(f"the install an update replaces is kept at {previous}, and what is"
+                             f" there is not a Cone install: move it away; nothing was changed")
+        file, expected = archives[platform]
+        staging = beside(root, ".update")
+        replaced = staging / "replaced"   # the release before last, until the swap is made
+        try:
+            staging.mkdir()
+            new = fetch_release(site, latest, platform, file, expected, staging)
+            if previous.exists():
+                rename_folder(previous, replaced)
+            try:
+                swap_folders(new, root, previous)
+            except BaseException:
+                if replaced.exists() and not previous.exists():
+                    rename_folder(replaced, previous)
+                raise
+        except CongoError:
+            raise
+        except PermissionError as exc:
+            raise CongoError(f"cannot replace {root}: {exc}. Something may be using it (a terminal"
+                             f" whose current folder is inside it, or a file of it open in another"
+                             f" program): close it and run congo update again. The install is"
+                             f" unchanged") from None
+        # a full disk is an OSError; a damaged archive raises what its format's module does
+        except Exception as exc:
+            raise CongoError(f"the update failed: {exc}. The install in {root} is"
+                             f" unchanged") from None
+        finally:
+            discard(staging)
+    say("Updated", f"Cone {commit[:8]} to {latest[:8]} (congo update --rollback goes back)")
+    return 0
+
+
+def rollback_install(root: Path) -> int:
+    with update_lock(root):
+        recover_update(root)
+        _, commit, _ = this_install()
+        previous = beside(root, ".previous")
+        found = installed_release(previous)
+        if found is None or not (previous / "bin" / f"conec{EXE_EXT}").is_file():
+            raise CongoError(f"nothing to roll back to: {previous} holds no earlier install"
+                             f" (congo update keeps the one it replaces there)")
+        try:
+            swap_folders(previous, root, previous)
+        except OSError as exc:
+            raise CongoError(f"cannot roll back: {exc}. Something may be using {root}: close it"
+                             f" and try again") from None
+    say("Rolled back", f"Cone {commit[:8]} to {found[0][:8]} (congo update --rollback again"
+                       f" returns to {commit[:8]})")
+    return 0
+
+
+def cmd_update(args: argparse.Namespace) -> int:
+    root, commit, platform = this_install()
+    if args.rollback:
+        return rollback_install(root)
+    if not args.check:
+        return update_install(root)
+    site = update_site()
+    latest, archives = read_latest(site)
+    say("Installed", f"Cone {commit[:8]}, in {root}")
+    say("Newest", f"Cone {latest[:8]}, at {site}")
+    if latest == commit:
+        say("Up to date", "")
+    elif platform not in archives:
+        say("Note", f"the newest release has no download for {platform}")
+    else:
+        say("Available", "congo update installs it")
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # congo test
 # ---------------------------------------------------------------------------
 #
@@ -4489,6 +4830,13 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     publish.add_argument("--registry", metavar="URL",
                          help="the index to publish to (default: the first [registry] indexes)")
     publish.set_defaults(func=cmd_publish)
+    update = sub.add_parser("update", help="bring this installed Cone to the newest release")
+    how = update.add_mutually_exclusive_group()
+    how.add_argument("--check", action="store_true",
+                     help="say what is installed and what is newest, and change nothing")
+    how.add_argument("--rollback", action="store_true",
+                     help="go back to the release the last update replaced")
+    update.set_defaults(func=cmd_update)
     # What follows '--' is the program's, and argparse never sees it
     program_args: list[str] = []
     if "--" in argv:

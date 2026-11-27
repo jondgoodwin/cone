@@ -22,6 +22,9 @@ congo run -- a b           arguments after '--' go to the program
 congo test                 build the package, run its tests, build its examples
 congo test vec             only the tests and examples with 'vec' in their name
 congo test --bless         write a new test's expected output from a run
+congo update               bring an installed Cone to the newest release ("Updating an installed Cone")
+congo update --check       say what is installed and what is newest, and change nothing
+congo update --rollback    go back to the release the last update replaced
 congo clean                delete the package's build/ folder
 congo clean hello.cone     delete a lone file's build
 congo run -D FAST -D N=2   a constant for #defined and #define
@@ -88,6 +91,43 @@ as `python tools/congo/congo.py`. Put `tools/congo/` on `PATH` to type `congo`.
      Running build\debug\hello.exe
 Hello, world!
 ```
+
+## Updating an installed Cone
+
+`congo update` brings a Cone that `install.ps1` or `install.sh` installed to the newest release. It
+works on the install this Congo runs from, wherever that is (`CONE_HOME` is the installers' setting and
+is not read here). A checkout of the repository is not an install, and is updated with git.
+
+It reads `latest.json` from https://cone.jondgoodwin.com, which names the newest release's commit and
+each system's archive with its SHA-256. Where that commit is the one in the install's `VERSION`, it says
+so and stops. Otherwise it downloads the archive, refuses it unless its SHA-256 matches, unpacks it
+beside the install, and moves it into the install's place, so `PATH` and the links to `conec` and
+`congo` point where they did. It follows the release the site names, even an older one.
+
+`congo update --check` prints what is installed and what is newest, and changes nothing.
+`congo update --rollback` swaps the install with the one the last update replaced, without the network;
+run again, it swaps them back. One release is kept.
+
+Beside the install, `<install>` being its folder:
+
+- `<install>.previous/`: the release an update replaced. Delete it to take back its space; then there is
+  nothing to roll back to.
+- `<install>.update/`: the download and unpacking, gone when the run ends (a killed run's is deleted by
+  the next).
+- `<install>.lock`: an empty file, locked while an update or rollback runs.
+
+A download or unpack that fails or is killed leaves the install as it was. On Linux the new folder and
+the old are exchanged in one step. **Windows** has no such step, so the install is renamed to
+`<install>.previous` and the new folder renamed into its place. Windows allows this while this Congo and
+any `conec` are running, and refuses it while a terminal's current folder is inside the install or a
+program holds one of its files open (then nothing changes). A build running at that moment can read
+files of both releases: run it again. Should the machine stop between the two renames, the install
+folder is missing: rename `<install>.previous` (after a rollback, `<install>.rollback`) back to it, or
+run the install command again.
+
+`CONE_UPDATE_URL` names another place to read releases from: an `https://` or `file://` URL, or a
+folder, holding `latest.json` and `downloads/<hash8>/<archive>`. Whoever can write there chooses what is
+installed, since the SHA-256 comes from the same place.
 
 ## A package
 
@@ -1252,8 +1292,8 @@ links is the Congo running, that Congo is first moved aside to
 build folder while it runs from it; `congo.py clean` can. Windows only, as its
 `process` package and its linking are for now.
 
-(`congo init` and `congo run --example` are in `congo.py` only so far; the Cone port
-has neither yet.)
+(`congo init`, `congo run --example` and `congo update` are in `congo.py` only so far;
+the Cone port has none of them yet. A release carries `congo.py`.)
 
 **It does everything `congo.py` does:** `congo new` (the manifest and the
 template, byte for byte), `congo build` (debug and `--release`, `-D`, a
@@ -1354,7 +1394,7 @@ Where it differs from `congo.py`:
   can be imported into GPU code today, and a marked package has no `gpu/`.
 - A static library file (`.lib`/`.a`) for a library package; it builds an object.
 - A lockfile and version selection; a registry with accounts or public
-  registration (an index is written by whoever can push to it); `congo update`.
+  registration (an index is written by whoever can push to it).
 - An index on Linux with the Cone Congo, which is Windows only; `congo.py` fetches
   on any system with git.
 - Of incremental builds: a cache for each set of `-D` defines (a build with

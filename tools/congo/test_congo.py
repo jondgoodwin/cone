@@ -5000,6 +5000,282 @@ class IndexRegistries(unittest.TestCase):
         self.assertEqual(self.program_output(self.congo("run", "app.cone", cwd=self.root)), "12\n")
 
 
+# Run in place of 'congo update' to stop it half way through unpacking: it unpacks
+# a few members, says so by writing a file, and waits there to be killed
+HELD_UNPACK = """
+import sys, tarfile, time, zipfile
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+import congo
+done = [0]
+def held(owner):
+    real = owner._extract_member
+    def extract(self, *args, **kwargs):
+        result = real(self, *args, **kwargs)
+        done[0] += 1
+        if done[0] == 4:
+            Path(sys.argv[2]).write_text("held")
+            time.sleep(120)
+        return result
+    owner._extract_member = extract
+held(zipfile.ZipFile)
+held(tarfile.TarFile)
+sys.exit(congo.main(["update"]))
+"""
+
+
+@unittest.skipIf(CONGO_EXE, "the Cone Congo has no 'update' yet")
+@unittest.skipIf(congo.HOST_OS == "macos", "no release has a macOS archive yet")
+class CongoUpdate(unittest.TestCase):
+    """'congo update' of an install made in a temporary folder, from a folder that
+    stands in for the site, laid out as a publish lays it out: latest.json as
+    `release.py stage` writes it, at the root, and the archives under
+    downloads/<hash8>/. The releases are small stand-ins (this congo.py and a
+    marker file saying which release it is); nothing is fetched from a network."""
+
+    A, B, C = "a" * 40, "b" * 40, "c" * 40
+    PLATFORM = "windows-x64" if IS_WINDOWS else "linux-x86_64"
+
+    def setUp(self):
+        sys.path.insert(0, str(HERE.parent / "release"))
+        import release
+        self.release = release
+        self.root = Path(tempfile.mkdtemp(prefix="congo-update-")).resolve()
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+        self.site = self.root / "site"
+        self.install = self.root / "Cone"
+        self.make_tree(self.install, self.A, self.PLATFORM)
+        self.env = {k: v for k, v in os.environ.items() if k != "CONE_UPDATE_URL"}
+        self.env.update(CONE_UPDATE_URL=str(self.site), PYTHONDONTWRITEBYTECODE="1")
+
+    def make_tree(self, folder: Path, commit: str, platform: str) -> None:
+        windows = platform == "windows-x64"
+        files = {"VERSION": f"Cone, commit {commit}\ncommit time 2026-11-27 12:00:00 UTC\nplatform {platform}\n",
+                 f"bin/conec{'.exe' if windows else ''}": f"conec {commit[:8]}\n",
+                 f"bin/congo{'.cmd' if windows else ''}": "congo\n",
+                 "marker.txt": commit[:8]}
+        if windows:
+            files["python/python.exe"] = "python\n"
+        for name, text in files.items():
+            path = folder / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(text.encode())
+        (folder / "tools" / "congo").mkdir(parents=True)
+        shutil.copy2(HERE / "congo.py", folder / "tools" / "congo" / "congo.py")
+
+    def publish(self, commit: str) -> Path:
+        """Stage and publish a release of `commit`; this system's archive."""
+        h8 = commit[:8]
+        out = self.root / "out"
+        (out / h8).mkdir(parents=True)
+        archives = {"windows-x64": out / h8 / f"cone-{h8}-windows-x64.zip",
+                    "linux-x86_64": out / h8 / f"cone-{h8}-linux-x86_64.tar.gz"}
+        for platform, archive in archives.items():
+            tree = self.root / "build" / h8 / platform / "cone"
+            self.make_tree(tree, commit, platform)
+            if archive.suffix == ".zip":
+                self.release.make_zip(tree, archive, 0)
+            else:
+                self.release.make_tar_gz(tree, archive, 0, {"bin/conec", "bin/congo"})
+        staged = subprocess.run([sys.executable, str(HERE.parent / "release" / "release.py"), "stage",
+                                 "--full-hash", commit, "--out", str(out)], capture_output=True, text=True)
+        self.assertEqual(staged.returncode, 0, staged.stderr)
+        downloads = self.site / "downloads" / h8
+        shutil.copytree(out / h8, downloads, dirs_exist_ok=True)
+        shutil.copy2(out / h8 / "latest.json", self.site / "latest.json")
+        return downloads / archives[self.PLATFORM].name
+
+    def update(self, *args: str, ok: bool = True) -> subprocess.CompletedProcess:
+        run = subprocess.run([sys.executable, str(self.install / "tools" / "congo" / "congo.py"),
+                              "update", *args], cwd=self.root, env=self.env, capture_output=True,
+                             encoding="utf-8", timeout=120)
+        self.assertEqual(run.returncode, 0 if ok else 1, run.stdout + run.stderr)
+        return run
+
+    def contents(self, folder: Path) -> dict[str, bytes]:
+        return {p.relative_to(folder).as_posix(): p.read_bytes()
+                for p in sorted(folder.rglob("*")) if p.is_file()}
+
+    def marker(self, folder: Path) -> str:
+        return (folder / "marker.txt").read_text()
+
+    def names(self) -> set[str]:
+        """What stands beside the install, the test's own folders aside."""
+        return {p.name for p in self.root.iterdir()} - {"site", "out", "build"}
+
+    def test_stage_names_the_newest_release(self):
+        archive = self.publish(self.B)
+        latest = json.loads((self.site / "latest.json").read_text(encoding="utf-8"))
+        self.assertEqual(latest["commit"], self.B)
+        self.assertEqual(sorted(latest["archives"]), ["linux-x86_64", "windows-x64"])
+        self.assertEqual(latest["archives"][self.PLATFORM],
+                         {"file": archive.name, "sha256": hashlib.sha256(archive.read_bytes()).hexdigest()})
+
+    def test_up_to_date(self):
+        self.publish(self.A)
+        before = self.contents(self.install)
+        self.assertIn("Up to date Cone aaaaaaaa", self.update().stdout)
+        self.assertIn("Up to date", self.update("--check").stdout)
+        self.assertEqual(self.contents(self.install), before)
+        self.assertEqual(self.names(), {"Cone", "Cone.lock"})
+
+    def test_check_says_both_and_changes_nothing(self):
+        self.publish(self.B)
+        before = self.contents(self.install)
+        said = self.update("--check").stdout
+        self.assertIn("Installed Cone aaaaaaaa", said)
+        self.assertIn("Newest Cone bbbbbbbb", said)
+        self.assertIn("congo update installs it", said)
+        self.assertEqual(self.contents(self.install), before)
+        self.assertEqual(self.names(), {"Cone"})
+
+    def test_an_update_is_applied_and_the_one_before_it_kept(self):
+        first = self.contents(self.install)
+        self.publish(self.B)
+        self.assertIn("Cone aaaaaaaa to bbbbbbbb", self.update().stdout)
+        self.assertEqual(self.marker(self.install), "bbbbbbbb")
+        self.assertEqual(self.contents(self.root / "Cone.previous"), first)
+        self.assertEqual(self.names(), {"Cone", "Cone.previous", "Cone.lock"})
+        self.assertIn("Up to date", self.update().stdout)
+        # one release is kept: the next update drops the first
+        self.publish(self.C)
+        self.update()
+        self.assertEqual(self.marker(self.install), "cccccccc")
+        self.assertEqual(self.marker(self.root / "Cone.previous"), "bbbbbbbb")
+        self.assertEqual(self.names(), {"Cone", "Cone.previous", "Cone.lock"})
+
+    def test_rollback_goes_back_one_release_and_again_returns(self):
+        first = self.contents(self.install)
+        self.publish(self.B)
+        self.update()
+        second = self.contents(self.install)
+        shutil.rmtree(self.site)       # a rollback reads nothing from the site
+        self.assertIn("Cone bbbbbbbb to aaaaaaaa", self.update("--rollback").stdout)
+        self.assertEqual(self.contents(self.install), first)
+        self.assertEqual(self.contents(self.root / "Cone.previous"), second)
+        self.update("--rollback")
+        self.assertEqual(self.contents(self.install), second)
+        self.assertEqual(self.contents(self.root / "Cone.previous"), first)
+        self.assertEqual(self.names(), {"Cone", "Cone.previous", "Cone.lock"})
+
+    def test_nothing_to_roll_back_to(self):
+        before = self.contents(self.install)
+        self.assertIn("nothing to roll back to", self.update("--rollback", ok=False).stderr)
+        self.assertEqual(self.contents(self.install), before)
+
+    def test_a_bad_checksum_is_refused_and_the_install_untouched(self):
+        # the archive is a good one: only what latest.json says its SHA-256 is differs
+        self.publish(self.B)
+        latest = json.loads((self.site / "latest.json").read_text(encoding="utf-8"))
+        latest["archives"][self.PLATFORM]["sha256"] = "0" * 64
+        (self.site / "latest.json").write_text(json.dumps(latest), encoding="utf-8")
+        before = self.contents(self.install)
+        run = self.update(ok=False)
+        self.assertIn("is not the release's file", run.stderr)
+        self.assertNotIn("Unpacking", run.stdout)
+        self.assertEqual(self.contents(self.install), before)
+        self.assertEqual(self.names(), {"Cone", "Cone.lock"})
+
+    def test_a_damaged_archive_leaves_the_install(self):
+        archive = self.publish(self.B)
+        archive.write_bytes(b"not an archive")
+        latest = json.loads((self.site / "latest.json").read_text(encoding="utf-8"))
+        latest["archives"][self.PLATFORM]["sha256"] = hashlib.sha256(b"not an archive").hexdigest()
+        (self.site / "latest.json").write_text(json.dumps(latest), encoding="utf-8")
+        before = self.contents(self.install)
+        self.assertIn("the update failed", self.update(ok=False).stderr)
+        self.assertEqual(self.contents(self.install), before)
+        self.assertEqual(self.names(), {"Cone", "Cone.lock"})
+
+    def test_killed_while_unpacking_leaves_the_install_working(self):
+        self.publish(self.B)
+        self.update()
+        self.publish(self.C)
+        before = self.contents(self.install)
+        held = self.root / "held"
+        script = self.root / "held_unpack.py"
+        script.write_text(HELD_UNPACK, encoding="utf-8")
+        process = subprocess.Popen([sys.executable, str(script), str(self.install / "tools" / "congo"),
+                                    str(held)], cwd=self.root, env=self.env,
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            deadline = time.monotonic() + 60
+            while not held.exists():
+                self.assertIsNone(process.poll(), "the update ended before it was killed")
+                self.assertLess(time.monotonic(), deadline, "the update never began to unpack")
+                time.sleep(0.05)
+            # while it holds the install, a second run is turned away
+            self.assertIn("another congo update", self.update(ok=False).stderr)
+        finally:
+            process.kill()
+            process.wait()
+        held.unlink()
+        script.unlink()
+        self.assertTrue((self.root / "Cone.update").is_dir(), "killed part way: it left its folder")
+        self.assertEqual(self.contents(self.install), before)
+        # the install still runs, and the next update clears up and goes through
+        self.assertIn("Installed Cone bbbbbbbb", self.update("--check").stdout)
+        self.update()
+        self.assertEqual(self.marker(self.install), "cccccccc")
+        self.assertEqual(self.marker(self.root / "Cone.previous"), "bbbbbbbb")
+        self.assertEqual(self.names(), {"Cone", "Cone.previous", "Cone.lock"})
+
+    def test_what_a_killed_run_moved_aside_is_put_back(self):
+        self.publish(self.B)
+        self.update()
+        # as a Windows rollback leaves it, killed between the release kept coming into place
+        # and the one it left being renamed to .previous
+        (self.root / "Cone.previous").rename(self.root / "Cone.rollback")
+        self.update("--rollback")
+        self.assertEqual(self.marker(self.install), "aaaaaaaa")
+        self.assertEqual(self.names(), {"Cone", "Cone.previous", "Cone.lock"})
+
+    def test_a_file_url_and_not_plain_http(self):
+        self.publish(self.B)
+        self.env["CONE_UPDATE_URL"] = "http://127.0.0.1:9/"
+        self.assertIn("https://", self.update(ok=False).stderr)
+        self.env["CONE_UPDATE_URL"] = self.site.as_uri()
+        self.update()
+        self.assertEqual(self.marker(self.install), "bbbbbbbb")
+
+    def test_a_release_without_this_platform(self):
+        self.publish(self.B)
+        latest = json.loads((self.site / "latest.json").read_text(encoding="utf-8"))
+        del latest["archives"][self.PLATFORM]
+        (self.site / "latest.json").write_text(json.dumps(latest), encoding="utf-8")
+        before = self.contents(self.install)
+        self.assertIn("no download for " + self.PLATFORM, self.update("--check").stdout)
+        self.assertIn("no download for " + self.PLATFORM, self.update(ok=False).stderr)
+        self.assertEqual(self.contents(self.install), before)
+
+    def test_a_folder_that_is_no_install_is_not_taken_for_the_one_kept(self):
+        self.publish(self.B)
+        (self.root / "Cone.previous").mkdir()
+        (self.root / "Cone.previous" / "mine.txt").write_text("mine")
+        before = self.contents(self.install)
+        self.assertIn("not a Cone install", self.update(ok=False).stderr)
+        self.assertEqual(self.contents(self.install), before)
+        self.assertEqual((self.root / "Cone.previous" / "mine.txt").read_text(), "mine")
+
+    @unittest.skipUnless(IS_WINDOWS, "Windows refuses to rename a folder holding an open file")
+    def test_an_install_in_use_is_left_as_it_was(self):
+        self.publish(self.B)
+        self.update()
+        self.publish(self.C)
+        before = self.contents(self.install)
+        with (self.install / "marker.txt").open("rb"):
+            self.assertIn("Something may be using it", self.update(ok=False).stderr)
+        self.assertEqual(self.contents(self.install), before)
+        self.assertEqual(self.marker(self.root / "Cone.previous"), "aaaaaaaa")
+        self.assertEqual(self.names(), {"Cone", "Cone.previous", "Cone.lock"})
+
+    def test_a_checkout_is_not_updated(self):
+        run = subprocess.run([sys.executable, str(HERE / "congo.py"), "update"], env=self.env,
+                             capture_output=True, encoding="utf-8", timeout=60)
+        self.assertEqual(run.returncode, 1, run.stdout + run.stderr)
+        self.assertIn("is not an installed Cone", run.stderr)
+
+
 def all_test_ids() -> list[str]:
     """Every test of this module as 'Class.method', in the order unittest runs them."""
     found: list[str] = []

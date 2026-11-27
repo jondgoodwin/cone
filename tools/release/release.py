@@ -5,7 +5,8 @@ the install scripts, the checksums and the Downloads page.
     python tools/release/release.py export  [--hash REV]      the source of REV, as a tarball
     python tools/release/release.py windows [--hash REV] ...  conec for Windows, and cone-<hash8>-windows-x64.zip
     python tools/release/release.py linux   [--hash REV] ...  conec for Linux x86-64, and cone-<hash8>-linux-x86_64.tar.gz
-    python tools/release/release.py stage   [--hash REV] ...  checksums, install.ps1, install.sh and download.html
+    python tools/release/release.py stage   [--hash REV] ...  checksums, latest.json, install.ps1, install.sh
+                                            and download.html
                                             (--no-windows: a Linux-only release, without install.ps1)
     python tools/release/release.py fetch-python              the pinned Windows embeddable Python (a download)
 
@@ -14,6 +15,10 @@ files that go in an archive are the commit's own (line ends included), whatever
 the builder's checkout settings. REV is origin/master unless --hash says
 otherwise. The commit is recorded in the archive (VERSION) and in every file
 name (the first 8 hexadecimal digits).
+
+latest.json, which `congo update` reads, names the newest release: its commit
+and each system's archive with its SHA-256. Publish it at the site's root,
+beside install.sh, after the archives are under downloads/<hash8>/.
 
 Nothing here uploads anything. The output goes to --out (default
 build/release/<hash8>/ under the repository); publishing is a separate act.
@@ -36,6 +41,7 @@ import argparse
 import gzip
 import hashlib
 import io
+import json
 import os
 import re
 import shutil
@@ -242,8 +248,8 @@ rem installation. Nothing outside this folder is needed except Microsoft's C++
 rem Build Tools (the linker).
 setlocal
 set "CONEC=%~dp0conec.exe"
-"%~dp0..\\python\\python.exe" "%~dp0..\\tools\\congo\\congo.py" %*
-exit /b %ERRORLEVEL%
+rem One line, and nothing after it: `congo update` replaces this file while it runs.
+"%~dp0..\\python\\python.exe" "%~dp0..\\tools\\congo\\congo.py" %* & call exit /b %%ERRORLEVEL%%
 """
 
 README_WINDOWS = """Cone, for Windows x64
@@ -267,6 +273,9 @@ packages by name with it). Everything else is in this folder:
                 The ones wrapping a C library carry its prebuilt Windows files in
                 their clib folder (sdl: SDL3; tls: OpenSSL)
     licenses\\   the licence texts; NOTICES.txt says what each covers
+
+`congo update` brings this install to the newest release (`--check` says what is
+newest, `--rollback` goes back to the release an update replaced).
 
 Windows may warn about an unrecognised app the first time conec.exe runs: the
 executables are not code-signed.
@@ -420,6 +429,9 @@ python3 must be 3.11 or later (git lets Congo fetch packages by name). The packa
     packages/    every Cone package
     licenses/    the licence texts; NOTICES.txt says what each covers
 
+`congo update` brings this install to the newest release (`--check` says what is
+newest, `--rollback` goes back to the release an update replaced).
+
 https://cone.jondgoodwin.com/download.html
 """
 
@@ -480,6 +492,8 @@ def fill(text: str, values: dict[str, str]) -> str:
 
 def stage(args: argparse.Namespace) -> None:
     full = git("rev-parse", "--verify", f"{args.hash}^{{commit}}") if not args.full_hash else args.full_hash
+    if not re.fullmatch(r"[0-9a-f]{40}", full):
+        raise ReleaseError(f"{full} is not a 40-digit commit")
     short = full[:8]
     out = Path(args.out).resolve() / short
     win = out / f"cone-{short}-windows-x64.zip"
@@ -505,6 +519,11 @@ def stage(args: argparse.Namespace) -> None:
         values["WINDOWS_COMPILER"] = fill((HERE / "windows-compiler.html.in").read_text(encoding="utf-8"), values)
         values["WIN_ROW"] = fill((HERE / "windows-file-row.html.in").read_text(encoding="utf-8"), values)
     (out / "SHA256SUMS").write_text("\n".join(sums) + "\n", encoding="utf-8", newline="\n")
+    archives = {"linux-x86_64": {"file": lin.name, "sha256": values["LINUX_SHA256"]}}
+    if not args.no_windows:
+        archives["windows-x64"] = {"file": win.name, "sha256": values["WIN_SHA256"]}
+    (out / "latest.json").write_text(json.dumps({"commit": full, "archives": archives}, indent=2) + "\n",
+                                     encoding="utf-8", newline="\n")
     for name in ("install.sh",) if args.no_windows else ("install.ps1", "install.sh"):
         template = (HERE / f"{name}.in").read_text(encoding="utf-8")
         text = fill(template, values)
@@ -512,7 +531,8 @@ def stage(args: argparse.Namespace) -> None:
         (out / name).write_text(text, encoding="utf-8", newline=newline)
     page = (REPO / "conesite" / "public" / "download.html").read_text(encoding="utf-8")
     (out / "download.html").write_text(fill(page, values), encoding="utf-8", newline="\n")
-    say(f"staged {out}: SHA256SUMS " + ("" if args.no_windows else "install.ps1 ") + "install.sh download.html")
+    say(f"staged {out}: SHA256SUMS latest.json " + ("" if args.no_windows else "install.ps1 ")
+        + "install.sh download.html")
     for line in sums:
         say(line)
 
