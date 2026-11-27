@@ -1,0 +1,236 @@
+// A function handed a shared owner ('&o', 'o' an 'Rc[mut, List]') may return a view of what
+// that owner holds, and a second holder of the same 'Rc' ('o2') can then replace or grow it.
+// The call's result carried only a loan of the handle 'o', which no store through 'o2' meets,
+// so each of these was accepted and read freed storage. The result is now marked for the
+// shape check with the containers a borrow written in place would be into
+// (collection_reshape_shared_result_success holds what stays accepted).
+
+mod collection_flow_reshape_shared_result;
+
+import stdio use *;
+import collections use *;
+
+fn make() List[i32] {
+  var l = List[i32]();
+  l.push(7i32);
+  l
+}
+
+fn first(o: &Rc[mut, List[i32]]) &i32 { return &(**o)[0usize]; }
+fn firstUni(o: &uni Rc[mut, List[i32]]) &i32 { return &(**o)[0usize]; }
+fn firstMut(o: &mut Rc[mut, List[i32]]) &i32 { return &(**o)[0usize]; }
+fn through(o: &Rc[mut, List[i32]]) &i32 { return first(o); }
+fn same(x: &i32) &i32 { return x; }
+
+fn plain() {
+  let o = Rc[mut, List[i32]](make());
+  let o2 = o;
+  let v = first(&o);
+  *o2 = List[i32]();                     //~ ErrorShapeStore:3 "made by 'first'"
+  printInt(i64.from(*v));
+}
+
+fn uniForm() {
+  var o = Rc[mut, List[i32]](make());
+  let o2 = o;
+  let v = firstUni(&uni o);
+  *o2 = List[i32]();                     //~ ErrorShapeStore:3 "made by 'firstUni'"
+  printInt(i64.from(*v));
+}
+
+fn mutForm() {
+  var o = Rc[mut, List[i32]](make());
+  let o2 = o;
+  let v = firstMut(&mut o);
+  *o2 = List[i32]();                     //~ ErrorShapeStore:3 "made by 'firstMut'"
+  printInt(i64.from(*v));
+}
+
+fn byName() {
+  let o = Rc[mut, List[i32]](make());
+  let o2 = o;
+  let r = &o;
+  let v = first(r);
+  *o2 = List[i32]();                     //~ ErrorShapeStore:3 "made by 'first'"
+  printInt(i64.from(*v));
+}
+
+// The function holding the view is handed both holders
+fn params(o: &Rc[mut, List[i32]], o2: &mut Rc[mut, List[i32]]) {
+  let v = first(o);
+  **o2 = List[i32]();                    //~ ErrorShapeStore:3 "made by 'first'"
+  printInt(i64.from(*v));
+}
+
+fn twoCalls() {
+  let o = Rc[mut, List[i32]](make());
+  let o2 = o;
+  let v = through(&o);
+  *o2 = List[i32]();                     //~ ErrorShapeStore:3 "made by 'through'"
+  printInt(i64.from(*v));
+}
+
+fn resultPassedOn() {
+  let o = Rc[mut, List[i32]](make());
+  let o2 = o;
+  let v = same(first(&o));
+  *o2 = List[i32]();                     //~ ErrorShapeStore:3 "made by 'first'"
+  printInt(i64.from(*v));
+}
+
+fn functionValue() {
+  let o = Rc[mut, List[i32]](make());
+  let o2 = o;
+  let f = &first;
+  let v = f(&o);
+  *o2 = List[i32]();                     //~ ErrorShapeStore:3
+  printInt(i64.from(*v));
+}
+
+// A method of a struct that holds a holder
+struct Holder {
+  pub rc: Rc[mut, List[i32]];
+  pub fn first(self: &) &i32 { return &(*rc)[0usize]; }
+}
+
+fn method() {
+  let o = Rc[mut, List[i32]](make());
+  let o2 = o;
+  let h = Holder(o);
+  let v = h.first();
+  *o2 = List[i32]();                     //~ ErrorShapeStore:3 "made by 'first'"
+  printInt(i64.from(*v));
+}
+
+fn heldInStruct(h: &Holder) &i32 { return &(*h.rc)[0usize]; }
+
+fn structArgument() {
+  let o = Rc[mut, List[i32]](make());
+  let o2 = o;
+  let h = Holder(o);
+  let v = heldInStruct(&h);
+  *o2 = List[i32]();                     //~ ErrorShapeStore:3 "made by 'heldInStruct'"
+  printInt(i64.from(*v));
+}
+
+// A method of what the owner holds, the owner lent as the receiver
+struct Box {
+  pub items: List[i32];
+  pub fn first(self: &) &i32 { return &items[0usize]; }
+}
+
+fn ownedMethod() {
+  let o = Rc[mut, Box](Box(make()));
+  let o2 = o;
+  let v = o.first();
+  (*o2).items = List[i32]();             //~ ErrorShapeStore:8 "made by 'first'"
+  printInt(i64.from(*v));
+}
+
+fn dictValue(o: &Rc[mut, Dict[i32, List[i32]]], k: &i32) &i32 {
+  match (**o).get(k) {
+    case let Some(x) { return &(*x)[0usize]; }
+    else {}
+  }
+  panic("none")
+}
+
+fn dict() {
+  var d = Dict[i32, List[i32]]();
+  d.insert(1i32, make());
+  let o = Rc[mut, Dict[i32, List[i32]]](d);
+  let o2 = o;
+  let k = 1i32;
+  let v = dictValue(&o, &k);
+  *o2 = Dict[i32, List[i32]]();          //~ ErrorShapeStore:3 "made by 'dictValue'"
+  printInt(i64.from(*v));
+}
+
+fn inList(xs: &List[Rc[mut, List[i32]]]) &i32 { return &(*xs[0usize])[0usize]; }
+
+fn listOfOwners() {
+  let o = Rc[mut, List[i32]](make());
+  let o2 = o;
+  var xs = List[Rc[mut, List[i32]]]();
+  xs.push(o);
+  let v = inList(&xs);
+  *o2 = List[i32]();                     //~ ErrorShapeStore:3 "made by 'inList'"
+  printInt(i64.from(*v));
+}
+
+// The view is of what an owner inside the shared one owns
+fn inner(o: &Rc[mut, Uni[i32]]) &i32 { return &**(*o); }
+
+fn ownerInOwner() {
+  let o = Rc[mut, Uni[i32]](Uni[i32](5i32));
+  let o2 = o;
+  let v = inner(&o);
+  *o2 = Uni[i32](9i32);                  //~ ErrorShapeStore:3 "made by 'inner'"
+  printInt(i64.from(*v));
+}
+
+// The owner holds a borrow of a list
+fn held(o: &Rc[mut, &mut List[i32]]) &i32 { return &(***o)[0usize]; }
+
+fn heldBorrow() {
+  var l = make();
+  let o = Rc[mut, &mut List[i32]](&mut l);
+  let o2 = o;
+  let v = held(&o);
+  **o2 = List[i32]();                    //~ ErrorShapeStore:3 "made by 'held'"
+  printInt(i64.from(*v));
+}
+
+enum Shape {
+  struct Circle { pub r: i32; }
+  struct Square { pub s: i32; }
+}
+use Shape;
+
+fn radius(o: &Rc[mut, Shape]) &i32 {
+  match &**o {
+    case let &Circle(c) { return &c.r; }
+    else {}
+  }
+  panic("square")
+}
+
+fn variant() {
+  let o = Rc[mut, Shape](Circle(5));
+  let o2 = o;
+  let v = radius(&o);
+  *o2 = Square(99);
+  printInt(i64.from(*v));                //~ ErrorVariantReshape:22
+}
+
+fn pushed() {
+  let o = Rc[mut, List[i32]](make());
+  let o2 = o;
+  let v = first(&o);
+  o2.push(1i32);                         //~ ErrorShapeReshape "made by 'first'"
+  printInt(i64.from(*v));
+}
+
+fn wipe(o: Rc[mut, List[i32]]) { *o = List[i32](); }
+
+fn calledWithHolder() {
+  let o = Rc[mut, List[i32]](make());
+  let o2 = o;
+  let v = first(&o);
+  wipe(o2);                              //~ ErrorShapeReshape "made by 'first'"
+  printInt(i64.from(*v));
+}
+
+// The view is handed to the very call that is handed the other holder
+fn wipeThenRead(v: &i32, o: Rc[mut, List[i32]]) {
+  *o = List[i32]();
+  printInt(i64.from(*v));
+}
+
+fn inFlight() {
+  let o = Rc[mut, List[i32]](make());
+  let o2 = o;
+  wipeThenRead(first(&o), o2);           //~ ErrorShapeReshape "made by 'first'"
+}
+
+fn main() {}
