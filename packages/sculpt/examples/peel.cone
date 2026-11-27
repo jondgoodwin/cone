@@ -1,0 +1,833 @@
+// peel: the knight's nostrils (and its mouth, hand-placed) peeled off by sculpt's peelRegion, with numbers and
+// raking-light pictures (a software renderer, no GPU). The loops are not hand-placed for the nostrils: they are
+// the closed 'rim' lines the Python edge finder (C:/src/edge-learn2/L2_final.pkl, run on Knight-avalli.stl)
+// found, exported by C:/src/zz-w75/export.py to peel-loop-<id>.txt (x y z a line, the smoothed points); each
+// point is snapped to the nearest vertex of the mesh nostril.cone loads, knight-noears-r4.obj (the finder's
+// own frame: every point of the two nostril rims lies within 0.046 mm of one of its vertices), consecutive
+// repeats dropped, and facesInsideLoop names the faces inside.
+//
+//   congo run --release --example peel          (from packages/sculpt; needs the files in C:/src/mesh-tools-shots)
+//
+// Measures are nostril.cone's own (regionRow and what it calls, unchanged), so the rows read beside lane 2b's
+// and the region remesh lane's. Output: PNG sheets and the numbers on stdout, in C:/src/mesh-tools-shots.
+
+mod peel;
+
+import stdio use *;
+import libc;
+import collections use *;
+import geomath use *;
+import mesh use *;
+import imagedecode use *;
+import fs;
+import path use Path as FilePath;
+import sculpt use *;
+import time use Instant;
+
+let dir = "C:/src/mesh-tools-shots/";
+
+// ---------------------------------------------------------------- renderer
+
+struct Canvas {
+  w: i32;
+  h: i32;
+  px: List[u8];
+  zb: List[f32];
+  x0: i32;
+  y0: i32;
+  x1: i32;
+  y1: i32;
+
+  fn make(w: i32, h: i32) Canvas {
+    var c = Canvas(w, h, List[u8](), List[f32](), 0, 0, w, h);
+    c.px.resize(usize.from(w) * usize.from(h) * 4usize, 255u8);
+    c.zb.resize(usize.from(w) * usize.from(h), -1000000.);
+    c
+  }
+
+  fn tile(self: &mut, tx0: i32, ty0: i32, tx1: i32, ty1: i32, bg: Vec3) {
+    x0 = tx0; y0 = ty0; x1 = tx1; y1 = ty1;
+    var y = ty0;
+    while y < ty1 {
+      var x = tx0;
+      while x < tx1 {
+        self.setPixel(x, y, bg);
+        zb.set(usize.from(y * w + x), -1000000.);
+        x = x + 1;
+      }
+      y = y + 1;
+    }
+  }
+
+  fn setPixel(self: &mut, x: i32, y: i32, c: Vec3) {
+    let i = usize.from(y * w + x) * 4usize;
+    px.set(i, byteOf(c.x));
+    px.set(i + 1usize, byteOf(c.y));
+    px.set(i + 2usize, byteOf(c.z));
+  }
+
+  fn plot(self: &mut, x: i32, y: i32, z: f32, c: Vec3) {
+    if x >= x0 && x < x1 && y >= y0 && y < y1 {
+      let i = usize.from(y * w + x);
+      if z > *zb[i] {
+        zb.set(i, z);
+        self.setPixel(x, y, c);
+      }
+    }
+  }
+
+  // A triangle given in screen space, its corners' light ia, ib, ic interpolated, times 'col'
+  fn triangle(self: &mut, a: Vec3, b: Vec3, c: Vec3, ia: f32, ib: f32, ic: f32, col: Vec3) {
+    let minx = x0.max(i32.from(libc.floorf(fmin3(a.x, b.x, c.x))));
+    let maxx = (x1 - 1).min(i32.from(libc.ceilf(fmax3(a.x, b.x, c.x))));
+    let miny = y0.max(i32.from(libc.floorf(fmin3(a.y, b.y, c.y))));
+    let maxy = (y1 - 1).min(i32.from(libc.ceilf(fmax3(a.y, b.y, c.y))));
+    let den = (b.y - c.y) * (a.x - c.x) + (c.x - b.x) * (a.y - c.y);
+    if den > -0.0000001 && den < 0.0000001 { return; }
+    var y = miny;
+    while y <= maxy {
+      var x = minx;
+      while x <= maxx {
+        let px_ = f32.from(x) + 0.5;
+        let py_ = f32.from(y) + 0.5;
+        let l0 = ((b.y - c.y) * (px_ - c.x) + (c.x - b.x) * (py_ - c.y)) / den;
+        let l1 = ((c.y - a.y) * (px_ - c.x) + (a.x - c.x) * (py_ - c.y)) / den;
+        let l2 = 1. - l0 - l1;
+        if l0 >= -0.0001 && l1 >= -0.0001 && l2 >= -0.0001 {
+          let li = l0 * ia + l1 * ib + l2 * ic;
+          self.plot(x, y, l0 * a.z + l1 * b.z + l2 * c.z, col * li);
+        }
+        x = x + 1;
+      }
+      y = y + 1;
+    }
+  }
+
+  fn line(self: &mut, a: Vec3, b: Vec3, col: Vec3, bias: f32, thick: i32) {
+    let dx = b.x - a.x;
+    let dy = b.y - a.y;
+    let steps = i32.from(fmax3(dx.abs(), dy.abs(), 1.)) + 1;
+    var i = 0;
+    while i <= steps {
+      let t = f32.from(i) / f32.from(steps);
+      let x = a.x + dx * t;
+      let y = a.y + dy * t;
+      let z = a.z + (b.z - a.z) * t + bias;
+      var ox = 0;
+      while ox < thick {
+        var oy = 0;
+        while oy < thick {
+          self.plot(i32.from(x) + ox, i32.from(y) + oy, z, col);
+          oy = oy + 1;
+        }
+        ox = ox + 1;
+      }
+      i = i + 1;
+    }
+  }
+}
+
+fn fmin3(a: f32, b: f32, c: f32) f32 { let m = if a < b {a} else {b}; if m < c {m} else {c} }
+fn fmax3(a: f32, b: f32, c: f32) f32 { let m = if a > b {a} else {b}; if m > c {m} else {c} }
+
+fn byteOf(v: f32) u8 {
+  var x = i32.from(v * 255. + 0.5);
+  if x < 0 { x = 0; }
+  if x > 255 { x = 255; }
+  u8.from(x)
+}
+
+// An orthographic camera: u right, v up, w towards the viewer, round 'c', 'sc' pixels per unit, the
+// tile's middle at (ox, oy)
+struct Cam {
+  u: Vec3;
+  v: Vec3;
+  w: Vec3;
+  c: Vec3;
+  sc: f32;
+  ox: f32;
+  oy: f32;
+
+  fn make(w: Vec3, upHint: Vec3, c: Vec3, sc: f32, ox: f32, oy: f32) Cam {
+    let ww = w.normalize();
+    let u = upHint.cross(ww).normalize();
+    let v = ww.cross(u);
+    Cam(u, v, ww, c, sc, ox, oy)
+  }
+
+  fn scr(self: &, p: Vec3) Vec3 {
+    let q = p - c;
+    Vec3(ox + q.dot(u) * sc, oy - q.dot(v) * sc, q.dot(w) * sc)
+  }
+}
+
+// The faces of pm with a vertex inside 'radius' of 'centre', Gouraud-shaded by the light 'lit' (a unit vector
+// towards the light), a smooth skin; the faces from 'tintFrom' on are tinted blue by 'tint' and, with 'wire',
+// outlined
+fn drawMesh(cv: &mut Canvas, pm: &PolyMesh, cam: &Cam, lit: Vec3, centre: Vec3, radius: f32, tintFrom: usize,
+    tint: f32, wire: bool, backRed: bool) {
+  let nrm = pm.vertexNormals();
+  var sp = List[Vec3]();
+  var v = 0usize;
+  while v < pm.positions.len() {
+    sp.push(cam.scr(*pm.positions[v]));
+    v = v + 1usize;
+  }
+  var f = 0usize;
+  while f < pm.faceCount() {
+    let vs = pm.faceVertices(u32.from(f));
+    var near = false;
+    var k = 0usize;
+    while k < vs.len() {
+      if (*pm.positions[usize.from(*vs[k])] - centre).length() < radius { near = true; }
+      k = k + 1usize;
+    }
+    if near {
+      let isPatch = f >= tintFrom;
+      var base = if isPatch { Vec3(0.80 - 0.5 * tint, 0.80 - 0.3 * tint, 0.82) } else { Vec3(0.82, 0.80, 0.78) };
+      // one-sided shading: a face turned away from the viewer is drawn red, never lit
+      if backRed && pm.faceNormal(u32.from(f)).dot(cam.w) <= 0. { base = Vec3(0.95, 0.1, 0.1); }
+      k = 1usize;
+      while k + 1usize < vs.len() {
+        let a = usize.from(*vs[0usize]);
+        let b = usize.from(*vs[k]);
+        let c = usize.from(*vs[k + 1usize]);
+        cv.triangle(*sp[a], *sp[b], *sp[c], shade(*nrm[a], lit), shade(*nrm[b], lit), shade(*nrm[c], lit), base);
+        k = k + 1usize;
+      }
+    }
+    f = f + 1usize;
+  }
+  if wire {
+    f = tintFrom;
+    while f < pm.faceCount() {
+      let vs = pm.faceVertices(u32.from(f));
+      var k = 0usize;
+      while k < vs.len() {
+        cv.line(*sp[usize.from(*vs[k])], *sp[usize.from(*vs[(k + 1usize) % vs.len()])], Vec3(0.1, 0.2, 0.7), 0.002 * cam.sc, 1);
+        k = k + 1usize;
+      }
+      f = f + 1usize;
+    }
+  }
+}
+
+fn shade(n: Vec3, lit: Vec3) f32 {
+  let d = n.dot(lit);
+  0.10 + 0.90 * (if d > 0. {d} else {0.})
+}
+
+fn save(cv: &Canvas, name: &str) {
+  var r = Raster();
+  r.width = cv.w;
+  r.height = cv.h;
+  r.depth = 8;
+  r.colorSpace = ColorSpace.Srgb;
+  var i = 0usize;
+  while i < cv.px.len() { r.pixels8.push(*cv.px[i]); i = i + 1usize; }
+  let png = encodePng(&r, 6);
+  var full = String.from(dir);
+  full.append(name);
+  let op = FilePath.from(full.view());
+  if let Err(e) = fs.writeFile(&op, png.view()) { print <- "could not write ", full.view(), ": ", e, "\n"; return; }
+  print <- "wrote ", full.view(), " (", png.len(), " bytes)\n";
+}
+
+// ---------------------------------------------------------------- input
+
+fn loadObj(name: &str) PolyMesh {
+  var full = String.from(dir);
+  full.append(name);
+  var problems = List[String]();
+  let m = readPolyObj(&FilePath.from(full.view()), &mut problems);
+  if problems.len() > 0usize { print <- "problems reading ", name, ": ", problems.len(), " first: ", problems[0usize].view(), "\n"; }
+  m
+}
+
+fn loadFaces(name: &str) List[u32] {
+  var full = String.from(dir);
+  full.append(name);
+  var text = String();
+  let fp = FilePath.from(full.view());
+  match fs.readFile(&fp) {
+    case var Ok(r) { text <-> r; }
+    case let Err(e) { print <- "could not read ", full.view(), ": ", e, "\n"; }
+  }
+  var out = List[u32]();
+  let lines = List[&str].from(text.lines());
+  var i = 0usize;
+  while i < lines.len() {
+    if lines[i].len() > 0usize {
+      match i64.parse(lines[i]) {
+        case let Ok(n) { out.push(u32.from(n)); }
+        case is Err {}
+      }
+    }
+    i = i + 1usize;
+  }
+  out
+}
+
+// ---------------------------------------------------------------- measures
+
+struct Dist {
+  max: f32;
+  rms: f32;
+  out: f32;     // the farthest the patch stands outside the Python skin
+  inn: f32;     // the farthest inside it
+  n: usize;
+}
+
+// How far the patch's faces are from the target skin, by points on them (a barycentric grid of 4 divisions)
+fn patchDistance(m: &PolyMesh, faces: &List[u32], target: &SurfaceIndex) Dist {
+  var mx: f32 = 0.;
+  var sum: f64 = 0.0;
+  var out: f32 = 0.;
+  var inn: f32 = 0.;
+  var n = 0usize;
+  var i = 0usize;
+  while i < faces.len() {
+    let pts = m.facePositions(*faces[i]);
+    var a = 0;
+    while a <= 4 {
+      var b = 0;
+      while a + b <= 4 {
+        let wa = f32.from(a) / 4.;
+        let wb = f32.from(b) / 4.;
+        let p = *pts[0usize] * (1. - wa - wb) + *pts[1usize] * wa + *pts[2usize] * wb;
+        let hit = target.nearest(p, 0.);
+        if hit.found() {
+          let d = hit.distance;
+          if d > mx { mx = d; }
+          sum = sum + f64.from(d) * f64.from(d);
+          let s = (p - hit.point).dot(hit.normal);
+          if s > out { out = s; }
+          if -s > inn { inn = -s; }
+          n = n + 1usize;
+        }
+        b = b + 1;
+      }
+      a = a + 1;
+    }
+    i = i + 1usize;
+  }
+  Dist(mx, f32.from(libc.sqrt(sum / f64.from(n))), out, inn, n)
+}
+
+fn inwardCount(m: &PolyMesh, faces: &List[u32], outward: Vec3) usize {
+  var c = 0usize;
+  var i = 0usize;
+  while i < faces.len() {
+    if m.faceNormal(*faces[i]).dot(outward) <= 0. { c = c + 1usize; }
+    i = i + 1usize;
+  }
+  c
+}
+
+// Patch triangles whose normal points against the Python skin's normal at the nearest point to the triangle's
+// centroid; 'least' is the least dot product among all
+fn localInward(m: &PolyMesh, faces: &List[u32], target: &SurfaceIndex, least: &mut f32) usize {
+  var c = 0usize;
+  var i = 0usize;
+  *least = 2.;
+  while i < faces.len() {
+    let hit = target.nearest(m.faceCentroid(*faces[i]), 0.);
+    let d = m.faceNormal(*faces[i]).dot(hit.normal);
+    if d < *least { *least = d; }
+    if d <= 0. { c = c + 1usize; }
+    i = i + 1usize;
+  }
+  c
+}
+
+fn meanSide(m: &PolyMesh, faces: &List[u32]) f32 {
+  var sum: f32 = 0.;
+  var n = 0usize;
+  var i = 0usize;
+  while i < faces.len() {
+    let pts = m.facePositions(*faces[i]);
+    var k = 0usize;
+    while k < 3usize {
+      sum = sum + (*pts[(k + 1usize) % 3usize] - *pts[k]).length();
+      n = n + 1usize;
+      k = k + 1usize;
+    }
+    i = i + 1usize;
+  }
+  sum / f32.from(n)
+}
+
+fn report(label: &str, h: &HoleFill, outward: Vec3, target: &SurfaceIndex, seconds: f64) {
+  let d = patchDistance(&h.mesh, &h.faces, target);
+  var least: f32 = 0.;
+  let li = localInward(&h.mesh, &h.faces, target, &mut least);
+  var leastOut: f32 = 2.;
+  var q = 0usize;
+  while q < h.faces.len() {
+    let dd = h.mesh.faceNormal(*h.faces[q]).dot(outward);
+    if dd < leastOut { leastOut = dd; }
+    q = q + 1usize;
+  }
+  print <- label, ": inward by the local test (normal against the Python skin's at the nearest point) ", li, ", least dot ", least,
+    "; least dot with the mean outward direction ", leastOut, "\n";
+  print <- label, ": patch triangles ", h.faces.len(), ", new vertices ", h.vertices.len(), ", inward ",
+    inwardCount(&h.mesh, &h.faces, outward), ", mean side ", meanSide(&h.mesh, &h.faces), " mm\n";
+  print <- "    distance to the Python result over ", d.n, " points: largest ", d.max, " mm, RMS ", d.rms,
+    " mm; stands out by at most ", d.out, ", in by at most ", d.inn, "; closed: ", h.mesh.validate().len() == 0usize,
+    "; time ", seconds, " s\n";
+}
+
+fn copyFaces(a: &List[u32]) List[u32] {
+  var o = List[u32]();
+  var i = 0usize;
+  while i < a.len() { o.push(*a[i]); i = i + 1usize; }
+  o
+}
+
+fn flagList(n: usize) List[bool] {
+  var f = List[bool].withCapacity(n);
+  var i = 0usize;
+  while i < n { f.push(false); i = i + 1usize; }
+  f
+}
+
+// Adds to 'flags' every vertex next to a flagged one, 'layers' times
+fn growFlags(m: &PolyMesh, flags: &mut List[bool], layers: i32) {
+  var l = 0;
+  while l < layers {
+    var add = List[u32]();
+    var v = 0usize;
+    while v < m.vertexCount() {
+      if *flags[v] {
+        let ns = m.vertexNeighbors(u32.from(v));
+        var k = 0usize;
+        while k < ns.len() {
+          if !*flags[usize.from(*ns[k])] { add.push(*ns[k]); }
+          k = k + 1usize;
+        }
+      }
+      v = v + 1usize;
+    }
+    var a = 0usize;
+    while a < add.len() { flags.set(usize.from(*add[a]), true); a = a + 1usize; }
+    l = l + 1;
+  }
+}
+
+fn flaggedList(flags: &List[bool]) List[u32] {
+  var o = List[u32]();
+  var i = 0usize;
+  while i < flags.len() {
+    if *flags[i] { o.push(u32.from(i)); }
+    i = i + 1usize;
+  }
+  o
+}
+
+struct Rim {
+  rimMax: f32;     // the largest angle between neighbouring faces across the patch's rim, degrees
+  rimMean: f32;
+  outMax: f32;     // the same on the skin just outside: edges between two skin faces that touch a rim vertex
+  outMean: f32;
+}
+
+fn rimAngles(m: &PolyMesh, patch: &List[bool], rim: &List[bool]) Rim {
+  var rMax: f32 = 0.; var rSum: f64 = 0.0; var rN = 0usize;
+  var oMax: f32 = 0.; var oSum: f64 = 0.0; var oN = 0usize;
+  var e = 0u32;
+  while usize.from(e) < m.edgeCount() {
+    let h0 = m.edgeHalfedge(e, 0u32);
+    let h1 = m.edgeHalfedge(e, 1u32);
+    let f0 = m.face(h0);
+    let f1 = m.face(h1);
+    if f0 != NoIndex && f1 != NoIndex {
+      let p0 = *patch[usize.from(f0)];
+      let p1 = *patch[usize.from(f1)];
+      let a = m.fromVertex(h0);
+      let b = m.toVertex(h0);
+      var d = m.faceNormal(f0).dot(m.faceNormal(f1));
+      if d > 1. { d = 1.; }
+      if d < -1. { d = -1.; }
+      let ang = f32.from(libc.acos(f64.from(d))) * 57.29578;
+      if p0 != p1 {
+        if ang > rMax { rMax = ang; }
+        rSum = rSum + f64.from(ang); rN = rN + 1usize;
+      } else if !p0 && (*rim[usize.from(a)] || *rim[usize.from(b)]) {
+        if ang > oMax { oMax = ang; }
+        oSum = oSum + f64.from(ang); oN = oN + 1usize;
+      }
+    }
+    e = e + 1u32;
+  }
+  Rim(rMax, f32.from(rSum / f64.from(rN)), oMax, f32.from(oSum / f64.from(oN)))
+}
+
+fn faceFlags(m: &PolyMesh, faces: &List[u32]) List[bool] {
+  var f = flagList(m.faceCount());
+  var i = 0usize;
+  while i < faces.len() { f.set(usize.from(*faces[i]), true); i = i + 1usize; }
+  f
+}
+
+
+struct Angles {
+  least: f32;     // degrees
+  p5: f32;        // the 5th percentile of all the triangles' angles
+}
+
+fn angleStats(m: &PolyMesh, faces: &List[u32]) Angles {
+  var hist = List[u32]();
+  var b = 0;
+  while b < 1801 { hist.push(0u32); b = b + 1; }
+  var least: f32 = 180.;
+  var n = 0usize;
+  var i = 0usize;
+  while i < faces.len() {
+    let p = m.facePositions(*faces[i]);
+    var k = 0usize;
+    while k < 3usize {
+      let a = *p[(k + 1usize) % 3usize] - *p[k];
+      let c = *p[(k + 2usize) % 3usize] - *p[k];
+      let d = a.length() * c.length();
+      var cs: f32 = 1.;
+      if d > 0. { cs = a.dot(c) / d; }
+      if cs > 1. { cs = 1.; }
+      if cs < -1. { cs = -1.; }
+      let deg = f32.from(libc.acos(f64.from(cs))) * 57.29578;
+      if deg < least { least = deg; }
+      var bin = i32.from(deg * 10.);
+      if bin > 1800 { bin = 1800; }
+      hist.set(usize.from(bin), *hist[usize.from(bin)] + 1u32);
+      n = n + 1usize;
+      k = k + 1usize;
+    }
+    i = i + 1usize;
+  }
+  let want = n / 20usize;
+  var acc = 0usize;
+  var p5: f32 = 0.;
+  var j = 0usize;
+  while j < hist.len() {
+    acc = acc + usize.from(*hist[j]);
+    if acc > want { p5 = f32.from(j) / 10.; j = hist.len(); }
+    j = j + 1usize;
+  }
+  Angles(least, p5)
+}
+
+// The vertices on the edge of a set of faces (an edge with a flagged face on one side only)
+fn regionEdgeVertices(m: &PolyMesh, flags: &List[bool]) List[bool] {
+  var out = flagList(m.vertexCount());
+  var e = 0u32;
+  while usize.from(e) < m.edgeCount() {
+    let h0 = m.edgeHalfedge(e, 0u32);
+    let h1 = m.edgeHalfedge(e, 1u32);
+    let f0 = m.face(h0);
+    let f1 = m.face(h1);
+    let in0 = f0 != NoIndex && *flags[usize.from(f0)];
+    let in1 = f1 != NoIndex && *flags[usize.from(f1)];
+    if in0 != in1 {
+      out.set(usize.from(m.toVertex(h0)), true);
+      out.set(usize.from(m.fromVertex(h0)), true);
+    }
+    e = e + 1u32;
+  }
+  out
+}
+
+// The angle between neighbouring faces over the edges inside the region whose middle is within 'reach' of where the old
+// rim lay (points 'rimPts'): the same question as lane 2b's rim angle, put where the rim was, so it can be asked of a
+// mesh that no longer has a rim
+fn nearOldRim(m: &PolyMesh, flags: &List[bool], rimPts: &List[Vec3], reach: f32, mean: &mut f32, count: &mut usize) f32 {
+  var mx: f32 = 0.;
+  var sum: f64 = 0.0;
+  var n = 0usize;
+  var e = 0u32;
+  while usize.from(e) < m.edgeCount() {
+    let h0 = m.edgeHalfedge(e, 0u32);
+    let f0 = m.face(h0);
+    let f1 = m.face(m.edgeHalfedge(e, 1u32));
+    if f0 != NoIndex && f1 != NoIndex && *flags[usize.from(f0)] && *flags[usize.from(f1)] {
+      let mid = (*m.positions[usize.from(m.toVertex(h0))] + *m.positions[usize.from(m.fromVertex(h0))]) * 0.5;
+      var near = false;
+      var k = 0usize;
+      while k < rimPts.len() && !near {
+        if (*rimPts[k] - mid).length() < reach { near = true; }
+        k = k + 1usize;
+      }
+      if near {
+        var d = m.faceNormal(f0).dot(m.faceNormal(f1));
+        if d > 1. { d = 1.; }
+        if d < -1. { d = -1.; }
+        let ang = f32.from(libc.acos(f64.from(d))) * 57.29578;
+        if ang > mx { mx = ang; }
+        sum = sum + f64.from(ang);
+        n = n + 1usize;
+      }
+    }
+    e = e + 1u32;
+  }
+  *mean = f32.from(sum / f64.from(n));
+  *count = n;
+  mx
+}
+
+fn regionRow(label: &str, rounds: u32, m: &PolyMesh, region: &List[u32], python: &SurfaceIndex, patchRim: &List[bool],
+    patchFaces: &List[u32], rimPts: &List[Vec3], secs: f64) {
+  var nrMean: f32 = 0.;
+  var nrCount = 0usize;
+  let nrMax = nearOldRim(m, &faceFlags(m, region), rimPts, 0.06, &mut nrMean, &mut nrCount);
+  var nrMean2: f32 = 0.;
+  var nrCount2 = 0usize;
+  let nrMax2 = nearOldRim(m, &faceFlags(m, region), rimPts, 0.03, &mut nrMean2, &mut nrCount2);
+  print <- "    NEAR within 0.06 mm of where the old rim lay: ", nrCount, " edges, angle between neighbouring faces max ", nrMax, " mean ", nrMean,
+    "; within 0.03 mm: ", nrCount2, " edges max ", nrMax2, " mean ", nrMean2, "\n";
+  let a = angleStats(m, region);
+  let d = patchDistance(m, region, python);
+  let flags = faceFlags(m, region);
+  let edge = regionEdgeVertices(m, &flags);
+  let ra = rimAngles(m, &flags, &edge);
+  // the triangles with no vertex on the region's edge, and those with some
+  var inner = List[u32]();
+  var touching = List[u32]();
+  var held = List[u32]();      // with two vertices on the edge and a side there shorter than 0.02 mm (the source's own needles)
+  var qi = 0usize;
+  while qi < region.len() {
+    let vs = m.faceVertices(*region[qi]);
+    var on = 0;
+    var k = 0usize;
+    while k < vs.len() { if *edge[usize.from(*vs[k])] { on = on + 1; } k = k + 1usize; }
+    if on == 0 { inner.push(*region[qi]); } else { touching.push(*region[qi]); }
+    qi = qi + 1usize;
+  }
+  let ai = angleStats(m, &inner);
+  let at = angleStats(m, &touching);
+  print <- "REMESH ", label, " ", rounds, ": triangles ", region.len(), "; smallest angle ", a.least, " deg, 5th percentile ", a.p5,
+    "; to Python (region) max ", d.max, " RMS ", d.rms, " above ", d.out, " below ", d.inn, "\n";
+  print <- "    without a vertex on the region's edge: ", inner.len(), " triangles, smallest ", ai.least, ", 5th percentile ", ai.p5,
+    "; with one: ", touching.len(), " triangles, smallest ", at.least, ", 5th percentile ", at.p5, "\n";
+  print <- "    rim angle across the region's own edge max ", ra.rimMax, " (mean ", ra.rimMean, "), skin just outside max ", ra.outMax,
+    " (mean ", ra.outMean, ")";
+  if patchFaces.len() > 0usize {
+    let pf = faceFlags(m, patchFaces);
+    let pr = rimAngles(m, &pf, patchRim);
+    print <- "; across the patch's rim (lane 2b's measure) max ", pr.rimMax, " (mean ", pr.rimMean, ")";
+  }
+  print <- "; closed ", m.validate().len() == 0usize, "; time ", secs, " s\n";
+}
+fn boundaryNear(m: &PolyMesh, p: Vec3) u32 {
+  var best = NoIndex;
+  var bd: f32 = 1000000.;
+  var v = 0usize;
+  while v < m.vertexCount() {
+    if m.isBoundaryVertex(u32.from(v)) {
+      let d = (*m.positions[v] - p).length();
+      if d < bd { bd = d; best = u32.from(v); }
+    }
+    v = v + 1usize;
+  }
+  best
+
+// ---------------------------------------------------------------- the loops
+
+fn loadPoints(name: &str) List[Vec3] {
+  var full = String.from(dir);
+  full.append(name);
+  var text = String();
+  let fp = FilePath.from(full.view());
+  var out = List[Vec3]();
+  match fs.readFile(&fp) {
+    case var Ok(r) { text <-> r; }
+    case let Err(e) { print <- "no file ", full.view(), "\n"; return out; }
+  }
+  let lines = List[&str].from(text.lines());
+  var i = 0usize;
+  while i < lines.len() {
+    var it = lines[i].splitWhitespace();
+    var xyz = List[f32]();
+    while true {
+      match it.next() {
+        case let Some(p) {
+          match f32.parse(p) {
+            case let Ok(x) { xyz.push(x); }
+            case is Err {}
+          }
+        }
+        case is None { break; }
+      }
+    }
+    if xyz.len() == 3usize { out.push(Vec3(*xyz[0usize], *xyz[1usize], *xyz[2usize])); }
+    i = i + 1usize;
+  }
+  out
+}
+
+// Each point to the nearest vertex of m; a vertex equal to the one before it (or, at the end, the first) is dropped
+fn snapLoop(m: &PolyMesh, pts: &List[Vec3], worst: &mut f32) List[u32] {
+  var out = List[u32]();
+  *worst = 0.;
+  var i = 0usize;
+  while i < pts.len() {
+    var best = 0usize;
+    var bd: f32 = 1000000.;
+    var v = 0usize;
+    while v < m.vertexCount() {
+      let d = (*m.positions[v] - *pts[i]).lengthSquared();
+      if d < bd { bd = d; best = v; }
+      v = v + 1usize;
+    }
+    let d = bd.sqrt();
+    if d > *worst { *worst = d; }
+    if out.len() == 0usize || *out[out.len() - 1usize] != u32.from(best) { out.push(u32.from(best)); }
+    i = i + 1usize;
+  }
+  while out.len() > 1usize && *out[out.len() - 1usize] == *out[0usize] { out.pop(); }
+  out
+}
+
+// ---------------------------------------------------------------- the phases, repeated by the public tools
+
+fn phases(src: &PolyMesh, faces: &List[u32]) {
+  var p = List[String]();
+  var t0 = Instant.now();
+  let cut = deleteFaces(src, faces.view());
+  let tDel = t0.elapsed().secondsF64();
+  let v = boundaryNear(&cut, src.faceCentroid(*faces[0usize]));
+  let hl = boundaryLoop(&cut, v);
+  t0 = Instant.now();
+  let fill = fillHole(&cut, v, true, &mut p);
+  let tFill = t0.elapsed().secondsF64();
+  var inR = faceFlags(&fill.mesh, &fill.faces);
+  var rimF = flagList(fill.mesh.vertexCount());
+  var i = 0usize;
+  while i < hl.len() { rimF.set(usize.from(*hl[i]), true); i = i + 1usize; }
+  var ring = List[u32]();
+  var f = 0u32;
+  while usize.from(f) < fill.mesh.faceCount() {
+    if !*inR[usize.from(f)] {
+      let vs = fill.mesh.faceVertices(f);
+      var touches = false;
+      var k = 0usize;
+      while k < vs.len() { if *rimF[usize.from(*vs[k])] { touches = true; } k = k + 1usize; }
+      if touches { ring.push(f); }
+    }
+    f = f + 1u32;
+  }
+  var region = copyFaces(&fill.faces);
+  i = 0usize;
+  while i < ring.len() { region.push(*ring[i]); i = i + 1usize; }
+  let len = meanSide(&fill.mesh, &ring);
+  t0 = Instant.now();
+  let rr = remeshRegion(&fill.mesh, region.view(), len, 5u32, &mut p);
+  let tRem = t0.elapsed().secondsF64();
+  t0 = Instant.now();
+  let fr = fairRegion(&rr.mesh, rr.vertices.view(), 2u32, &mut p);
+  let tFair = t0.elapsed().secondsF64();
+  print <- "    phases (the public tools composed again): deleteFaces ", tDel, " s, fillHole ", tFill, " s (", fill.faces.len(), " fill triangles, ",
+    ring.len(), " ring faces, L ", len, " mm), remeshRegion ", tRem, " s, fairRegion ", tFair, " s, problems ", p.len(), ", faired faces ", fr.faceCount(), "\n";
+}
+
+// ---------------------------------------------------------------- main
+
+struct Feature {
+  label: String;
+  centre: Vec3;
+  outward: Vec3;
+  base: PolyMesh;
+  piece: PolyMesh;
+  nNew: usize;
+}
+
+fn main() i32 {
+  let dirp = FilePath.from("C:/src/mesh-tools-shots");
+  if let Err(e) = fs.makeDirAll(&dirp) { print <- "could not make the folder: ", e, "\n"; return 1; }
+  var t0 = Instant.now();
+  let src = loadObj("knight-noears-r4.obj");
+  print <- "read source: ", src.vertexCount(), " vertices, ", src.faceCount(), " faces, in ", t0.elapsed().secondsF64(), " s\n";
+  let python = loadObj("knight-nonos.obj");
+  let pyIndex = SurfaceIndex.of(&python);
+  let vn = src.vertexNormals();
+  let noFaces = List[u32]();
+  let noFlags = List[bool]();
+
+  var names = List[String]();
+  names.push(String.from("peel-loop-8.txt"));
+  names.push(String.from("peel-loop-9.txt"));
+  names.push(String.from("peel-loop-mouth.txt"));
+  var feats = List[Feature]();
+  var n = 0usize;
+  while n < names.len() {
+    let name = names[n].view();
+    print <- "\n==== ", name, "\n";
+    let pts = loadPoints(name);
+    if pts.len() > 0usize {
+      var worst: f32 = 0.;
+      let loop = snapLoop(&src, &pts, &mut worst);
+      print <- "points ", pts.len(), ", snapped to ", loop.len(), " vertices (the farthest snap ", worst, " mm)\n";
+      var problems = List[String]();
+      t0 = Instant.now();
+      let faces = facesInsideLoop(&src, loop.view(), &mut problems);
+      let tIn = t0.elapsed().secondsF64();
+      print <- "facesInsideLoop: ", faces.len(), " faces in ", tIn, " s, problems ", problems.len(), "\n";
+      var q = 0usize;
+      while q < problems.len() { print <- "  problem: ", problems[q].view(), "\n"; q = q + 1usize; }
+      if faces.len() > 0usize {
+        var centre = Vec3(0., 0., 0.);
+        var outward = Vec3(0., 0., 0.);
+        var rimPts = List[Vec3]();
+        q = 0usize;
+        while q < loop.len() {
+          centre = centre + *src.positions[usize.from(*loop[q])];
+          outward = outward + *vn[usize.from(*loop[q])];
+          rimPts.push(*src.positions[usize.from(*loop[q])]);
+          q = q + 1usize;
+        }
+        centre = centre * (1. / f32.from(loop.len()));
+        outward = outward.normalize();
+        t0 = Instant.now();
+        let peeled = peelRegion(&src, faces.view(), 1u32, &mut problems);
+        let tPeel = t0.elapsed().secondsF64();
+        print <- "peelRegion ring 1: ", peeled.faces.len(), " new triangles, ", peeled.vertices.len(), " faired vertices, piece ", peeled.piece.faceCount(),
+          " faces, base ", peeled.mesh.faceCount(), " faces, problems ", problems.len(), ", total ", tPeel, " s\n";
+        q = 0usize;
+        while q < problems.len() { print <- "  problem: ", problems[q].view(), "\n"; q = q + 1usize; }
+        print <- "base validate problems ", peeled.mesh.validate().len(), ", piece validate problems ", peeled.piece.validate().len(), "\n";
+        regionRow(name, 5u32, &peeled.mesh, &peeled.faces, &pyIndex, &noFlags, &noFaces, &rimPts, tPeel);
+        phases(&src, &faces);
+        feats.push(Feature(String.from(name), centre, outward, peeled.mesh.clone(), peeled.piece.clone(), peeled.faces.len()));
+      }
+    }
+    n = n + 1usize;
+  }
+
+  // The sheet: per feature, source / base / piece, in two raking lights
+  let tw = 300;
+  var cv = Canvas.make(tw * 3 * i32.from(feats.len()), tw * 2);
+  var fi = 0usize;
+  while fi < feats.len() {
+    let ft = &feats[fi];
+    let up = if ft.outward.dot(Vec3(0., 1., 0.)).abs() < 0.9 { Vec3(0., 1., 0.) } else { Vec3(1., 0., 0.) };
+    var row = 0;
+    while row < 2 {
+      var col = 0;
+      while col < 3 {
+        let x0 = (i32.from(fi) * 3 + col) * tw;
+        cv.tile(x0, row * tw, x0 + tw, (row + 1) * tw, Vec3(0.97, 0.97, 0.97));
+        let cam = Cam.make(ft.outward, up, ft.centre, 30., f32.from(x0) + 150., f32.from(row * tw) + 150.);
+        let lit = if row == 1 { (cam.v * -0.85 + cam.u * 0.3 + cam.w * 0.43).normalize() } else { (cam.u * 0.92 + cam.w * 0.38).normalize() };
+        if col == 0 {
+          drawMesh(&mut cv, &src, &cam, lit, ft.centre, 5.2, 1000000000usize, 0., false, false);
+        } else if col == 1 {
+          drawMesh(&mut cv, &ft.base, &cam, lit, ft.centre, 5.2, ft.base.faceCount() - ft.nNew, 1., false, false);
+        } else {
+          drawMesh(&mut cv, &ft.piece, &cam, lit, ft.centre, 5.2, 1000000000usize, 0., false, false);
+        }
+        col = col + 1;
+      }
+      row = row + 1;
+    }
+    fi = fi + 1usize;
+  }
+  save(&cv, "peel-sheet.png");
+  0
+}
