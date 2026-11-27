@@ -2516,7 +2516,7 @@ static int flowGatePlaceLent(INode *place) {
 
 // Does making this value do no more than read: names, literals, places and the
 // built-in operators on them? Anything else may call, or store
-static int flowGateOnlyReads(INode *node) {
+int flowGateOnlyReads(INode *node) {
     if (isNameUseNode(node))
         return 1;
     switch (node->tag) {
@@ -2577,6 +2577,21 @@ void flowGateCompound(FlowState *fstate, INode *lval, INode *rval) {
         return;
     if (flowGatePlaceLent(tmp->value) && !flowGateOnlyReads(rval))
         fstate->gate |= FlowGateShape;
+}
+
+// A place's address is made before its index, and used after. Where the place is
+// one a change could free, and the index does more than read, the function is
+// walked, for what changes it in between (flowpath.c, pwIndexStandIn). A narrowed
+// variant, and a borrow held in a name, have marked the function already
+void flowGateIndex(FlowState *fstate, INode *index) {
+    if ((fstate->gate & FlowGateShape) || !flowGatePlaceLent(index))
+        return;
+    INode **argsp;
+    uint32_t cnt;
+    for (nodesFor(((FnCallNode *)index)->args, cnt, argsp)) {
+        if (!flowGateOnlyReads(*argsp))
+            fstate->gate |= FlowGateShape;
+    }
 }
 
 void flowGateUse(FlowState *fstate, VarDclNode *var) {

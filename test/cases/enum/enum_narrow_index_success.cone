@@ -1,0 +1,112 @@
+// What is accepted beside enum_flow_narrow_index: a member of a narrowed variant indexed,
+// where nothing in the index could change which variant the enum holds, and a change made
+// before the test or after the last use of the variant.
+
+mod enum_narrow_index_success;
+
+import stdio use *;
+
+enum Slot {
+  struct Text {
+    pub s: &str;
+  }
+
+  struct Num {
+    pub r: Array[usize, 3];
+    pub g: Array[Array[usize, 3], 2];
+  }
+}
+use Slot;
+
+fn change(m: &mut Slot) usize {
+  *m = Text("0123456789");
+  return 1usize;
+}
+
+// Only reads the enum
+fn peek(m: &Slot) usize {
+  return 1usize;
+}
+
+// Reaches nothing of the enum
+fn two() usize {
+  return 2usize;
+}
+
+fn num() Slot {
+  return Num([1usize, 2usize, 3usize], [[1usize, 2usize, 3usize], [4usize, 5usize, 6usize]]);
+}
+
+fn shared(n: &'a mut Slot, m: &'b mut Slot, i: usize) {
+  if n is Num {
+    n.r[i] = 10usize;                   // r[0] = 10
+    n.r[peek(m)] = 20usize;             // r[1] = 20
+    n.r[two()] += n.r[peek(m)];         // r[2] = 3 + 20 = 23
+    n.g[peek(m)][two()] += two();       // g[1][2] = 6 + 2 = 8
+    n.g[i][n.r[i]-9usize] = 30usize;    // g[0][10 - 9] = 30
+  }
+}
+
+// The change is made before the test, and the index after it
+fn changeBefore(n: &'a mut Slot, m: &'b mut Slot) {
+  let k = change(m);
+  *m = num();
+  if n is Num {
+    n.r[k] = 40usize;                   // r[1] = 40
+  }
+}
+
+// The change is made after the last use of the variant
+fn changeAfter(n: &'a mut Slot, m: &'b mut Slot) {
+  if n is Num {
+    n.r[two()] = 50usize;
+    printInt(i64.from(n.r[two()]));
+    printStr(" ");
+    let k = change(m);
+    printInt(i64.from(k));
+    printStr("\n");
+  }
+}
+
+fn show(n: &Slot) {
+  if n is Num {
+    printInt(i64.from(n.r[0usize]));
+    printStr(" ");
+    printInt(i64.from(n.r[1usize]));
+    printStr(" ");
+    printInt(i64.from(n.r[2usize]));
+    printStr(" ");
+    printInt(i64.from(n.g[0usize][1usize]));
+    printStr(" ");
+    printInt(i64.from(n.g[1usize][2usize]));
+    printStr("\n");
+  }
+  else {
+    printStr("text\n");
+  }
+}
+
+fn main() {
+  var s: Slot = num();
+  let a = &mut s;
+
+  shared(a, a, 0usize);
+  show(a);
+
+  // 'num()' again, with r[1] = 40
+  changeBefore(a, a);
+  show(a);
+
+  // 50 and 1 are printed, then the enum holds a Text
+  changeAfter(a, a);
+  show(a);
+
+  // By value, with a 'mut' borrow held and not used to change it
+  var v: Slot = num();
+  let m = &mut v;
+  if v is Num {
+    v.r[peek(m)] = 60usize;             // r[1] = 60
+    v.r[two()] += peek(m);              // r[2] = 3 + 1 = 4
+  }
+  show(&v);
+}

@@ -144,6 +144,7 @@ typedef struct {
     uint32_t narrow;    // a name narrowed by a test or a store: its stand-in's index (pwNarrowName), else 0
     uint8_t narrowed;   // it is such a stand-in, bearing the name it stands for
     uint8_t compound;   // it is the stand-in for the place a compound assignment writes (pwCompoundPlace)
+    uint8_t indexed;    // it is the stand-in for the place an index picks from (pwIndexStandIn)
 } PathVar;
 
 // The variables the current walk has met, by index; index 0 is unused
