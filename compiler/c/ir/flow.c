@@ -1464,6 +1464,8 @@ void flowLoadValue(FlowState *fstate, INode **nodep) {
     case IfTag:
         ifFlow(fstate, (IfNode **)nodep); break;
     case AssignTag:
+        if ((*nodep)->flags & FlagNarrowAssigned)
+            fstate->narrowname = 1;
         assignFlow(fstate, (AssignNode **)nodep); break;
     case FnCallTag:
         fnCallFlow(fstate, (FnCallNode**)nodep);
@@ -1506,6 +1508,8 @@ void flowLoadValue(FlowState *fstate, INode **nodep) {
             flowGateBoxed(fstate, *nodep);
             flowGateNarrow(fstate, *nodep);
         }
+        else if ((*nodep)->flags & FlagNarrowTest)
+            fstate->narrowname = 1;
         // A raw pointer made of a borrow carries no permission: what it
         // points at may be written through it (VarLendWritable)
         if ((*nodep)->tag == CastTag && iexpGetTypeDcl(*nodep)->tag == PtrTag) {

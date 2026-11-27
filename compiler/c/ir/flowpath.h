@@ -73,6 +73,7 @@ typedef struct {
     StructNode *slotted; // A struct declaring lifetimes whose field the path's first step is, where
                         // the root variable's loans are tagged by its slots (flowloan.h); else NULL
     uint32_t slots;     // then, the slots of that field (lifeFieldSlots)
+    uint32_t narrow;    // reached by a member of the variant named on a narrowed name: its stand-in (pwNarrowName), else 0
 } Place;
 // A step is a field's name (a Name pointer, so even), a tuple element's index
 // ((n << 2) | 2), an element of an array (any index: all overlap), or a
@@ -136,6 +137,8 @@ typedef struct {
     uint8_t hascand;    // a read of it is a candidate for its last use (RefCountNode.cand): a move of it may be undone
     void *lastcand;     // the RefCountNode of the candidate that last moved it on the walk, which the next read of it fails
     VarDclNode *guardname; // a lock's hidden guard: the variable the writer named that held a borrow through it
+    uint32_t narrow;    // a name narrowed by a test or a store: its stand-in's index (pwNarrowName), else 0
+    uint8_t narrowed;   // it is such a stand-in, bearing the name it stands for
 } PathVar;
 
 // The variables the current walk has met, by index; index 0 is unused

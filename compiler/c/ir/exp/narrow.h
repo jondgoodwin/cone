@@ -46,8 +46,8 @@ void narrowKill(VarDclNode *var, INode *cause);
 uint32_t narrowKillMark(void);
 void narrowKillDrop(uint32_t mark);
 
-// 'var = value' was type checked
-void narrowAssigned(INode *lval, INode *rval);
+// 'var = value' was type checked. Returns 1 where it narrows the name to the variant stored
+int narrowAssigned(INode *lval, INode *rval);
 
 // 'var' was declared with a value of a variant of its enum
 void narrowDeclared(VarDclNode *var);
