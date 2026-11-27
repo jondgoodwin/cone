@@ -1,0 +1,90 @@
+// What is accepted beside enum_typecheck_narrow_ref_borrow: a name that is a reference to an
+// enum, narrowed by a test, and borrowed itself without ending what is read of it
+
+mod enum_narrow_ref_borrow_success;
+
+import stdio use *;
+
+enum Slot {
+  struct Text {
+    pub s: &str;
+  }
+
+  struct Num {
+    pub a: usize;
+    pub b: usize;
+  }
+}
+use Slot;
+
+fn set(r: &mut &uni Slot) {
+  **r = Num(40usize, 2usize);
+}
+
+fn rename(r: &mut &uni Slot) {
+  **r = Text("again");
+}
+
+fn look(r: &&uni Slot) {}
+
+fn show(var s: Slot) {
+  if s is Num {
+    printInt(i64.from(s.a + s.b));
+    printStr("\n");
+  }
+}
+
+// A read-only borrow of the name changes nothing
+fn readOnly(var p: &uni Slot) {
+  if p is Text {
+    let r = &p;
+    look(r);
+    printStr(p.s);
+    printStr("\n");
+  }
+}
+
+// The borrow is made after the last use of the name as the variant
+fn afterUse(var p: &uni Slot) {
+  if p is Text {
+    printStr(p.s);
+    printStr("\n");
+    let r = &mut p;
+    set(r);
+  }
+}
+
+// Tested again after the borrow
+fn testedAgain(var p: &uni Slot) {
+  if p is Text {
+    let r = &mut p;
+    rename(r);
+    if p is Text {
+      printStr(p.s);
+      printStr("\n");
+    }
+  }
+}
+
+// And again, where what was stored is the other variant
+fn testedOther(var p: &uni Slot) {
+  if p is Text {
+    set(&mut p);
+    if p is Num {
+      printInt(i64.from(p.a + p.b));
+      printStr("\n");
+    }
+  }
+}
+
+fn main() {
+  var one: Slot = Text("read");
+  readOnly(&uni one);
+  var two: Slot = Text("last");
+  afterUse(&uni two);
+  show(two);
+  var three: Slot = Text("first");
+  testedAgain(&uni three);
+  var four: Slot = Text("four");
+  testedOther(&uni four);
+}

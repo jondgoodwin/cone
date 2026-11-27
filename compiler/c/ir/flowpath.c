@@ -3132,10 +3132,13 @@ static void pwShapeStore(INode *lval, Place *pl) {
     LoanReach reach;
     loanReachInit(&reach);
     if (pl) {
-        // What a 'uni' reference points at is reached by that reference and nothing else
-        if (pl->deref && pl->shared)
+        // What a 'uni' reference points at is reached by that reference and nothing else,
+        // unless the reference was itself read through a borrowed one ('**m', 'far'): then
+        // the store lands in what that one borrows, which the root variable's loans say, as
+        // they do for a shared path. There the root's own storage is not what is stored in
+        if (pl->deref && (pl->shared || pl->far))
             loanReachAdd(&reach, pathVars[pl->var].holds);
-        else
+        if (!pl->deref || !pl->shared)
             loanReachRoot(&reach, pl->var);
     }
     for (uint32_t i = 0; i < loanShapeCount(); ++i) {

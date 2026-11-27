@@ -1,0 +1,111 @@
+// shapefit's uvStretch, checked with the testing package against values worked out by hand; only a failure
+// prints, so uvmeasures.out holds the summary alone. The meshes are made by sculpt's loftTagged.
+//
+// - Squares of side 2 (1,1) (-1,1) (-1,-1) (1,-1) along z over 4, 4 bands: faces 2 wide and 1 high. By length
+//   the uv are the lengths themselves: stretch 1 on every triangle, texel scale even: all five numbers 1.
+// - The same by fractions: u runs 0.25 per face of width 2, v 0.25 per face of height 1: the map is 8 by 4 per
+//   unit of uv, sigma1 / sigma2 = 2 on every triangle, scale sqrt(32) even.
+// - The quarter circle (radius 3, up +z so profile x is inward), by length, an open profile of one wall:
+//   the inner wall (x = 1, radius 2) and the outer wall (x = -1, radius 4) are strips of constant radius whose
+//   rings are planar chords: stretch 1 to 1e-5.
+// - A mesh with no "uv" channel: all zeros.
+// - A triangle with the same uv at its three corners (no uv area) is left out: 0 triangles.
+
+mod uvmeasures;
+
+import testing use *;
+import collections use *;
+import geomath use *;
+import mesh use *;
+import sculpt use *;
+import shapefit use *;
+
+fn squareFrom(h: f32) Profile {
+  let pts = List[Vec2](4) <- Vec2(h, h), Vec2(-h, h), Vec2(-h, -h), Vec2(h, -h);
+  Profile(pts, true)
+}
+
+fn tagsOf(n: u32) List[u32] {
+  var t = List[u32]();
+  var i = 0u32;
+  while i < n {
+    t.push(i);
+    i = i + 1u32;
+  }
+  t
+}
+
+fn straight(byLength: bool) PolyMesh {
+  let path = Path.line(Vec3(0., 0., 0.), Vec3(0., 0., 4.), 4u32);
+  let p = squareFrom(1.);
+  let t = tagsOf(4u32);
+  var sec = List[TaggedProfile]();
+  sec.push(TaggedProfile.of(&p, t.view()));
+  sec.push(TaggedProfile.of(&p, t.view()));
+  let st = List[f32](2) <- 0., 1.;
+  var problems = List[String]();
+  loftTagged(&sec, &path, st.view(), 3u32, byLength, false, &mut problems)
+}
+
+fn arc() Path {
+  var pts = List[Vec3]();
+  var k = 0u32;
+  while k <= 8u32 {
+    let th = pi * f32.from(k) / 16.;
+    pts.push(Vec3(3. * cos(th), 3. * sin(th), 0.));
+    k = k + 1u32;
+  }
+  var path = Path.fromPoints(pts.view(), false);
+  path.up = Vec3(0., 0., 1.);
+  path
+}
+
+// One wall of the square on the arc: the open profile from (x, -1) to (x, 1)
+fn wall(x: f32) PolyMesh {
+  let pts = List[Vec2](2) <- Vec2(x, -1.), Vec2(x, 1.);
+  let p = Profile(pts, false);
+  let t = tagsOf(2u32);
+  var sec = List[TaggedProfile]();
+  sec.push(TaggedProfile.of(&p, t.view()));
+  sec.push(TaggedProfile.of(&p, t.view()));
+  let st = List[f32](2) <- 0., 1.;
+  var problems = List[String]();
+  loftTagged(&sec, &arc(), st.view(), 7u32, true, false, &mut problems)
+}
+
+fn main() i32 {
+  let a = uvStretch(&straight(true));
+  expectInt(i64.from(a.triangles), 32, "straight, by length: 16 quads, 32 triangles");
+  expectFloat(f64.from(a.median), 1., 0.00001, "straight, by length: median 1");
+  expectFloat(f64.from(a.p95), 1., 0.00001, "straight, by length: p95 1");
+  expectFloat(f64.from(a.max), 1., 0.00001, "straight, by length: max 1");
+  expectFloat(f64.from(a.scaleP5), 1., 0.00001, "straight, by length: scale p5 1");
+  expectFloat(f64.from(a.scaleP95), 1., 0.00001, "straight, by length: scale p95 1");
+
+  let b = uvStretch(&straight(false));
+  expectInt(i64.from(b.triangles), 32, "straight, by fractions: 32 triangles");
+  expectFloat(f64.from(b.median), 2., 0.00001, "straight, by fractions: median 2");
+  expectFloat(f64.from(b.p95), 2., 0.00001, "straight, by fractions: p95 2");
+  expectFloat(f64.from(b.max), 2., 0.00001, "straight, by fractions: max 2");
+  expectFloat(f64.from(b.scaleP5), 1., 0.00001, "straight, by fractions: scale even");
+  expectFloat(f64.from(b.scaleP95), 1., 0.00001, "straight, by fractions: scale even");
+
+  let inner = uvStretch(&wall(1.));
+  expectInt(i64.from(inner.triangles), 16, "arc inner wall: 8 quads, 16 triangles");
+  expectFloat(f64.from(inner.max), 1., 0.00001, "arc inner wall: stretch 1");
+  let outer = uvStretch(&wall(-1.));
+  expectFloat(f64.from(outer.max), 1., 0.00001, "arc outer wall: stretch 1");
+
+  // A mesh with no uv, and one with no uv area
+  let pos = List[Vec3](3) <- Vec3(0., 0., 0.), Vec3(1., 0., 0.), Vec3(0., 1., 0.);
+  let cnt = List[u32](1) <- 3u32;
+  let idx = List[u32](3) <- 0u32, 1u32, 2u32;
+  var problems = List[String]();
+  var tri = PolyMesh.fromPolygons(pos.view(), cnt.view(), idx.view(), &mut problems);
+  let none = uvStretch(&tri);
+  expectInt(i64.from(none.triangles), 0, "no uv channel: 0 triangles");
+  let ch = tri.addVec2Channel(CornerDomain, "uv", Vec2(0.5, 0.5));
+  let flat = uvStretch(&tri);
+  expectInt(i64.from(flat.triangles), 0, "no uv area: 0 triangles");
+  done()
+}
