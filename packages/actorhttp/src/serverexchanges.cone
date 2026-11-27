@@ -577,7 +577,9 @@ struct ServerExchanges[C: httpconn.ServerProto] is Move {
       self.answerText(sc, host, stream, 500u16, "the handler gave no answer", true);
     } else if st == stStreaming {
       if sized {
-        if sc.isHttp2() {sc.stopBody(stream);} else {sc.abort();}
+        // the response is broken, which the peer must be told: HTTP/2 and 3 reset the stream both ways (the
+        // handler has had the request: INTERNAL_ERROR), HTTP/1.1 can only close with the length short
+        if sc.isHttp2() {sc.reset(stream, true);} else {sc.abort();}
         self.dropStream(sc, host, stream);
       } else {
         pends.push(Pend(stream, rid, true, String(), 0usize, None, None));
