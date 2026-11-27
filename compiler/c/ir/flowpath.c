@@ -3503,11 +3503,11 @@ static void pwStore(INode **lvalp, PathSet *holds, INode **rvalp) {
 // A compound assignment through a temporary ('x += e' is '{let tmp = &mut x; *tmp = *tmp + e}')
 // borrows its place before its right side is made, and writes into it after. A plain store
 // reaches its place after the value, which uses whatever the place is reached through, and so
-// refuses a change of variant the value made. The temporary is no holder, so nothing would
-// pend on it: a stand-in holds the references into a variant it was borrowed through, from
-// before the right side, and the write is its use. Returns it, or 0 for none
-static uint32_t pwCompoundVariant(INode *lval) {
-    if (!pathLoans || !loanShapeCount() || lval->tag != DerefTag)
+// refuses a change of shape or variant the value made. The temporary is no holder, so nothing
+// would pend on it: a stand-in holds the borrows it was made with into a collection, an owner
+// or a variant, from before the right side, and the write is its use. Returns it, or 0 for none
+static uint32_t pwCompoundPlace(INode *lval) {
+    if (!pathLoans || lval->tag != DerefTag)
         return 0;
     INode *ref = ((StarNode *)lval)->vtexp;
     VarDclNode *tmp = pwNamedVar(ref);
@@ -3517,7 +3517,7 @@ static uint32_t pwCompoundVariant(INode *lval) {
     PathSet *holds = NULL;
     for (uint32_t i = 0; all && i < all->cnt; ++i) {
         // (a far loan is of what the place holds, not of where the place is)
-        if (!(all->ids[i] & LoanFar) && loanShapeIsSum(loanOf(all->ids[i])))
+        if (!(all->ids[i] & LoanFar) && loanShapeMayMark(loanOf(all->ids[i])))
             holds = pathSetAdd(holds, all->ids[i]);
     }
     if (holds == NULL)
@@ -3528,7 +3528,7 @@ static uint32_t pwCompoundVariant(INode *lval) {
 }
 
 static PathSet *pwAssign(AssignNode *node) {
-    uint32_t compound = pwCompoundVariant(node->lval);
+    uint32_t compound = pwCompoundPlace(node->lval);
     PathSet *holds = pwValue(&node->rval, 1);
     if (compound) {
         loanUseShape(compound, node->lval);
