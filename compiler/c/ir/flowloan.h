@@ -70,6 +70,9 @@ uint32_t loanRoot(uint32_t loan);
 // a reference, or what a caller lent -- rather than the variable's own storage?
 int loanThrough(uint32_t loan);
 
+// May the borrow that made this loan write?
+int loanWrites(uint32_t loan);
+
 // The variable a loan is of what a caller lent through: a caller loan, or a reborrow through a
 // reference (a place reached by '*'). Else 0. Whether that variable is a parameter is the asker's
 uint32_t loanViaVar(uint32_t loan);

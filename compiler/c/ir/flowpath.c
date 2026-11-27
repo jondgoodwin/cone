@@ -373,6 +373,16 @@ static uint32_t *temps = NULL;
 static uint32_t ntemps = 0;
 static uint32_t tempcap = 0;
 
+// The stand-ins of the function's dereferences of a borrow that a block, an 'if' or a
+// slice borrow yields (pwYieldStandIn), by the reference dereferenced
+typedef struct {
+    INode *ref;
+    VarDclNode *var;
+} PwYield;
+static PwYield *yields = NULL;
+static uint32_t nyields = 0;
+static uint32_t yieldcap = 0;
+
 static PathFrame *frames = NULL;
 static uint32_t nframes = 0;
 static uint32_t framecap = 0;
@@ -511,6 +521,7 @@ static uint32_t pathVar(VarDclNode *var) {
     pv->compound = 0;
     pv->indexed = 0;
     pv->swapped = 0;
+    pv->yielded = 0;
     pv->tracked = pathDrops && flowDropTracked(var) && !flowMatchBound((INode *)var);
     pv->dies = pv->tracked && itypeNeedsFinal(var->vtype);
     // A holder is a local variable or a parameter whose type carries a
@@ -844,7 +855,7 @@ static void pwTempsEnd(uint32_t mark, PathSet *value) {
     for (uint32_t i = ntemps; i > mark; --i) {
         uint32_t index = temps[i - 1];
         PathVar *pv = &pathVars[index];
-        if (pv->holder && (pv->holds || pv->pending)) {
+        if (pv->holder && !pv->yielded && (pv->holds || pv->pending)) {
             pwHolderDies(index);
             pathSetFacts(index, NULL, NULL);
         }
@@ -1204,6 +1215,59 @@ static uint32_t pwStandIn(INode *call, PathSet *holds) {
     return index;
 }
 
+// Is this reference, which is no place, the value of a block, of an 'if' or a 'match', or a
+// slice borrow? What each yields is a borrow, or a reference some name holds, and which of
+// them it is the walk does not say. So the dereference is read as through a name given that
+// value ('let r = if c {&a} else {&b}; *r'): through every place it can be
+static int pwYieldedRef(INode *ref) {
+    while (ref->tag == CastTag && !(ref->flags & FlagConvert))
+        ref = ((CastNode *)ref)->exp;
+    return ref->tag == BlockTag || ref->tag == IfTag || ref->tag == ArrayBorrowTag;
+}
+
+// The stand-in for such a value. It is a temporary of its statement, but what it holds is
+// not dropped when the statement ends: a view made through it may be marked for the shape
+// check later (loanShapeLazy), and where the view points is then read from what the
+// stand-in holds. One variable per dereference, so that a loop's next walk finds the loans
+// of it that the last one made
+static uint32_t pwYieldStandIn(INode *ref, PathSet *holds) {
+    uint32_t i = 0;
+    while (i < nyields && yields[i].ref != ref)
+        ++i;
+    if (i == nyields) {
+        VarDclNode *var = newVarDclFull(tempName, VarDclTag, ((IExpNode *)ref)->vtype, (INode *)immPerm, NULL);
+        inodeLexCopy((INode *)var, ref);
+        var->scope = 2;
+        var->flowtracked = 1;
+        if (nyields == yieldcap)
+            yields = (PwYield *)pathGrow(yields, &yieldcap, sizeof(PwYield));
+        yields[nyields].ref = ref;
+        yields[nyields++].var = var;
+    }
+    uint32_t index = pathVar(yields[i].var);
+    PathVar *pv = &pathVars[index];
+    pv->temp = 1;
+    pv->yielded = 1;
+    pv->holder = 1;
+    pathSetFacts(index, holds, NULL);
+    if (ntemps == tempcap)
+        temps = (uint32_t *)pathGrow(temps, &tempcap, sizeof(uint32_t));
+    temps[ntemps++] = index;
+    return index;
+}
+
+// The loans in 'set' of borrows that may write, of where the reference points: what a view
+// made through such a value keeps, as one made through '*&uni x' keeps that borrow's
+// (pwDeref). A read-only borrow's is left to the stand-in, which a value read drops
+static PathSet *pwWritingLoans(PathSet *set) {
+    PathSet *writing = NULL;
+    for (uint32_t i = 0; set && i < set->cnt; ++i) {
+        if (!(set->ids[i] & LoanFar) && loanWrites(loanOf(set->ids[i])))
+            writing = pathSetAdd(writing, set->ids[i]);
+    }
+    return writing;
+}
+
 static int pwThrough(INode **refp, Place *pl, PathSet **base) {
     INode *reftype = iexpGetTypeDcl(*refp);
     if (reftype->tag != RefTag && reftype->tag != ArrayRefTag && reftype->tag != VirtRefTag) {
@@ -1212,9 +1276,12 @@ static int pwThrough(INode **refp, Place *pl, PathSet **base) {
     }
     Place refpl;
     if (!pwPlace(refp, &refpl, base)) {
-        if (!pwStandInOn || (*refp)->tag != FnCallTag || reftype->tag != RefTag || !pwIsBorrowed(reftype))
+        // A borrow that a block, an 'if' or a slice borrow yields is held by a stand-in too,
+        // wherever it is dereferenced (pwYieldedRef)
+        int yielded = pwIsBorrowed(reftype) && pwYieldedRef(*refp);
+        if (!yielded && (!pwStandInOn || (*refp)->tag != FnCallTag || reftype->tag != RefTag || !pwIsBorrowed(reftype)))
             return 0;
-        refpl.var = pwStandIn(*refp, *base);
+        refpl.var = yielded ? pwYieldStandIn(*refp, *base) : pwStandIn(*refp, *base);
         refpl.deref = 0;
         refpl.nsteps = 0;
         refpl.shared = 0;
@@ -1229,7 +1296,7 @@ static int pwThrough(INode **refp, Place *pl, PathSet **base) {
         refpl.slotted = NULL;
         refpl.slots = 0;
         refpl.narrow = 0;
-        refpl.kept = NULL;
+        refpl.kept = yielded ? pwWritingLoans(*base) : NULL;
     }
     if (pwIsBorrowed(reftype)) {
         // The reference itself is read: a variable it is read from that some
@@ -5687,6 +5754,7 @@ static int flowPathWalkOnce(FnDclNode *fndcl, int loans, int drops, int seams) {
     nlog = 0;
     ndecls = 0;
     ntemps = 0;
+    nyields = 0;
     nframes = 0;
     dead = 0;
     pwSawGuard = 0;
