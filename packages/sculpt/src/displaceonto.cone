@@ -6,17 +6,22 @@
 // experiment: 0 open edges where trimming and joining left 4,350, 840 slivers against 8,480). It needs each piece to
 // be a function over the base along the base's normal; an undercut is not, and stays a job for trimming and joining.
 //
-// displaceOnto(base, targets, weights, reaches, maxEdge, maxPasses, problems):
-//   - 'targets' are the pieces' surfaces, 'weights' one list per target with one weight per base vertex (1 inside
-//     the piece's footprint, falling to 0 over a blend; footprintWeights makes that), 'reaches' one search length per
-//     target (a piece laid close to the base needs a short one, a coarse strip a long one: the assembled head used 0.6
-//     and 1.5, and a ray that reaches too far finds a second sheet and counts as a miss).
+// displaceOnto(base, targets, footprints, reaches, ambiguous, maxEdge, maxPasses, problems):
+//   - 'targets' are the pieces' surfaces, 'footprints' one per target (see Footprint below: a weight that is a
+//     function of PLACE, so it is exact at every vertex the refinement makes, with no staircase of base vertices
+//     in it), 'reaches' one search length per target (a piece laid close to the base needs a short one, a coarse
+//     strip a long one: the assembled head used 0.6 and 1.5, and a ray that reaches too far finds a second sheet).
+//   - EACH TARGET MUST BE A SINGLE SHEET over the base along the normal (one surface, not a skin with an inner
+//     sheet or a fold-back): the height is recast at every new vertex, and where a target has two sheets the recast
+//     of neighbouring vertices can find different ones, so the height field jumps at every scale and refinement
+//     never ends (the assembled head's front strip, a skin with inner sheets, did not converge; taking 88% of it by
+//     ray visibility did not cure it, so single sheet is necessary here, not shown sufficient). The reported
+//     ambiguous-cast count says how many casts met two sheets.
 //   - THE HEIGHT of a piece at a vertex is the signed distance along the vertex's normal to the piece's surface,
 //     found by a line cast both ways within the target's reach (every hit on it, up to 8 a way). No hit counts as a
 //     miss and the height is 0. More than one DISTINCT hit (hits closer than reach / 300 are one) is counted too and
-//     'many' says what then: HeightZero, the height is 0 (the brief's rule: an ambiguous cast adds nothing), or
-//     HeightNearest, the nearest hit's (what the assembled-head experiment did; a skin with an inner sheet, like
-//     the strip skin, is ambiguous at a quarter of its vertices, and zero there leaves holes in the piece).
+//     'ambiguous' says what then: AmbiguousZero, the height is 0 (an ambiguous cast adds nothing), or
+//     AmbiguousNearest, the nearest hit's (what the assembled-head experiment did).
 //   - A vertex moves along its normal (the base's PolyMesh.vertexNormals: angle weighted, where the experiment used
 //     area weights) by the sum over targets of weight * height. Where a vertex's weights sum to over 1 (by more than
 //     1e-6) they are first divided by their sum: two pieces whose footprints overlap or abut share the
@@ -26,31 +31,91 @@
 //   - REFINEMENT is displaceRegion's, one driver (dsRun in heightpatch.cone): the region is the faces that have a
 //     vertex with a weight; every edge of it whose length AFTER displacement is over 'maxEdge' is split at its
 //     middle, up to 'maxPasses' passes; the ring of faces beside a split edge is split to match. A new vertex
-//     takes the average of its ends' weights, the normalised average of their normals, and the height CAST AGAIN at
-//     its own place (not interpolated: an interpolated height gave a moire in the experiment, the steep test here
-//     records what it does). Channels are carried as displaceRegion carries them.
+//     takes the normalised average of its ends' normals, its weights FROM THE FOOTPRINTS at its own place, and
+//     the height CAST AGAIN there (not interpolated: an interpolated height gave a moire in the experiment, the
+//     steep test here records what it does). Channels are carried as displaceRegion carries them.
 //   - Every vertex whose weights are all 0, every face outside the region and its ring, is bit for bit the input.
-//   - A REFUSAL is a problem line and an unchanged copy: 'targets', 'weights' and 'reaches' of different lengths; a
-//     weights list that is not one per base vertex; a reach or 'maxEdge' at or below 0 (or not a number); an
-//     estimated result over 2,000,000 faces. No target is a silent copy.
+//   - A REFUSAL is a problem line and an unchanged copy: 'targets', 'footprints' and 'reaches' of different lengths;
+//     a footprint with fewer than 2 boundary points (3 if closed) or a width below 0; a reach or 'maxEdge' at or
+//     below 0 (or not a number); an unknown 'ambiguous'; an estimated result over 2,000,000 faces. No target is a
+//     silent copy.
 //   - The REPORT, as problem lines with counts: "displaceOnto: N casts found no hit", "... found more than one
 //     distinct hit", "N vertices had weights over 1 and were normalised", and displaceRegion's cap line. A cast is
 //     one vertex and one target with weight over 0, every vertex counted once (new ones as they are made).
 //
-// footprintWeights(m, faces, inward, outward): per vertex, a weight from the signed surface distance s to the edge of
-// the footprint (the faces listed): s = 0 on the edge's vertices (a vertex that a footprint face and another face
-// share), positive inside (distance along the surface to the nearest edge vertex, 'surfaceDistances'), negative
-// outside. The weight is smoothstep((s + outward) / (inward + outward)) clamped to 0..1: 1 from 'inward' inside the
-// edge, 0 from 'outward' outside it. So inward 0.3, outward 0 is the assembled head's feather (0 on the edge, 1 from
-// 0.3 in: the piece meets the base at its free edge with no step) and inward 0, outward 0.3 grows the footprint
-// into the neighbour; with both 0 it is 1 on every vertex of a footprint face and 0 elsewhere. A footprint with no
-// edge (the whole mesh, or no faces) is 1 (or 0) everywhere. Vertices on the open border of the mesh are inside if
-// their faces are.
+// Footprint: a polyline lying on the base ('closed' joins its last point to its first), and two widths. The weight at
+// a point p whose base normal is n is the smoothstep of the signed distance s from p to the polyline,
+// smoothstep((s + outward) / (inward + outward)) clamped to 0..1: 1 from 'inward' inside, 0 from 'outward' outside.
+// s is the straight distance to the nearest point q of the polyline, positive on the INSIDE: the left of the
+// polyline's travel seen from the side n points to (n x tangent, dotted with p - q; at a vertex of the polyline,
+// where the nearest point is an end, the two segments' lefts are averaged; a point on the line is inside).
+// So inward 0.3, outward 0 is the assembled head's feather (0 on the edge, 1 from 0.3 in: the piece meets the base at
+// its free edge with no step), inward 0, outward 0.5 grows the footprint into the neighbour, and with both 0 the weight
+// is 1 inside and 0 outside. The distance is the straight line, not along the surface: the polyline should lie on
+// the base and the widths be small against its curvature. An open polyline divides the surface locally only: use it
+// when the footprint runs off the base's border.
+pub struct Footprint {
+  pub boundary: List[Vec3];
+  pub closed: bool;
+  pub inward: f32;
+  pub outward: f32;
+}
+
+// The weight of a footprint at place p, base normal n
+fn fpWeight(f: &Footprint, p: Vec3, n: Vec3) f32 {
+  let m = f.boundary.len();
+  let segs = if f.closed { m } else { m - 1usize };
+  var best: f32 = 3.0e38;
+  var side: f32 = 1.;
+  var i = 0usize;
+  while i < segs {
+    let a = *f.boundary[i];
+    let b = *f.boundary[(i + 1usize) % m];
+    let e = b - a;
+    let ee = e.dot(e);
+    var s: f32 = 0.;
+    if ee > 0. { s = (p - a).dot(e) / ee; }
+    var cl = s;
+    if cl < 0. { cl = 0.; }
+    if cl > 1. { cl = 1.; }
+    let q = a + e * cl;
+    let d = (p - q).length();
+    if d < best {
+      best = d;
+      var left = n.cross(e);
+      let ll = left.length();
+      if ll > 0. { left = left * (1. / ll); }
+      if s <= 0. && (f.closed || i > 0usize) {
+        let pa = *f.boundary[(i + m - 1usize) % m];
+        var l2 = n.cross(a - pa);
+        let l2l = l2.length();
+        if l2l > 0. { l2 = l2 * (1. / l2l); }
+        left = left + l2;
+      } else if s >= 1. && (f.closed || i + 1usize < segs) {
+        let nb = *f.boundary[(i + 2usize) % m];
+        var l2 = n.cross(nb - b);
+        let l2l = l2.length();
+        if l2l > 0. { l2 = l2 * (1. / l2l); }
+        left = left + l2;
+      }
+      side = if (p - q).dot(left) >= 0. { 1. } else { -1. };
+    }
+    i = i + 1usize;
+  }
+  let sd = side * best;
+  let width = f.inward + f.outward;
+  if !(width > 0.) { return if sd >= 0. { 1. } else { 0. }; }
+  var x = (sd + f.outward) / width;
+  if x < 0. { x = 0.; }
+  if x > 1. { x = 1.; }
+  x * x * (3. - 2. * x)
+}
 
 // What displaceOnto hands the shared driver: the target surfaces and the counts of what the casts did
 struct DsOnto {
   active: bool;
   nearest: bool;
+  fps: List[Footprint];
   idx: List[SurfaceIndex];
   reaches: List[f32];
   noHit: u32;
@@ -158,15 +223,16 @@ fn dsNewOff(w: &mut DsWork, patch: &HeightPatch, on: &mut DsOnto, a: u32, b: u32
     return;
   }
   let nT = w.nt;
-  var t = 0usize;
-  while t < nT {
-    let x = (*w.wt[usize.from(a) * nT + t] + *w.wt[usize.from(b) * nT + t]) * 0.5;
-    w.wt.push(x);
-    t = t + 1usize;
-  }
   let s = *w.nrm[usize.from(a)] + *w.nrm[usize.from(b)];
   let sl = s.length();
-  w.nrm.push(if sl > 0. { s * (1. / sl) } else { *w.nrm[usize.from(a)] });
+  let nn = if sl > 0. { s * (1. / sl) } else { *w.nrm[usize.from(a)] };
+  w.nrm.push(nn);
+  let p = *w.pos[w.pos.len() - 1usize];
+  var t = 0usize;
+  while t < nT {
+    w.wt.push(fpWeight(&on.fps[t], p, nn));
+    t = t + 1usize;
+  }
   w.off.push(Vec3(0., 0., 0.));
   let v = w.pos.len() - 1usize;
   let o = dsOntoOff(w, on, v);
@@ -182,29 +248,41 @@ fn dsLine(problems: &mut List[String], n: u32, what: &str) {
   }
 }
 
-// What a cast does when it meets more than one distinct hit (a skin with an inner sheet, a fold): the height is 0, or
-// the nearest hit's. Either way the cast is counted.
-pub const HeightZero = 0u32;
-pub const HeightNearest = 1u32;
 
-pub fn displaceOnto(base: &PolyMesh, targets: &List[PolyMesh], weights: &List[List[f32]], reaches: &List[f32],
-    many: u32, maxEdge: f32, maxPasses: u32, problems: &mut List[String]) PolyMesh {
+// What a cast does when it meets more than one distinct hit (a fold, a second sheet): the height is 0, or the nearest
+// hit's. Either way the cast is counted.
+pub const AmbiguousZero = 0u32;
+pub const AmbiguousNearest = 1u32;
+
+pub fn displaceOnto(base: &PolyMesh, targets: &List[PolyMesh], footprints: &List[Footprint], reaches: &List[f32],
+    ambiguous: u32, maxEdge: f32, maxPasses: u32, problems: &mut List[String]) PolyMesh {
   let who = "displaceOnto";
   let nT = targets.len();
-  if many > HeightNearest { return dsRefused(base, problems, who, "many is not HeightZero or HeightNearest"); }
-  if weights.len() != nT || reaches.len() != nT {
-    return dsRefused(base, problems, who, "targets, weights and reaches differ in length");
+  if ambiguous > AmbiguousNearest { return dsRefused(base, problems, who, "ambiguous is not AmbiguousZero or AmbiguousNearest"); }
+  if footprints.len() != nT || reaches.len() != nT {
+    return dsRefused(base, problems, who, "targets, footprints and reaches differ in length");
   }
   if nT == 0usize { return base.clone(); }
   if !(maxEdge > 0.) { return dsRefused(base, problems, who, "maxEdge is not above 0"); }
   let nv = base.vertexCount();
   var t = 0usize;
   while t < nT {
-    if weights[t].len() != nv { return dsRefused(base, problems, who, "a weights list is not one per vertex"); }
+    let fp = &footprints[t];
+    let need = if fp.closed { 3usize } else { 2usize };
+    if fp.boundary.len() < need { return dsRefused(base, problems, who, "a footprint has too few boundary points"); }
+    if !(fp.inward >= 0.) || !(fp.outward >= 0.) { return dsRefused(base, problems, who, "a footprint width is below 0"); }
     if !(*reaches[t] > 0.) { return dsRefused(base, problems, who, "a reach is not above 0"); }
     t = t + 1usize;
   }
-  // The weights, row by row per vertex; a weight not above 0 is 0
+  var on = DsOnto(true, ambiguous == AmbiguousNearest, List[Footprint](), List[SurfaceIndex](), copyList(reaches), 0u32, 0u32, 0u32);
+  t = 0usize;
+  while t < nT {
+    on.fps.push(Footprint(copyList(&footprints[t].boundary), footprints[t].closed, footprints[t].inward, footprints[t].outward));
+    on.idx.push(SurfaceIndex.of(&targets[t]));
+    t = t + 1usize;
+  }
+  // The footprints' weights at the input's vertices, row by row; a weight not above 0 is 0
+  let nrm = base.vertexNormals();
   var wt = List[f32].withCapacity(nv * nT);
   var live = List[bool].withCapacity(nv);
   var v = 0usize;
@@ -212,7 +290,7 @@ pub fn displaceOnto(base: &PolyMesh, targets: &List[PolyMesh], weights: &List[Li
     var any = false;
     t = 0usize;
     while t < nT {
-      let x = *weights[t][v];
+      let x = fpWeight(&on.fps[t], *base.positions[v], *nrm[v]);
       if x > 0. { wt.push(x); any = true; } else { wt.push(0.); }
       t = t + 1usize;
     }
@@ -233,90 +311,10 @@ pub fn displaceOnto(base: &PolyMesh, targets: &List[PolyMesh], weights: &List[Li
     f = f + 1usize;
   }
   if region.len() == 0usize { return base.clone(); }
-  var on = DsOnto(true, many == HeightNearest, List[SurfaceIndex](),copyList(reaches), 0u32, 0u32, 0u32);
-  t = 0usize;
-  while t < nT {
-    on.idx.push(SurfaceIndex.of(&targets[t]));
-    t = t + 1usize;
-  }
   let patch = HeightPatch(Vec3(0., 0., 0.), Vec3(0., 0., 0.), Vec3(0., 0., 0.), Vec3(0., 0., 1.), 0u32, 0u32, List[f32]());
-  let nrm = base.vertexNormals();
   let out = dsRun(base, region.view(), &patch, &mut on, &nrm, &wt, maxEdge, maxPasses, problems);
   dsLine(problems, on.noHit, " casts found no hit within reach");
   dsLine(problems, on.many, " casts found more than one distinct hit");
   dsLine(problems, on.normalised, " vertices had weights over 1 and were normalised");
   out
-}
-
-pub fn footprintWeights(m: &PolyMesh, faces: &Array[u32], inward: f32, outward: f32) List[f32] {
-  let nv = m.vertexCount();
-  let nf = m.faceCount();
-  var inFace = List[bool].withCapacity(nf);
-  var f = 0usize;
-  while f < nf {
-    inFace.push(false);
-    f = f + 1usize;
-  }
-  var i = 0usize;
-  while i < faces.len() {
-    if usize.from(faces[i]) < nf { inFace.set(usize.from(faces[i]), true); }
-    i = i + 1usize;
-  }
-  var nIn = List[u32].withCapacity(nv);
-  var nAll = List[u32].withCapacity(nv);
-  var v = 0usize;
-  while v < nv {
-    nIn.push(0u32);
-    nAll.push(0u32);
-    v = v + 1usize;
-  }
-  f = 0usize;
-  while f < nf {
-    let vs = m.faceVertices(u32.from(f));
-    var j = 0usize;
-    while j < vs.len() {
-      let x = usize.from(*vs[j]);
-      nAll.set(x, *nAll[x] + 1u32);
-      if *inFace[f] { nIn.set(x, *nIn[x] + 1u32); }
-      j = j + 1usize;
-    }
-    f = f + 1usize;
-  }
-  let inn = if inward > 0. { inward } else { 0. };
-  let out = if outward > 0. { outward } else { 0. };
-  var seeds = List[u32]();
-  v = 0usize;
-  while v < nv {
-    if *nIn[v] > 0u32 && *nIn[v] < *nAll[v] { seeds.push(u32.from(v)); }
-    v = v + 1usize;
-  }
-  var dist = List[f32]();
-  if inn + out > 0. && seeds.len() > 0usize {
-    dist = surfaceDistances(m, &seeds, &List[f32](), if inn > out { inn } else { out });
-  }
-  var res = List[f32].withCapacity(nv);
-  v = 0usize;
-  while v < nv {
-    let inside = *nIn[v] > 0u32;
-    var wv: f32 = 0.;
-    if !(inn + out > 0.) {
-      wv = if inside { 1. } else { 0. };
-    } else if seeds.len() == 0usize {
-      wv = if inside { 1. } else { 0. };
-    } else {
-      let d = *dist[v];
-      let edge = inside && *nIn[v] < *nAll[v];
-      var s: f32 = 0.;
-      if edge { s = 0.; }
-      else if inside { s = if d >= SurfaceFar { inn } else { d }; }
-      else { s = if d >= SurfaceFar { -out } else { -d }; }
-      var x = (s + out) / (inn + out);
-      if x < 0. { x = 0.; }
-      if x > 1. { x = 1.; }
-      wv = x * x * (3. - 2. * x);
-    }
-    res.push(wv);
-    v = v + 1usize;
-  }
-  res
 }
