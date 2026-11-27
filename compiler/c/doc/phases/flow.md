@@ -2088,6 +2088,32 @@ borrow (a number, `'static`) lends nothing; where the signature names a lifetime
 another parameter the loan is made but the result does not carry it, so nothing is
 frozen.
 
+**A result borrowed from what an argument reaches through a shared owner** (`pwReachShared`,
+called from `pwCall` after the lending above). `first(&o)`, `o` an `Rc[mut, List[i32]]`, may
+return a view of an element; the argument's loan is of the handle `o` alone, which a store
+through another holder (`*o2 = List()`) never meets, so the view was followed by nothing. A
+borrow written in place (`&(*o)[0]`) is marked with the containers it is into, and the call's
+result is given the same, read from the parameter's type, not the callee's body: from the
+referent of a borrowed parameter (a by-value parameter's held borrows only, what it owns
+ending with the callee), through fields, elements, tuples, a collection's own block, an enum's
+variants, held references and owners, every container on a way that passed an owner others
+may write by (`Rc[mut]`, `Arc` where it is not a lock, or an argument already reached in one)
+and holds what the result's borrowed types name (a trait: anything): the collection or enum,
+else the innermost owner (`reshapeOwnerCont`). A `Uni` or `imm` owner under a shared one
+counts, being freed when the shared one is stored over; behind a lock or `opaq` nothing is
+read. Each container is a second loan beside the argument's (`loanMakeReach`): an alias loan,
+so it freezes nothing, with no storage of the function's own, marked at once and carried by
+the result, so a result stored, passed on or returned through another function keeps it. The
+referent's own type is left to the lending above where it applies (a method's receiver, a
+reference lent by `pwLentArg`). A result naming no borrowed type gets none.
+`flowGateShapeAsk` walks a function that makes such a call (`flowGateNamesBorrow`,
+`flowGateReachesOwner`), so a view handed straight to the call that takes the other holder is
+asked. Two containers of one type are not told apart, as everywhere here: a store through
+another `Rc[mut, List[i32]]` is refused too, as it is for `&(*o)[0]`. Not followed: a view
+returned through a virtual reference or a trait object, a closure's captured owner, and a
+result whose borrow is hidden in a trait object it owns.
+Tests: `collection_flow_reshape_shared_result`, `collection_reshape_shared_result_success`.
+
 What it does not follow: types are compared as types, so two `List[Pt]` are not told apart
 (the point: it is never a proof of aliasing, only that nothing proves it absent);
 which global a function writes (a borrow a `var` global could be is refused across a call that
