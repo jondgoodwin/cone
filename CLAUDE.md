@@ -136,6 +136,7 @@ python3 test/run.py --conec build/arm64-release/conec
 - Link a program by hand with `cc prog.o build/arm64-release/libconestd.a -o prog`; the math and
   thread libraries are part of macOS's `libSystem`.
 - A test whose output differs on the Mac has `name.macos.out` beside `name.out`.
+- The minimum is macOS 14.4: conestd waits and wakes with `os_sync_wait_on_address`.
 
 ## Validating a change
 
