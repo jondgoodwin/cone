@@ -395,9 +395,22 @@ VarDclNode *reshapeGlobalAt(uint32_t i) {
 
 // ---- Values the function owns whole ---------------------------------------------
 
+INode *reshapeUnborrow(INode *e) {
+    while (e->tag == DerefTag) {
+        INode *ref = ((StarNode *)e)->vtexp;
+        while (ref->tag == CastTag && !(ref->flags & FlagConvert))
+            ref = ((CastNode *)ref)->exp;
+        if (ref->tag != BorrowTag)
+            break;
+        e = ((RefNode *)ref)->vtexp;
+    }
+    return e;
+}
+
 // The local a place is of, when it is one this function owns whole, else NULL
 static VarDclNode *reshapeLocalRoot(INode *e, INode *cont) {
     for (;;) {
+        e = reshapeUnborrow(e);
         if (e->tag == CastTag && !(e->flags & FlagConvert))
             e = ((CastNode *)e)->exp;
         else if (e->tag == FldAccessTag)

@@ -78,6 +78,8 @@ typedef struct {
                         // the root variable's loans are tagged by its slots (flowloan.h); else NULL
     uint32_t slots;     // then, the slots of that field (lifeFieldSlots)
     uint32_t narrow;    // reached by a member of the variant named on a narrowed name: its stand-in (pwNarrowName), else 0
+    PathSet *kept;      // the loans of each writing borrow dereferenced where it is written on the way here
+                        // ('*&uni x', '*&mut x'), which a view of the place holds too (pwDeref); else NULL
 } Place;
 // A step is a field's name (a Name pointer, so even), a tuple element's index
 // ((n << 2) | 2), an element of an array (any index: all overlap), or a
