@@ -1,0 +1,316 @@
+// A TLS connection whose layer the buffer pool refuses a wire buffer, with nothing else under way, ends in that turn and
+// does not wait for the other end to speak (it would never: it waits for the connection). The pool is held from the 64
+// KiB class only (a wire buffer's, past 16 KiB of TLS bytes), so the 16 KiB buffers a write's bytes are copied into and
+// the receives take (both ends read 16 KiB) are given. The pool is the process's, so the other end is a second process
+// of this program ('refusedwire client ...'). HTTP/1.1 and HTTP/2, over TLS:
+// - the server's: the test actor takes each request from the queue route and, for /fill, holds the pool and writes
+//   1 MiB: the write answers closed, the refusal is counted, the client's fetch ends before its own deadline;
+// - the client's: it holds its pool and sends 1 MiB up: the fetch fails, Overloaded at Stage.Tls, before its deadline.
+// Without the owner asking after its fill, each waits until the fetch's deadline (20 s) gives up.
+
+mod refusedwire;
+
+import stdio use *;
+import libc;
+import fs;
+import process;
+import sync use Channel, Sender, Receiver, Oneshot, OneshotSender, OneshotReceiver;
+import collections use List, String;
+import iobuf use IoBuf, flushThread, stats;
+import iocore use SocketAddr;
+import time use Instant, Duration;
+import http use *;
+import httpclient;
+import tls;
+import actors;
+import path use Path;
+import actorhttp use HttpClient, Server, ServerConfig, Exchange, HttpRoutes;
+
+const recvBytes = 16384usize;
+const bigBytes = 1048576usize;
+
+fn certs(name: &str) Path {
+  var p = String.from("../../../../../tls/tests/certs/");
+  p.append(name);
+  Path.fromString(p)
+}
+
+fn readText(name: &str) String {
+  var out = String();
+  let file = certs(name);
+  match fs.readFile(&file) {
+    case var Ok(r) {out <-> r;}
+    case let Err(e) {}
+  }
+  out
+}
+
+fn url(port: u16, path: &str) String {
+  var u = String.from("https://127.0.0.1:");
+  u.appendUInt(u64.from(port));
+  u.append(path);
+  u
+}
+
+fn say(what: &str, ok: bool) {
+  printStr(what);
+  printStr(": ");
+  printStr(if ok {"yes"} else {"NO"});
+  printStr("\n");
+  print.flush();
+}
+
+fn big() String {
+  var body = String.withCapacity(bigBytes);
+  var i = 0usize;
+  while i < bigBytes {
+    body.appendByte(97u8);
+    i = i + 1usize;
+  }
+  body
+}
+
+// The pool held so that tryMake has no 64 KiB buffer to give, while 4 KiB and 16 KiB ones it has already taken from the
+// OS are free to take again. First 96 of 16 KiB are taken (committed); then plain buffers carry what the pool holds
+// from the OS far past the line where tryMake may take more (three quarters of maxBytes), so nothing later freed brings
+// it back under; then any 64 KiB buffer still free is taken, and the 96 are given back
+fn holdWire() List[IoBuf] {
+  var spare = List[IoBuf]();
+  var i = 0u32;
+  while i < 96u32 {
+    match IoBuf.tryMake(16384usize) {case var Some(b) {spare.push(b);} else {}}
+    i = i + 1u32;
+  }
+  var held = List[IoBuf]();
+  match IoBuf.tryMake(4096usize) {case var Some(b) {held.push(b);} else {}}
+  match IoBuf.tryMake(16384usize) {case var Some(b) {held.push(b);} else {}}
+  while stats().heldBytes + 8388608usize < stats().maxBytes {
+    held.push(IoBuf(1048576usize));
+  }
+  while true {
+    match IoBuf.tryMake(65536usize) {
+      case var Some(b) {held.push(b);}
+      else {break;}
+    }
+  }
+  spare = List[IoBuf]();
+  flushThread();
+  held
+}
+
+// ---------------------------------------------------------------------------
+// The client process: 'client fill|upload h1|h2 <port>'
+// ---------------------------------------------------------------------------
+
+fn client(h2: bool) HttpClient {
+  var cfg = httpclient.Config.make();
+  cfg.http2 = h2;
+  cfg.maxRetries = 0u32;
+  cfg.conn.recvSize = recvBytes;
+  cfg.tlsConfig.verify = tls.Verifier.roots(readText("ca.pem").view());
+  cfg.tlsConfig.offline = true;
+  HttpClient.make(cfg, actorhttp.defaultMaxBody)
+}
+
+actor Fetch {
+  client: HttpClient;
+
+  // A GET: 'want' empty, the fetch is to fail, and before its deadline
+  pub async fn get(self, u: String, want: String, var done: OneshotSender[u64]) {
+    var req = httpclient.Request.get(u.view());
+    req.deadline = Instant.now() + Duration.fromSeconds(20i64);
+    let r = await client.send(req);
+    var ok = false;
+    match &r {
+      case let &Ok(x) {ok = want.len() > 0usize && x.status == 200u16 && x.body.view() == want.view();}
+      case let &Err(e) {ok = want.len() == 0usize && !e.isTimedOut();}
+    }
+    done.send(if ok {1u64} else {0u64});
+  }
+
+  // 1 MiB up, with the pool held while it goes: 1 the fetch failed before its deadline, 2 more, Overloaded at Tls
+  pub async fn upload(self, u: String, var done: OneshotSender[u64]) {
+    var req = httpclient.Request.make("POST", u.view());
+    req.body = big();
+    req.deadline = Instant.now() + Duration.fromSeconds(20i64);
+    var held = holdWire();
+    let r = await client.send(req);
+    held = List[IoBuf]();
+    flushThread();
+    var got = 0u64;
+    match &r {
+      case let &Ok(x) {}
+      case let &Err(e) {
+        if !e.isTimedOut() {got = 1u64;}
+        if e.failure.stage == httpclient.Stage.Tls && e.failure.error.kind == ErrorKind.Overloaded {got = got + 2u64;}
+      }
+    }
+    done.send(got);
+  }
+}
+
+fn get(c: &HttpClient, u: String, want: &str) u64 {
+  var tx: OneshotSender[u64];
+  var rx: OneshotReceiver[u64];
+  tx, rx = Oneshot[u64].make();
+  Fetch(c.clone()).get(u, String.from(want), tx);
+  rx.recv() || 0u64
+}
+
+fn clientMain(upload: bool, h2: bool, port: u16) {
+  let c = client(h2);
+  say("  a request is answered", get(&c, url(port, "/hello"), "hello") == 1u64);
+  if upload {
+    var tx: OneshotSender[u64];
+    var rx: OneshotReceiver[u64];
+    tx, rx = Oneshot[u64].make();
+    Fetch(c.clone()).upload(url(port, "/upload"), tx);
+    let got = rx.recv() || 0u64;
+    say("  the refused upload fails before its deadline", got == 1u64 || got == 3u64);
+    say("  ...Overloaded, at Tls", got >= 2u64);
+  } else {
+    say("  the refused fetch fails before its deadline", get(&c, url(port, "/fill"), "") == 1u64);
+  }
+  say("  the next request is answered", get(&c, url(port, "/hello"), "hello") == 1u64);
+}
+
+// ---------------------------------------------------------------------------
+// The server
+// ---------------------------------------------------------------------------
+
+actor Taker {
+  server: Server;
+
+  pub async fn open(self, cfg: ServerConfig, var ports: Sender[u16]) {
+    let r = await actorhttp.listen(SocketAddr.localhost(0u16), cfg);
+    var res = r;
+    match &mut res {
+      case var &mut Ok(ok) {server <-> *ok;}
+      case let &mut Err(e) {printStr("listen failed\n"); libc.exit(1i32);}
+    }
+    ports.send(server.port());
+  }
+
+  // Takes requests until the second /hello. /fill is answered 1 MiB with the pool held; /upload reads its body (its
+  // head may never arrive: the client's pool is held when it is first sent); anything else is answered. Reports whether
+  // /fill's write answered closed
+  pub async fn serve(self, var done: OneshotSender[u64]) {
+    var left = 2u32;
+    var report = 0u64;
+    while left > 0u32 {
+      match await server.next() {
+        case var Ok(got) {
+          var ex = got;
+          let p = String.from(ex.request.path());
+          if p.view() == "/fill" {
+            ex.start(ResponseHead.make(200u16), BodyLength.unsized());
+            var body = big();
+            var held = holdWire();
+            let w = await ex.write(body);
+            held = List[IoBuf]();
+            flushThread();
+            report = match w {
+              case is Ok {0u64}
+              case is Err {1u64}
+            };
+          } else if p.view() == "/upload" {
+            var b = ex.body();
+            let r = await b.readAll(2097152usize);
+            match r {
+              case let Ok(s) {ex.text(200u16, "read");}
+              case let Err(e) {}
+            }
+          } else {
+            ex.text(200u16, "hello");
+            left = left - 1u32;
+          }
+        }
+        case let Err(e) {break;}
+      }
+    }
+    done.send(report);
+  }
+
+  pub async fn count(self, var done: OneshotSender[u64]) {done.send(await server.refusedBuffers());}
+
+  pub async fn stop(self) {server.close();}
+}
+
+// One server and the client process that works it. 'upload': the client's pool is the one held
+fn round(upload: bool, h2: bool) {
+  printStr(if upload {"the client's refusal, "} else {"the server's refusal, "});
+  printStr(if h2 {"HTTP/2\n"} else {"HTTP/1.1\n"});
+  print.flush();
+  var ptx: Sender[u16];
+  var prx: Receiver[u16];
+  ptx, prx = Channel[u16].make();
+  var cfg = ServerConfig.make().routes(HttpRoutes.make().queue("", "/"));
+  cfg.conn.recvSize = recvBytes;
+  let certFile = certs("server.pem");
+  let keyFile = certs("server.key");
+  cfg = cfg.secure(tls.ServerConfig.make(&certFile, &keyFile));
+  if h2 {cfg = cfg.offerHttp2();}
+  let taker = Taker(Server.none());
+  taker.open(cfg, ptx.clone());
+  let port = prx.recv() || 0u16;
+  var tx: OneshotSender[u64];
+  var rx: OneshotReceiver[u64];
+  tx, rx = Oneshot[u64].make();
+  taker.serve(tx);
+  var args = List[String]();
+  match process.currentExe() {
+    case let Ok(exe) {args.push(String.from(exe.view()));}
+    case let Err(e) {printStr("no path to this program\n"); libc.exit(1i32);}
+  }
+  args.push(String.from("client"));
+  args.push(String.from(if upload {"upload"} else {"fill"}));
+  args.push(String.from(if h2 {"h2"} else {"h1"}));
+  var n = String();
+  n.appendUInt(u64.from(port));
+  args.push(n);
+  match process.run(args.view()) {
+    case let Ok(out) {
+      // the client's lines, without the carriage returns its text-mode output has on Windows
+      var text = String();
+      let bytes = out.stdout.view() as &Array[u8];
+      var i = 0usize;
+      while i < bytes.len {
+        if bytes[i] != 13u8 {text.appendByte(bytes[i]);}
+        i = i + 1usize;
+      }
+      printStr(text.view());
+    }
+    case let Err(e) {printStr("the client did not run\n");}
+  }
+  print.flush();
+  let closed = rx.recv() || 0u64;
+  if !upload {
+    say("  the write answers closed", closed == 1u64);
+    var ctx: OneshotSender[u64];
+    var crx: OneshotReceiver[u64];
+    ctx, crx = Oneshot[u64].make();
+    taker.count(ctx);
+    say("  one refusal counted", (crx.recv() || 0u64) == 1u64);
+  }
+  taker.stop();
+}
+
+fn main() i32 {
+  initAll();
+  let args = process.args();
+  if args.len() > 4usize && args[1usize].view() == "client" {
+    var port = 0u16;
+    match u16.parse(args[4usize].view()) {
+      case let Ok(p) {port = p;}
+      case is Err {}
+    }
+    clientMain(args[2usize].view() == "upload", args[3usize].view() == "h2", port);
+  } else {
+    round(false, false);
+    round(false, true);
+    round(true, false);
+    round(true, true);
+  }
+  finalAll();
+  0
+}

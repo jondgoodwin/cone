@@ -579,9 +579,33 @@ pub actor ConnActor is ExchangeHost {
       self.finishEnd();
       return;
     }
+    // whether the layer's failure was known before this turn's output was asked for ('events' feeds, and feed asks)
+    let known = match sc.failureOf() {
+      case let &Some(f) {f.stage == httpconn.Stage.Tls}
+      else {false}
+    };
     let isDone = sc.done(now);
     if !writing {
       let n = sc.fill(now);
+      // A layer that failed in 'done' or 'fill' (the pool refused its wire buffer), or that failed before and now has
+      // nothing to write and the connection is not done: no read or deadline would end it, since the peer waits for
+      // what will not come. It goes now, as a cut one does. A connection that is done closes as ever
+      var lost = false;
+      var refused = false;
+      if !isDone {
+        match sc.failureOf() {
+          case let &Some(f) {
+            lost = f.stage == httpconn.Stage.Tls && (n == 0usize || !known);
+            refused = f.error.kind == ErrorKind.Overloaded;
+          }
+          else {}
+        }
+      }
+      if lost {
+        if refused {srv.bufferRefused();}
+        self.finishEnd();
+        return;
+      }
       if n > 0usize {
         writing = true;
         writeBy = now + args.cfg.conn.protocol.bodyTimeout;

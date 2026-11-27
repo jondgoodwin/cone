@@ -523,7 +523,9 @@ pub struct ServerConn is Move, ServerProto {
 
   // Move everything ready to send into the connection's wire Chain (the
   // layer's own bytes, a handshake's, first; then the protocol's through the
-  // layer): how many bytes it holds now
+  // layer): how many bytes it holds now. A layer that failed with no bytes
+  // left for the wire, or that was refused a buffer, is taken here:
+  // 'failureOf()' says so, and the owner asks after 'fill'
   pub fn fill(self: &mut, now: Instant) usize {
     var hasLayer = false;
     match &layer {
@@ -555,8 +557,26 @@ pub struct ServerConn is Move, ServerProto {
       if moved == 0usize {break;}
       if !hasLayer {break;}
     }
+    self.takeLayerFailure();
     self.updatePause();
     wire.len()
+  }
+
+  // The layer, asked in 'fill': 'feed' asks only when bytes come, and an end
+  // that waits for this one sends none. A layer that still gives bytes (a TLS
+  // alert goes before the session says it failed) is left to the write's end,
+  // which feeds; a refusal is not, for what it was refused for does not go
+  fn takeLayerFailure(self: &mut) {
+    var failed = false;
+    var refused = false;
+    match &layer {
+      case let &Some(l) {
+        failed = l.failed();
+        refused = l.overloaded();
+      }
+      else {}
+    }
+    if failed && (wire.len() == 0usize || (refused && !self.pClosed())) {self.layerFailed();}
   }
 
   // The protocol's output, into the wire (when there is no layer) or the layer's feed Chain
