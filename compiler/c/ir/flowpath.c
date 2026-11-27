@@ -3070,8 +3070,6 @@ static PathSet *pwNarrowShared(CastNode *cast, uint32_t alias) {
             loanShapeAliasBy(loan, alias);
         pwShapeBorrow(&pl, loan, sum);
     }
-    if (loan && pl.uniway)
-        loanShapeMark(loan, sum);
     return holds;
 }
 

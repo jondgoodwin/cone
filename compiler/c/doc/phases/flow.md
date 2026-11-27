@@ -873,7 +873,7 @@ last reference does not say others may write, but the way to it does
 variable it is read from holds a borrow of such a place (`pwHoldsUniway`:
 `let x = &**o`, `&imm **o`, `&uni **o`). It is asked only by the shape check,
 which then treats the place as one others write by: a borrow into it is marked
-(`pwShapeLent`, `pwOwnerLent`, `pwNarrowShared`), whatever the freezing
+(`pwShapeLent`, `pwOwnerLent`), whatever the freezing
 did; a store through it reaches what the root variable holds (`pwShapeStore`);
 a method called on it has no receiver that is the only name (`pwShapeCall`); the
 loan's roots include what the root variable borrows (`loanRootsNote`); and a
