@@ -1634,9 +1634,13 @@ the index is done with is not (`l <-> ls[*r - 1usize]`, `r` into `l` and read no
 more). What a side holds is what it holds once both are reached
 (`h <-> out[{h = &b; 0usize}]` moves `b`'s borrow into `out`); for a side reached
 through a reference, also what the target held when the address was made. A move in
-an index is seen where the path walk makes the function's drops (one made on a path,
-say); a move on a straight line (`l <-> ls[take(l)]`) is not, the tree walk having
-checked the left side's name before the right side's index.
+an index is met by the write's drop use, which only the path walk makes. The tree walk
+checks the left side's name before the right side's index, so a move on a straight
+line passes it: where the left side's root variable stands moved or hollow once both
+sides are loaded, `swapFlow` sets `dropgate`, and `l <-> ls[take(l)]` is refused. An
+index that moves the value and gives the variable a new one is accepted. Not asked:
+the right side's root, so `x <-> a[take(a)]`, `a` an array, compiles when the move
+is on a straight line, though the element's address is made before the index runs.
 
 A borrow a
 call returns carries its receiver's loan as the receiver was reached: through a
@@ -2307,7 +2311,8 @@ value where it is declared is) — moved, hollowed or stored over
 deeper in the conditional structure than it was declared (`flowDepth`: an
 `if`'s arms and its later conditions, the right operand of `&&` and `||`, a
 loop's body; `flowDropNote`), or moved or hollowed by only some of the values a
-block or an `if` hands on. A function the gate does not mark keeps the main
+block or an `if` hands on; or by a swap whose left side's root variable stands
+moved or hollow once both sides are loaded (`swapFlow`). A function the gate does not mark keeps the main
 walk's lists, which are right for it: every change to a tracked variable is
 on every path through its scope. That is what keeps the cost off a function
 with no such variable, and its code byte-identical.
