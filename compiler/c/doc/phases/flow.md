@@ -2014,9 +2014,11 @@ by value or through owners alone (`reshapeStoreHits`). A local holding an owning
 owner's own place (`reshapeUniqueLocalOf`), reached by no other name but a borrow of it: a loan's own
 root variables are listed beside the loan even where the owner is shared (`loanRootsNote`), so
 `&mut r` lent to the call that replaces `r` is asked. The receiver's own borrow of an owner
-(`left.insert(v)`: an owner lent as `self`, the loan `recvloan`) is the value the method works on, so
-only its other arguments are asked (`reshapeCall`'s `skiprecv`), and a replacement they make is
-reported at the call (`loanShapeNow`). The check does not tell two owners of one type apart.
+(`t.task.run()`: an owner lent as `self`, the loan `recvloan`) is asked as any argument is, since what
+the receiver holds may lead back to the owner, which the method then stores over; the borrow is handed
+to this very call, so a replacement is reported at the call (`loanShapeNow`). A store of a field of the
+receiver itself is no replacement of its owner (`siTypeWriteHits`, above). The check does not tell two
+owners of one type apart.
 An owner of a trait object (`Uni[Gadget]`, `Rc[mut, Gadget]`: a `VirtRefTag` with an owning region) is an
 owner like any other (`reshapeIsOwner`), the borrow a method of the trait lends an owner's contents. `rcWalk`
 reads a virtual reference as it does for a collection: its implementers are unknown, so it reaches any container

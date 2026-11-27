@@ -160,15 +160,12 @@ typedef struct {
 // 'globalview' says the borrow points into a 'var' global, or into anything reached from one: every
 // call is then taken to be able to write that global, but for the intrinsics, an init and a call
 // through a virtual reference marked '+ ShapeKeeping'.
-// 'skiprecv' says the borrow the loan is of is the receiver's own, an owner lent as the 'self' of
-// the method called: the receiver is then the borrow and no other name for the owner, and only
-// the other arguments are asked.
 // 'recvowner' is the struct the call's receiver is a field of, where the receiver is written as a field
 // access ('ui.input.clipboard.append(..)': Input), else NULL. A receiver that is a 'cont' held as a field
 // of a struct other than the borrow's 'owner' is another value than the one the borrow is into, and is
 // not asked: that needs both known.
 int reshapeCall(FnCallNode *call, FnDclNode *meth, int recvunique, INode *cont, INode *owner, INode *recvowner,
-    int globalview, ReshapeVerdict *verdict, VarDclNode **mine, int nmine, int skiprecv, const uint8_t *apart);
+    int globalview, ReshapeVerdict *verdict, VarDclNode **mine, int nmine, const uint8_t *apart);
 // 'apart' (or NULL): per argument, a borrow of a place that diverges from the borrow's own (a sibling
 // field, loanShapeDisjointAt): a value this function owns whole, as a unique local is
 // The struct a field access (through borrows and conversions) is a field of, held by value; else NULL (flowpath.c)

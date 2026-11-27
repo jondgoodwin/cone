@@ -149,7 +149,7 @@ fn rcLocal() { var r = Rc[mut, Item](1); clobberRc(&mut r, r); }    //~ ErrorSha
 fn through(x: &mut Uni[Item], y: &mut Item) { clobber(x, y); }
 fn callee() { var s = Uni[Item](1); through(&mut s, s); }           //~ ErrorShapeReshape
 
-// Where the receiver exemption ends: the borrow handed beside the receiver is into an owner under the receiver's own 'child'
+// The borrow handed beside the receiver is into an owner under the receiver's own 'child'
 struct Node {
   pub val: i64;
   pub child: Uni[Node];
@@ -157,5 +157,32 @@ struct Node {
 }
 
 fn grandchild(node: &mut Node, r: Uni[Node]) { node.child.f(&node.child.child.val, r); }   //~ ErrorShapeReshape
+
+// An owner lent as the receiver is an argument like any other: here what it holds leads back
+// to its owner, and the method stores over that owner, which frees the receiver. Alone, the
+// call is not walked (nothing else in the function asks for it), so each holds a view too
+struct Task {
+  pub count: i64;
+  pub back: Option[Rc[mut, Tcb]];
+  pub fn run(self: &mut) {
+    match back {
+      case let Some(t) { t.task = Rc[mut, Task](100, None[Rc[mut, Tcb]]); }
+      else {}
+    }
+    count += 1;
+  }
+}
+struct Tcb { pub task: Rc[mut, Task]; }
+
+fn runTask(self: &mut Task) {
+  match self.back {
+    case let Some(t) { t.task = Rc[mut, Task](100, None[Rc[mut, Tcb]]); }
+    else {}
+  }
+  self.count += 1;
+}
+
+fn selfMethod(t: Rc[mut, Tcb]) { var n = 1; let r = &n; printInt(*r); t.task.run(); }            //~ ErrorShapeReshape
+fn selfFree(t: Rc[mut, Tcb]) { var n = 1; let r = &n; printInt(*r); runTask(&mut *t.task); }      //~ ErrorShapeReshape
 
 fn main() {}

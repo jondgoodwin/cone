@@ -584,7 +584,7 @@ static int reshapeExempt(FnCallNode *call, FnDclNode *callee) {
 }
 
 static int reshapeCallBody(FnCallNode *call, FnDclNode *meth, int recvunique, INode *cont, INode *owner,
-        INode *recvowner, ReshapeVerdict *verdict, VarDclNode **mine, int nmine, int skiprecv, const uint8_t *apart) {
+        INode *recvowner, ReshapeVerdict *verdict, VarDclNode **mine, int nmine, const uint8_t *apart) {
     FnDclNode *callee = reshapeCallee(call);
     verdict->why = ReshapeNot;
     verdict->callee = callee;
@@ -592,9 +592,7 @@ static int reshapeCallBody(FnCallNode *call, FnDclNode *meth, int recvunique, IN
         return 0;
     uint32_t nargs = call->args ? call->args->used : 0;
     int visible = !(call->flags & FlagVDisp) && siVisible(callee);
-    // 'skiprecv': the borrow is the receiver's own (an owner lent to its method as 'self'), which is
-    // the value the method works on and no other name for the owner
-    uint32_t first = skiprecv && nargs > 0 ? 1 : 0;
+    uint32_t first = 0;     // 1 where the receiver is asked by the receiver's own rule below
 
     // A call handed nothing it could write through (a read-only reference, a number)
     // can reshape only through a global: most calls, dismissed at once
@@ -744,8 +742,8 @@ static int reshapeCallBody(FnCallNode *call, FnDclNode *meth, int recvunique, IN
 }
 
 int reshapeCall(FnCallNode *call, FnDclNode *meth, int recvunique, INode *cont, INode *owner, INode *recvowner,
-        int globalview, ReshapeVerdict *verdict, VarDclNode **mine, int nmine, int skiprecv, const uint8_t *apart) {
-    if (reshapeCallBody(call, meth, recvunique, cont, owner, recvowner, verdict, mine, nmine, skiprecv, apart))
+        int globalview, ReshapeVerdict *verdict, VarDclNode **mine, int nmine, const uint8_t *apart) {
+    if (reshapeCallBody(call, meth, recvunique, cont, owner, recvowner, verdict, mine, nmine, apart))
         return 1;
     // The borrow points into a 'var' global, or into something reached from one: a call that may
     // reshape the container's type through a global does, by the inference that judges every call
