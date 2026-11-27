@@ -878,7 +878,7 @@ static PathSet *pwPlaceRests(INode *site, Place *pl) {
     }
     if (pl->narrow)
         held = pathSetUnion(held, pathVars[pl->narrow].holds);
-    return held;
+    return pathSetUnion(held, pl->kept);
 }
 
 // A place's address is made before its index and used after it (genlAddr; an element
@@ -1229,6 +1229,7 @@ static int pwThrough(INode **refp, Place *pl, PathSet **base) {
         refpl.slotted = NULL;
         refpl.slots = 0;
         refpl.narrow = 0;
+        refpl.kept = NULL;
     }
     if (pwIsBorrowed(reftype)) {
         // The reference itself is read: a variable it is read from that some
@@ -1257,6 +1258,8 @@ static int pwThrough(INode **refp, Place *pl, PathSet **base) {
         // What a narrowed name's own reference points at is the variant; what a
         // reference read from a field of the variant points at is not
         pl->narrow = refpl.nsteps == 0 && !refpl.deref ? refpl.narrow : 0;
+        // Reached through a writing borrow, it lasts no longer than that one does
+        pl->kept = refpl.kept;
         return 1;
     }
     *pl = refpl;
@@ -1279,6 +1282,33 @@ static int pwThrough(INode **refp, Place *pl, PathSet **base) {
     return 1;
 }
 
+// The place a dereference of the reference 'refp' reaches: pwThrough, but '*&x' is 'x', so a
+// borrow written where it is dereferenced gives the place borrowed, and what is done there
+// is judged as it would be by the place's own name ('&(**&o)[0]' as '&(*o)[0]'). The borrow
+// is still asked what it asks of the place. A read-only one ('&', '&imm') makes no loan:
+// nothing holds it. One that may write ('&uni', '&mut') keeps its loan, which a view of
+// what is dereferenced holds as long as it lives, so that '&*&uni x' promises of 'x' what
+// '&uni x' does
+static int pwDeref(INode **refp, Place *pl, PathSet **base) {
+    INode **borrowp = refp;
+    while ((*borrowp)->tag == CastTag && !((*borrowp)->flags & FlagConvert))
+        borrowp = &((CastNode *)*borrowp)->exp;
+    if ((*borrowp)->tag != BorrowTag)
+        return pwThrough(refp, pl, base);
+    RefNode *borrow = (RefNode *)*borrowp;
+    if (!pwPlace(&borrow->vtexp, pl, base))
+        return 0;
+    INode *perm = ((RefNode *)iexpGetTypeDcl((INode *)borrow))->perm;
+    if (permGetFlags(perm) & MayWrite)
+        pl->kept = pwLend((INode *)borrow, pl, perm, loanBorrowAccess(perm), NULL);
+    else {
+        pwDropUse(pl, (INode *)borrow, 1);
+        if (pathLoans)
+            pwAccess(pl, loanBorrowAccess(perm), (INode *)borrow);
+    }
+    return 1;
+}
+
 // Walk a place expression: the values inside it (an index, the reference it
 // is reached through) are walked, and each holder named along it is used.
 // Returns 1 and fills 'pl' when it is a place the walk tracks; otherwise walks
@@ -1287,6 +1317,7 @@ static int pwPlace(INode **nodep, Place *pl, PathSet **base) {
     INode *node = *nodep;
     *base = NULL;
     pl->narrow = 0;
+    pl->kept = NULL;
     VarDclNode *var = pwNamedVar(node);
     if (var) {
         uint32_t index = pathVar(var);
@@ -1367,7 +1398,7 @@ static int pwPlace(INode **nodep, Place *pl, PathSet **base) {
         FnCallNode *fld = (FnCallNode *)node;
         // A virtual reference's field is read through it, with no dereference injected
         int found = iexpGetTypeDcl(fld->objfn)->tag == VirtRefTag
-            ? pwThrough(&fld->objfn, pl, base) : pwPlace(&fld->objfn, pl, base);
+            ? pwDeref(&fld->objfn, pl, base) : pwPlace(&fld->objfn, pl, base);
         if (!found)
             return 0;
         INode *methfld = fld->methfld;
@@ -1395,8 +1426,11 @@ static int pwPlace(INode **nodep, Place *pl, PathSet **base) {
             premark = pwPreBegin(one);
         }
         int seamfirst = pwPreHas(node);
+        // (with FlagBorrow the borrow indexed makes the reference the index gives, and is
+        // no borrow dereferenced where it is written)
         int found = objtag == RefTag || objtag == ArrayRefTag || objtag == PtrTag
-            ? pwThrough(&index->objfn, pl, base) : pwPlace(&index->objfn, pl, base);
+            ? ((node->flags & FlagBorrow) ? pwThrough(&index->objfn, pl, base) : pwDeref(&index->objfn, pl, base))
+            : pwPlace(&index->objfn, pl, base);
         // On a GPU target, elements holding references are picked only by a
         // literal index, so that the array breaks into separate values
         // (flowloan.h, "GPU targets"). What is indexed through a reference or
@@ -1426,7 +1460,7 @@ static int pwPlace(INode **nodep, Place *pl, PathSet **base) {
         return found;
     }
     case DerefTag:
-        return pwThrough(&((StarNode *)node)->vtexp, pl, base);
+        return pwDeref(&((StarNode *)node)->vtexp, pl, base);
     default:
         break;
     }
@@ -1485,6 +1519,10 @@ static PathSet *pwPlaceValue(INode **nodep, int move) {
     // A narrowed reference handed on as it is points into the variant
     if (pl.narrow && !pl.deref && pl.nsteps == 0 && pwCarries(((IExpNode *)*nodep)->vtype))
         holds = pathSetUnion(holds, pwNarrowCarried(pl.narrow));
+    // What is read through a writing borrow dereferenced where it is written
+    // ('*&uni r') carries that borrow's loan too
+    if (pwCarries(((IExpNode *)*nodep)->vtype))
+        holds = pathSetUnion(holds, pl.kept);
     // A holder moved away whole holds nothing here: its value, and the
     // finalizer that might read its borrows, went with the move
     if (moves && !pl.deref && pl.nsteps == 0 && pathVars[pl.var].holder)
@@ -1569,7 +1607,7 @@ static PathSet *pwLend(INode *site, Place *pl, INode *perm, int access, uint32_t
     // A borrow into the variant a name is narrowed to is a reference into it too
     if (pl->narrow)
         lentset = pathSetUnion(lentset, pwNarrowCarried(pl->narrow));
-    return lentset;
+    return pathSetUnion(lentset, pl->kept);
 }
 
 // An owning reference coerced to a borrowed one ('let b: &i32 = u', 'u' a
@@ -2252,6 +2290,7 @@ static void pwUntagHolder(uint32_t var) {
 static int pwStoreTarget(INode *ref, Place *pl) {
     while (ref->tag == CastTag && !(ref->flags & FlagConvert))
         ref = ((CastNode *)ref)->exp;
+    ref = reshapeUnborrow(ref);
     memset(pl, 0, sizeof(Place));
     INode *place = ref;
     // The reference through which the store lands nearest it, and whether it
@@ -2264,6 +2303,7 @@ static int pwStoreTarget(INode *ref, Place *pl) {
     else if (!pwIsBorrowed(iexpGetTypeDcl(ref)))
         through = NULL;
     while (1) {
+        place = reshapeUnborrow(place);
         VarDclNode *var = pwNamedVar(place);
         if (var) {
             pl->var = pathVar(var);
@@ -2291,6 +2331,7 @@ static int pwStoreTarget(INode *ref, Place *pl) {
         default:
             return 0;
         }
+        refexp = reshapeUnborrow(refexp);
         INode *reftype = iexpGetTypeDcl(refexp);
         if (pwIsBorrowed(reftype)) {
             // Another reference, read through to reach that one: further on
@@ -2857,6 +2898,7 @@ static int pwFieldHeldByValue(INode *fld) {
 // points at is the struct's to free (a store over it)
 INode *pwReceiverFieldOwner(INode *recv, int owning) {
     for (;;) {
+        recv = reshapeUnborrow(recv);
         if (recv->tag == CastTag && !(recv->flags & FlagConvert))
             recv = ((CastNode *)recv)->exp;
         else if (recv->tag == BorrowTag || recv->tag == ArrayBorrowTag)
@@ -3280,6 +3322,7 @@ static int pwStoreOverField(INode *lval, INode *cont) {
     INode *place = lval;
     while (place->tag == CastTag && !(place->flags & FlagConvert))
         place = ((CastNode *)place)->exp;
+    place = reshapeUnborrow(place);
     INode *under = place->tag == DerefTag ? ((StarNode *)place)->vtexp : place;
     int indexed = 0;
     if (under->tag == ArrIndexTag) {
@@ -4161,6 +4204,7 @@ static void pwSwap(SwapNode *node) {
             pl->slotted = NULL;
             pl->slots = 0;
             pl->narrow = 0;
+            pl->kept = NULL;
             holds[i] = pathVars[whole[i]].holds;
             pwAccess(pl, itypeNeedsFinal(var->vtype) ? AccessReplace : AccessWrite, *sides[i]);
             pwDropUse(pl, *sides[i], 0);

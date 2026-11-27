@@ -6,6 +6,8 @@
 // Every form is made of a 'List', of a 'Dict' and of an enum's variant. A variant
 // narrowed from '&**m' with 'm' made first was refused already (throughStoreShape,
 // throughCallShape, throughDeepShape), the 'mut' reference being a path others share.
+// A borrow made and dereferenced in one place is no second name: '*&mut r' is 'r', so
+// '*(*(&mut r))' is refused as '*r' is, the view's place being frozen (thenInPlace*).
 
 mod collection_flow_store_ref_second_name;
 
@@ -101,7 +103,7 @@ fn thenInPlaceList() i32 {
   var l = oneList();
   var r = &uni l;
   let v = &(*r)[0usize];
-  *(*(&mut r)) = List[i32]();    //~ ErrorShapeStore "This store could change the shape"
+  *(*(&mut r)) = List[i32]();    //~ ErrorFrozen "It may not be changed"
   *v
 }
 
@@ -235,7 +237,7 @@ fn thenInPlaceDict() i32 {
   let key = 1i32;
   match (*r).get(&key) {
     case let Some(g) {
-    *(*(&mut r)) = Dict[i32, i32]();    //~ ErrorShapeStore "This store could change the shape"
+    *(*(&mut r)) = Dict[i32, i32]();    //~ ErrorFrozen "It may not be changed"
       return *g;
     }
     else {}
@@ -397,8 +399,8 @@ fn thenInPlaceShape() i32 {
   var r = &uni s;
   match &*r {
     case let &Circle(c) {
-    *(*(&mut r)) = Square(99);
-    return c.r;                  //~ ErrorVariantReshape "is used here after the"
+    *(*(&mut r)) = Square(99);    //~ ErrorFrozen "It may not be changed"
+    return c.r;
     }
     else {}
   }
