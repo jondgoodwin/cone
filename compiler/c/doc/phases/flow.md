@@ -2182,9 +2182,10 @@ fields could give it (Error 1064). The marks:
 - The value a downcast gives (a `CastTag` from a virtual reference to a reference) holds its
   loans marked with the trait (`loanNarrow`; a caller loan takes a second of the same part).
   A borrow made through a variable holding one carries the mark.
-- A call's result from an argument that reaches a trait object whose signature can't give what
-  the result may point at is marked too (`pwTraitGivesAll`): the callee narrowed it, as
-  `downcastRef` does.
+- A call's result from an argument that reaches a trait object is marked too where neither the
+  trait's signature nor the parameter's own type (outside trait objects, `pwShows`) names what
+  the result may point at (`pwTraitGivesAll`): the callee narrowed it, as `downcastRef` does.
+  A type the parameter shows is already judged by type at the caller, so it is left alone.
 - A marked borrow whose place dereferences an owner others may write through (`Place.ownwrite`:
   `Rc[mut]`, with no borrowed reference read since but a `&uni`) is hidden. So is the reach loan
   a call's result gets from a marked argument whose parameter type has a shared owner of its own

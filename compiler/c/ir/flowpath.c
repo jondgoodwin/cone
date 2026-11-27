@@ -3599,8 +3599,9 @@ static PathSet *pwPointerOf(PathSet *carried) {
 // A caller can't see what a downcast in the callee reaches, so the body is checked: a borrow
 // that passed a shared owner from a narrowed trait object may not leave the function unless
 // the trait's methods or fields could give it (pwHiddenLeaves). The narrowed value is marked
-// at the downcast, and so is what a call gives back from a trait object where the trait's
-// signature can't give it ('downcastRef'), since the callee must have downcast
+// at the downcast, and so is what a call gives back from a trait object where neither the
+// trait's signature nor the parameter's type shows it ('downcastRef'), since the callee must
+// have downcast
 
 #define PwReachMax 24
 #define PwReachTraits 4
@@ -4204,9 +4205,55 @@ static INode *pwReachParm(PwReach *r, INode *ptype, int seed) {
     return NULL;
 }
 
-// Can the trait's methods or fields give each thing in 'targets'?
-static int pwTraitGivesAll(PwReach *targets, INode *trait) {
+// Does a value of 'type' show a 'target' in what its type names, not looking inside a
+// trait object?
+static int pwShows(INode *type, INode *target, int depth) {
+    type = type ? itypeGetTypeDcl(type) : NULL;
+    if (type == NULL || depth > 8)
+        return 0;
+    if (itypeIsSame(type, target))
+        return 1;
+    INode **nodesp;
+    uint32_t cnt;
+    switch (type->tag) {
+    case RefTag:
+    case ArrayRefTag:
+        return pwShows(((RefNode *)type)->vtexp, target, depth + 1);
+    case PtrTag:
+        return pwShows(((StarNode *)type)->vtexp, target, depth + 1);
+    case ArrayTag:
+        return pwShows(arrayElemType(type), target, depth + 1);
+    case TTupleTag:
+        for (nodesFor(((TupleNode *)type)->elems, cnt, nodesp)) {
+            if (pwShows(*nodesp, target, depth + 1))
+                return 1;
+        }
+        return 0;
+    case StructTag: {
+        StructNode *st = (StructNode *)type;
+        for (nodelistFor(&st->fields, cnt, nodesp)) {
+            if (pwShows(((IExpNode *)*nodesp)->vtype, target, depth + 1))
+                return 1;
+        }
+        if (st->derived) {
+            for (nodesFor(st->derived, cnt, nodesp)) {
+                if (pwShows(*nodesp, target, depth + 1))
+                    return 1;
+            }
+        }
+        return 0;
+    }
+    default:
+        return 0;
+    }
+}
+
+// Is each thing in 'targets' something the trait's methods or fields can give, or that the
+// type of the parameter shows without it?
+static int pwTraitGivesAll(PwReach *targets, INode *ptype, INode *trait) {
     for (int i = 0; i < targets->ntargets; ++i) {
+        if (pwShows(ptype, targets->targets[i], 0))
+            continue;
         PwReach one;
         memset(&one, 0, sizeof(one));
         one.targets[0] = targets->targets[i];
@@ -4352,10 +4399,11 @@ static PathSet *pwReachShared(FnCallNode *call, uint32_t argi, INode *parmtype, 
         if (id && pastowner)
             loanHiddenSet(id, narrowed);
     }
-    // A trait object whose signature can't give what the result may point at: the callee
-    // narrowed it, so what this argument gave is held as a downcast's value is
+    // A trait object whose signature can't give what the result may point at, where the
+    // parameter's type shows no such thing either: the callee narrowed it, so what this
+    // argument gave is held as a downcast's value is
     for (int i = 0; i < r.ntraits; ++i) {
-        if (pwTraitGivesAll(&r, r.traits[i]))
+        if (pwTraitGivesAll(&r, ptype, r.traits[i]))
             continue;
         result = pwNarrowSet(result, carried, r.traits[i]);
         // (and the loans made for this argument beside them)
