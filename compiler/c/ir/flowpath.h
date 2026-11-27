@@ -148,6 +148,7 @@ typedef struct {
     uint8_t compound;   // it is the stand-in for the place a compound assignment writes (pwCompoundPlace)
     uint8_t indexed;    // it is the stand-in for the place an index picks from (pwIndexStandIn)
     uint8_t swapped;    // ... or for one side of a swap, while the other side is made (pwSwap)
+    uint8_t yielded;    // a temporary's stand-in that goes on holding what it held when the statement ends (pwYieldStandIn)
 } PathVar;
 
 // The variables the current walk has met, by index; index 0 is unused

@@ -448,6 +448,10 @@ int loanThrough(uint32_t loan) {
     return loans[loan].place.deref;
 }
 
+int loanWrites(uint32_t loan) {
+    return loans[loan].writes;
+}
+
 uint32_t loanViaVar(uint32_t loan) {
     return loans[loan].kind == LoanCaller || loans[loan].place.deref ? loans[loan].place.var : 0;
 }
