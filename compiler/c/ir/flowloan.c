@@ -318,9 +318,12 @@ uint32_t loanMake(INode *site, Place *pl, INode *perm) {
 }
 
 // Is the loan's place in what a shared owning reference holds, where others may write?
+// So is one read through a 'uni' reference others may reach ('**o', 'o' an
+// 'Rc[mut, &uni T]': Place.uniway)
 int loanThroughSharedOwner(uint32_t loan) {
     Loan *l = &loans[loan];
-    return l->kind != LoanCaller && l->place.shwrite && (l->place.owned || l->place.ownertype != NULL);
+    return l->kind != LoanCaller
+        && (l->place.uniway || (l->place.shwrite && (l->place.owned || l->place.ownertype != NULL)));
 }
 
 // A second loan made beside 'base', an argument's own, for the shape check: a call's result
