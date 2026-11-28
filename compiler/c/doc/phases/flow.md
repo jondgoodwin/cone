@@ -805,6 +805,22 @@ A value taken — a variable's initializer, an assignment's value, an argument,
 a field of a literal, a returned or handed-back value — reaches
 `flowHandleMoveOrCopy` or a block's result instead, and is never wrapped.
 
+**A temporary takes its value** (`flowTempTake`, from both functions above). A
+branch's or a block's value has no mark of its own: `blockFlow` and `ifFlow`
+walk each arm, and the arm's source is moved only by whoever takes the whole
+value (`flowHandleMove`, whose `flowMoveSource` walks the arms and breaks). A
+temporary that dies finalizes the value, so it takes it too: where the value
+moves (`flowValueMoves`: a `uni` owner an `if`, `match`, loop or block hands
+on) its source is moved, so `(if c {a} else {b}).n` leaves `a` and `b` unusable,
+with a drop flag releasing whichever arm did not run; and a tuple literal's
+elements are each moved or copied into it, a counted one gaining its holder.
+`TempNode.takes` says so, and the loan walk then walks the value as a move, so
+a borrow of a source still live is refused (`ErrorFrozen`). A value with nothing
+to finalize makes no temporary here, so nothing is moved (a `&uni` reference a
+branch hands on, a move type with no finalizer read where it stands). A value
+written to where it stands, `(if c {a} else {b}).n = 1`, is no temporary: the
+store goes through whichever owner the arm gave, which stays its source's.
+
 **A value moved out of a temporary.** `flowMoveSource` reaching a `TempNode`
 through a dereference is a move out
 through a temporary sole owner: the move is noted in the node's `moved`

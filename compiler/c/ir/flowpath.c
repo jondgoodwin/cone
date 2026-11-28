@@ -826,7 +826,7 @@ static PathSet *pwPlaceHolds(Place *pl, INode *node) {
 // its scope; and one returned or stored beyond the function is a loan of the
 // function's own storage.
 static uint32_t pwTemp(TempNode *temp) {
-    PathSet *holds = pwValue(&temp->exp, 0);
+    PathSet *holds = pwValue(&temp->exp, temp->takes);
     if (temp->walkvar == NULL) {
         VarDclNode *var = newVarDclFull(tempName, VarDclTag, temp->vtype, (INode *)immPerm, NULL);
         inodeLexCopy((INode *)var, (INode *)temp);

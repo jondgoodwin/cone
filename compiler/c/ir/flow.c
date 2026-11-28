@@ -1400,18 +1400,39 @@ static void flowTempWrap(INode **nodep) {
     temp->moved = NULL;
     temp->walkvar = NULL;
     temp->kept = 0;
+    temp->takes = 0;
     *nodep = (INode *)temp;
+}
+
+// A temporary that dies with its statement holds its value as a variable would,
+// so the value is moved into it: an owner an 'if' or a block hands it moves out
+// of its source, which would otherwise release it a second time
+// ('(if c {a} else {b}).n'), and each element of a tuple literal is moved or
+// copied into it. A call's result or a literal has no source to move, and a
+// value that copies was counted by the branch that gave it.
+static void flowTempTake(INode **nodep) {
+    INode *value = *nodep;
+    while (value->tag == CastTag && flowCastCarries(value))
+        value = ((CastNode *)value)->exp;
+    // Only these hand on what a source holds. Any other value is made here, or
+    // has had its operand taken where it was walked (a lock's guard)
+    int takes = value->tag == VTupleTag
+        || ((value->tag == IfTag || value->tag == BlockTag) && flowValueMoves(*nodep));
+    if (takes)
+        flowHandleMoveOrCopy(nodep);
+    flowTempWrap(nodep);
+    ((TempNode *)*nodep)->takes = takes;
 }
 
 void flowTempRead(INode **nodep) {
     if (flowIsTemp(*nodep))
-        flowTempWrap(nodep);
+        flowTempTake(nodep);
 }
 
 void flowTempBorrowed(INode **nodep) {
     INode *node = *nodep;
     if (flowIsTemp(node)) {
-        flowTempWrap(nodep);
+        flowTempTake(nodep);
         return;
     }
     // A constant literal is kept in a constant global
