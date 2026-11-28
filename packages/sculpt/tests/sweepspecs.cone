@@ -1,0 +1,332 @@
+// The sculpt package's SweepSpec (stored by track), checked with the testing package against values worked out by
+// hand; only a failure prints, so sweepspecs.out holds the summary alone.
+//
+// RunCurve: no values 0; 1 a constant; 2 linear from the first to the second; 4 or more a uniform cubic B-spline over
+// [0, 1]. A uniform cubic B-spline with evenly rising coefficients c_j = c_0 + d j is a straight line, running over
+// [0, 1] from c_1 to c_(n-2) (weights 1/6, 4/6, 1/6), so value(t) = c_0 + d (1 + (n - 3) t).
+//
+// - The bar: a spine straight on z, z = 0 to 4 (2 values each for x, y, z: x and y 0, z 0 and 4), 4 constant
+//   tracks (1, 1), (-1, 1), (-1, -1), (1, -1), the crease of track 1 a constant 2, the others a constant 0.
+//   numbers = 3 x 2 (spine) + 4 x 2 (x and y) + 4 (creases) + 3 (up) = 21. Hand-written, 5 rings and between 3 are
+//   17 rings of 4 columns, 68 vertices, 64 faces; ring r at z = r / 4, vertex (r, j) at (x_j, y_j, r / 4); equal
+//   bit for bit to loftTagged of the same sections along the spec's own path (stations 0, 1/4, 1/2, 3/4, 1, exact
+//   because the spine's steps are 1/4); every edge of the tag-1 column has crease 2; and equal to a path made by
+//   Path.line to 1e-5 (the frames are the same).
+// - The twist: 5 rings, between 0. The x of the 4 tracks 2 values (1 to 2, -1 to -2, -1 to -2, 1 to 2), the y of
+//   each 6 evenly rising coefficients (base 1 step 0.2; 1, 0.1; -1, -0.2; -1, -0.1), so y(t) = base + step (1 + 3 t);
+//   the crease of track 1 4 coefficients 0 1 2 3, so crease(t) = 1 + t. Ring r at t = r / 4: vertex (r, j) at
+//   (x_j(t), y_j(t), 4 t), to 1e-6. The crease of the tag-1 column's band b is the mean of the ends' creases,
+//   1 + (2 b + 1) / 8.
+// - A curved spine: x(t) a B-spline of 6 coefficients 0, 0, 0, 0.5, 1, 1 (checked against geomath 'bsplineAt'), y no
+//   values, z 0 to 4 linear. 9 rings, between 0: each ring's four points average to the spine's point at its t, to
+//   1e-4 (the stations are the path samples' fractions of the length, so a ring lands on its sample).
+// - An open half of 3 tracks, the first and the last with no y: the first and last vertex of each ring have y exactly
+//   0.
+// - Refusals, each 1 problem line and an empty mesh: a curve of 3 values (in the spine, in a track's x, y and
+//   crease); an open half of 1 track; a closed ring of 2; a spine of 2 curves; 1 ring. A closed ring that runs
+//   clockwise gets loftTagged's own line.
+
+mod sweepspecs;
+
+import testing use *;
+import collections use *;
+import geomath use *;
+import mesh use *;
+import sculpt use *;
+
+let near = 0.00001;
+
+fn floatAt(m: &PolyMesh, name: &str, v: u32) f32 {m.float(m.findFloatChannel(VertexDomain, name), v)}
+
+fn sameMesh(a: &PolyMesh, b: &PolyMesh, label: &Array[u8]) {
+  var same = a.vertexCount() == b.vertexCount() && a.faceCount() == b.faceCount()
+    && a.halfedgeCount() == b.halfedgeCount();
+  var v = 0usize;
+  while same && v < a.vertexCount() {
+    let p = *a.positions[v];
+    let q = *b.positions[v];
+    if p.x != q.x || p.y != q.y || p.z != q.z { same = false; }
+    if floatAt(a, "along", u32.from(v)) != floatAt(b, "along", u32.from(v)) { same = false; }
+    if floatAt(a, "around", u32.from(v)) != floatAt(b, "around", u32.from(v)) { same = false; }
+    v = v + 1usize;
+  }
+  var f = 0usize;
+  let ua = a.findVec2Channel(CornerDomain, "uv");
+  let ub = b.findVec2Channel(CornerDomain, "uv");
+  while same && f < a.faceCount() {
+    let ha = a.faceHalfedges(u32.from(f));
+    let hb = b.faceHalfedges(u32.from(f));
+    if ha.len() != hb.len() { same = false; }
+    var k = 0usize;
+    while same && k < ha.len() {
+      if a.toVertex(*ha[k]) != b.toVertex(*hb[k]) { same = false; }
+      let x = a.vec2(ua, *ha[k]);
+      let y = b.vec2(ub, *hb[k]);
+      if x.x != y.x || x.y != y.y { same = false; }
+      k = k + 1usize;
+    }
+    f = f + 1usize;
+  }
+  expect(same, label);
+}
+
+// The "crease" of the edge between two vertices, or -1 when there is none
+fn creaseBetween(m: &PolyMesh, a: u32, b: u32) f32 {
+  let hs = m.vertexOutgoing(a);
+  var k = 0usize;
+  while k < hs.len() {
+    if m.toVertex(*hs[k]) == b { return m.float(m.findFloatChannel(EdgeDomain, "crease"), *hs[k] / 2u32); }
+    k = k + 1usize;
+  }
+  -1.
+}
+
+fn c0() RunCurve { RunCurve(List[f32]()) }
+fn c1(a: f32) RunCurve { var v = List[f32](); v.push(a); RunCurve(v) }
+fn c2(a: f32, b: f32) RunCurve { var v = List[f32](); v.push(a); v.push(b); RunCurve(v) }
+fn c3(a: f32, b: f32, c: f32) RunCurve { var v = List[f32](); v.push(a); v.push(b); v.push(c); RunCurve(v) }
+// n evenly rising coefficients c0 + d j
+fn rising(c: f32, d: f32, n: u32) RunCurve {
+  var v = List[f32]();
+  var j = 0u32;
+  while j < n { v.push(c + d * f32.from(j)); j = j + 1u32; }
+  RunCurve(v)
+}
+
+fn straightSpine() RunCurves {
+  var s = RunCurves();
+  s.push(c2(0., 0.));
+  s.push(c2(0., 0.));
+  s.push(c2(0., 4.));
+  s
+}
+
+fn bar() SweepSpec {
+  var tracks = SweepTracks();
+  tracks.push(SweepTrack(c1(1.), c1(1.), c1(0.)));
+  tracks.push(SweepTrack(c1(-1.), c1(1.), c1(2.)));
+  tracks.push(SweepTrack(c1(-1.), c1(-1.), c1(0.)));
+  tracks.push(SweepTrack(c1(1.), c1(-1.), c1(0.)));
+  SweepSpec(straightSpine(), Vec3(0., 1., 0.), true, tracks)
+}
+
+fn handWritten() {
+  let spec = bar();
+  expectInt(i64.from(spec.numbers()), 21, "bar: numbers");
+  let path = spec.path(5u32);
+  expectInt(i64.from(path.points.len()), 5, "bar: path of 5 points");
+  var k = 0usize;
+  while k < path.points.len() {
+    let p = *path.points[k];
+    expectFloat(p.x, 0., near, "bar: path x");
+    expectFloat(p.y, 0., near, "bar: path y");
+    expectFloat(p.z, f32.from(u32.from(k)), near, "bar: path z");
+    k = k + 1usize;
+  }
+  expectFloat(path.up.y, 1., near, "bar: up");
+  expect(!path.closed, "bar: path open");
+  let sec = spec.sectionAt(0.5);
+  expectInt(i64.from(sec.profile.points.len()), 4, "bar: section of 4 points");
+  expectInt(i64.from(sec.tags.len()), 4, "bar: 4 tags");
+  expectInt(i64.from(*sec.tags[2usize]), 2, "bar: tag 2 is point 2");
+  expectFloat(*sec.creases[1usize], 2., near, "bar: crease of tag 1");
+  expectFloat(*sec.creases[0usize], 0., near, "bar: crease of tag 0");
+
+  var problems = List[String]();
+  let m = spec.mesh(5u32, 3u32, false, false, &mut problems);
+  expectInt(i64.from(problems.len()), 0, "bar: no problems");
+  expectInt(i64.from(m.vertexCount()), 68, "bar: vertices");
+  expectInt(i64.from(m.faceCount()), 64, "bar: faces");
+  expectInt(i64.from(m.validate().len()), 0, "bar: validates");
+  let xs = List[f32](4) <- 1., -1., -1., 1.;
+  let ys = List[f32](4) <- 1., 1., -1., -1.;
+  var r = 0u32;
+  while r < 17u32 {
+    var j = 0u32;
+    while j < 4u32 {
+      let p = *m.positions[usize.from(r * 4u32 + j)];
+      expectFloat(p.x, *xs[usize.from(j)], near, "bar: x");
+      expectFloat(p.y, *ys[usize.from(j)], near, "bar: y");
+      expectFloat(p.z, f32.from(r) / 4., near, "bar: z");
+      j = j + 1u32;
+    }
+    r = r + 1u32;
+  }
+  // The same sections along the spec's own path
+  var secs = List[TaggedProfile]();
+  var t = 0u32;
+  while t < 5u32 { secs.push(spec.sectionAt(f32.from(t) / 4.)); t = t + 1u32; }
+  let own = spec.path(17u32);
+  let st = List[f32](5) <- 0., 0.25, 0.5, 0.75, 1.;
+  var again = List[String]();
+  let direct = loftTagged(&secs, &own, st.view(), 3u32, false, false, &mut again);
+  sameMesh(&m, &direct, "bar: equals loftTagged of the same");
+  // Path.line makes the same frames
+  let ln = Path.line(Vec3(0., 0., 0.), Vec3(0., 0., 4.), 16u32);
+  var lp = ln;
+  lp.up = Vec3(0., 1., 0.);
+  var third = List[String]();
+  let viaLine = loftTagged(&secs, &lp, st.view(), 3u32, false, false, &mut third);
+  expectInt(i64.from(viaLine.vertexCount()), 68, "bar: Path.line loft vertices");
+  var worst = 0.f32;
+  var v = 0usize;
+  while v < viaLine.vertexCount() && v < m.vertexCount() {
+    let d = *m.positions[v] - *viaLine.positions[v];
+    if d.length() > worst { worst = d.length(); }
+    v = v + 1usize;
+  }
+  expectFloat(worst, 0., near, "bar: same as a Path.line loft");
+  var j = 0u32;
+  while j < 16u32 {
+    expectFloat(creaseBetween(&m, 1u32 + 4u32 * j, 5u32 + 4u32 * j), 2., near, "bar: crease of the tag-1 column");
+    expectFloat(creaseBetween(&m, 4u32 * j, 4u32 + 4u32 * j), 0., near, "bar: tag 0 column");
+    j = j + 1u32;
+  }
+}
+
+fn twisting() {
+  var tracks = SweepTracks();
+  tracks.push(SweepTrack(c2(1., 2.), rising(1., 0.2, 6u32), c0()));
+  tracks.push(SweepTrack(c2(-1., -2.), rising(1., 0.1, 6u32), rising(0., 1., 4u32)));
+  tracks.push(SweepTrack(c2(-1., -2.), rising(-1., -0.2, 6u32), c0()));
+  tracks.push(SweepTrack(c2(1., 2.), rising(-1., -0.1, 6u32), c0()));
+  let spec = SweepSpec(straightSpine(), Vec3(0., 1., 0.), true, tracks);
+  // 6 (spine) + 8 (x) + 24 (y) + 4 (one crease) + 3 (up)
+  expectInt(i64.from(spec.numbers()), 45, "twist: numbers");
+  var problems = List[String]();
+  let m = spec.mesh(5u32, 0u32, false, false, &mut problems);
+  expectInt(i64.from(problems.len()), 0, "twist: no problems");
+  expectInt(i64.from(m.vertexCount()), 20, "twist: vertices");
+  let x0 = List[f32](4) <- 1., -1., -1., 1.;
+  let dx = List[f32](4) <- 1., -1., -1., 1.;
+  let yb = List[f32](4) <- 1., 1., -1., -1.;
+  let ys = List[f32](4) <- 0.2, 0.1, -0.2, -0.1;
+  var r = 0u32;
+  while r < 5u32 {
+    let t = f32.from(r) / 4.;
+    var j = 0u32;
+    while j < 4u32 {
+      let p = *m.positions[usize.from(r * 4u32 + j)];
+      let jj = usize.from(j);
+      expectFloat(p.x, *x0[jj] + *dx[jj] * t, 0.000001, "twist: x on the track");
+      expectFloat(p.y, *yb[jj] + *ys[jj] * (1. + 3. * t), 0.000001, "twist: y on the track");
+      expectFloat(p.z, 4. * t, 0.000001, "twist: z");
+      j = j + 1u32;
+    }
+    r = r + 1u32;
+  }
+  var b = 0u32;
+  while b < 4u32 {
+    expectFloat(creaseBetween(&m, 1u32 + 4u32 * b, 5u32 + 4u32 * b), 1. + f32.from(2u32 * b + 1u32) / 8., 0.00001,
+      "twist: crease follows its curve");
+    b = b + 1u32;
+  }
+}
+
+fn curvedSpine() {
+  var spine = RunCurves();
+  let xc = List[f32](6) <- 0., 0., 0., 0.5, 1., 1.;
+  var own = List[f32]();
+  var q = 0usize;
+  while q < xc.len() { own.push(*xc[q]); q = q + 1usize; }
+  spine.push(RunCurve(own));
+  spine.push(c0());
+  spine.push(c2(0., 4.));
+  var tracks = SweepTracks();
+  tracks.push(SweepTrack(c1(0.5), c1(0.5), c0()));
+  tracks.push(SweepTrack(c1(-0.5), c1(0.5), c0()));
+  tracks.push(SweepTrack(c1(-0.5), c1(-0.5), c0()));
+  tracks.push(SweepTrack(c1(0.5), c1(-0.5), c0()));
+  let spec = SweepSpec(spine, Vec3(0., 1., 0.), true, tracks);
+  var problems = List[String]();
+  let m = spec.mesh(9u32, 0u32, false, false, &mut problems);
+  expectInt(i64.from(problems.len()), 0, "curved: no problems");
+  expectInt(i64.from(m.vertexCount()), 36, "curved: vertices");
+  var r = 0u32;
+  while r < 9u32 && m.vertexCount() == 36usize {
+    let t = f32.from(r) / 8.;
+    var c = Vec3(0., 0., 0.);
+    var j = 0u32;
+    while j < 4u32 {
+      c = c + *m.positions[usize.from(r * 4u32 + j)];
+      j = j + 1u32;
+    }
+    expectFloat(c.x / 4., bsplineAt(xc.view(), 0., 1., t), 0.0001, "curved: ring centre x on the spine");
+    expectFloat(c.y / 4., 0., 0.0001, "curved: ring centre y");
+    expectFloat(c.z / 4., 4. * t, 0.0001, "curved: ring centre z");
+    r = r + 1u32;
+  }
+}
+
+fn openHalf() {
+  var tracks = SweepTracks();
+  tracks.push(SweepTrack(c1(0.), c0(), c0()));
+  tracks.push(SweepTrack(c1(1.), c2(1., 2.), c0()));
+  tracks.push(SweepTrack(c2(2., 3.), c0(), c0()));
+  let spec = SweepSpec(straightSpine(), Vec3(0., 1., 0.), false, tracks);
+  var problems = List[String]();
+  let m = spec.mesh(4u32, 1u32, false, false, &mut problems);
+  expectInt(i64.from(problems.len()), 0, "open: no problems");
+  expectInt(i64.from(m.vertexCount()), 21, "open: 7 rings of 3 columns");
+  var r = 0usize;
+  while r < 7usize && m.vertexCount() == 21usize {
+    expectFloat((*m.positions[3usize * r]).y, 0., 0., "open: no-values y is on y = 0 exactly (first)");
+    expectFloat((*m.positions[3usize * r + 2usize]).y, 0., 0., "open: no-values y is on y = 0 exactly (last)");
+    r = r + 1usize;
+  }
+}
+
+fn expectRefused(spec: &SweepSpec, rings: u32, label: &Array[u8]) {
+  var problems = List[String]();
+  let m = spec.mesh(rings, 1u32, false, false, &mut problems);
+  expectInt(i64.from(problems.len()), 1, label);
+  expectInt(i64.from(m.vertexCount()), 0, label);
+}
+
+fn refusals() {
+  var a = bar();
+  a.spine[0usize] = c3(0., 1., 2.);
+  expectRefused(&a, 3u32, "refusal: spine curve of 3 values");
+  var b = bar();
+  b.tracks[2usize].x = c3(1., 2., 3.);
+  expectRefused(&b, 3u32, "refusal: track x of 3 values");
+  var c = bar();
+  c.tracks[0usize].y = c3(1., 2., 3.);
+  expectRefused(&c, 3u32, "refusal: track y of 3 values");
+  var d = bar();
+  d.tracks[3usize].crease = c3(1., 2., 3.);
+  expectRefused(&d, 3u32, "refusal: track crease of 3 values");
+  var e = bar();
+  e.closed = false;
+  e.tracks.truncate(1usize);
+  expectRefused(&e, 3u32, "refusal: open half of 1 track");
+  var f = bar();
+  f.tracks.truncate(2usize);
+  expectRefused(&f, 3u32, "refusal: closed ring of 2 tracks");
+  var g = bar();
+  g.spine.truncate(2usize);
+  expectRefused(&g, 3u32, "refusal: spine of 2 curves");
+  expectRefused(&bar(), 1u32, "refusal: 1 ring");
+  // Clockwise: loftTagged's own refusal
+  var h = bar();
+  h.tracks[1usize].x = c1(1.);
+  h.tracks[1usize].y = c1(-1.);
+  h.tracks[3usize].x = c1(-1.);
+  h.tracks[3usize].y = c1(1.);
+  expectRefused(&h, 3u32, "refusal: clockwise ring");
+  expectInt(i64.from(g.path(5u32).points.len()), 0, "refusal: spine of 2 curves gives no path");
+  expectInt(i64.from(bar().path(1u32).points.len()), 0, "refusal: 1 sample gives no path");
+  expectFloat(c3(1., 2., 3.).at(0.5), 0., 0., "RunCurve of 3 values is 0");
+  expectFloat(c0().at(0.5), 0., 0., "RunCurve of no values is 0");
+  expectFloat(c1(7.).at(0.3), 7., 0., "RunCurve of 1 value is constant");
+  expectFloat(c2(1., 3.).at(0.25), 1.5, 0.000001, "RunCurve of 2 values is linear");
+}
+
+fn main() i32 {
+  handWritten();
+  twisting();
+  curvedSpine();
+  openHalf();
+  refusals();
+  done()
+}
