@@ -1,0 +1,171 @@
+// What stays accepted when a borrow an assignment, a call, or an element or field of a value
+// made here yields is dereferenced (collection_flow_yielded_value_deref holds the
+// refusals): a view or a read where nothing else changes what was borrowed, a change made
+// once the view is used up, a store through one, and a store through a result whose
+// signature says it borrows only the other argument.
+
+mod collection_yielded_value_deref_success;
+
+import stdio use *;
+import collections use *;
+
+enum Shape {
+  struct Poly { pub pts: List[i32]; }
+  struct Empty {}
+}
+use Shape;
+
+struct Held { pub r: &i32; }
+
+alias Owner = Rc[mut, List[i32]];
+alias Sum = Rc[mut, Shape];
+
+struct W { pub r: &Owner; }
+struct Wrap { pub w: W; }
+struct Taker { pub r: &mut Held; }
+struct Giver { pub n: i32;
+  pub fn give(self: &, o: &'a Sum) &'a Sum { return o; }
+}
+
+fn make(n: i32) List[i32] {
+  var l = List[i32]();
+  l.push(n);
+  l
+}
+
+fn pass(o: &Owner) &Owner { return o; }
+fn passSum(o: &Sum) &Sum { return o; }
+fn passHeld(h: &mut Held) &mut Held { return h; }
+fn wrapped(o: &Owner) W { return W(o); }
+fn paired(o: &Owner) (&Owner, i32) { return o, 1i32; }
+fn first(a: &'a mut Held, b: &'b mut Held) &'a mut Held { return a; }
+fn at0(l: &List[&i32]) &&i32 { return &l[0usize]; }
+
+// ---- A view, with nothing else changed ----
+
+fn views() {
+  let o = Owner(make(7i32));
+  let p = Owner(make(3i32));
+  var r = &p;
+  let a = &(**(r = &o))[0usize];
+  printInt(i64.from(*a));                // 7: 'r = &o' is the borrow of o
+  let b = &(**((&p, 1i32).0))[0usize];
+  printInt(i64.from(*b));                // 3
+  let c = &(**Wrap(W(&o)).w.r)[0usize];
+  printInt(i64.from(*c));                // 7
+  let d = &(**([&p][0usize]))[0usize];
+  printInt(i64.from(*d));                // 3
+  let e = &(**pass(&o))[0usize];
+  printInt(i64.from(*e));                // 7
+  let f = &(**wrapped(&p).r)[0usize];
+  printInt(i64.from(*f));                // 3
+  let g = &(**(paired(&o).0))[0usize];
+  printInt(i64.from(*g));                // 7
+  let h = &(**W(&p).(r))[0usize];
+  printInt(i64.from(*h));                // 3
+}
+
+// Another list is changed while the view of this one is used
+fn otherList() {
+  var o = List[i32]();
+  o.push(7i32);
+  var q = List[i32]();
+  q.push(1i32);
+  var p = List[i32]();
+  p.push(3i32);
+  var r = &p;
+  let v = &(*(r = &o))[0usize];
+  q.push(2i32);
+  printInt(i64.from(*v));                // 7
+  let w = &(*((&p, 1i32).0))[0usize];
+  q = List[i32]();
+  printInt(i64.from(*w));                // 3
+}
+
+// The change comes after the view is used up
+fn usedUp() {
+  let o = Owner(make(7i32));
+  let o2 = o;
+  let v = &(**pass(&o))[0usize];
+  printInt(i64.from(*v));                // 7
+  *o2 = make(8i32);
+  printInt(i64.from((**pass(&o))[0usize]));      // 8
+  *o2 = make(9i32);
+  printInt(i64.from((**((&o, 1i32).0))[0usize]));   // 9
+}
+
+// ---- A variant, with nothing changed ----
+
+fn narrowed() {
+  let s = Sum(Poly(make(5i32)));
+  let g = Giver(1i32);
+  match &**g.give(&s) {
+    case let &Poly(q) {
+      printInt(i64.from(q.pts[0usize]));         // 5
+    }
+    else {}
+  }
+  match &**passSum(&s) {
+    case let &Poly(q) {
+      printInt(i64.from(q.pts[0usize]));         // 5
+    }
+    else {}
+  }
+}
+
+// ---- A store through one, of a borrow that lasts long enough ----
+
+fn stores() {
+  var a = 1i32;
+  var b = 2i32;
+  var c = 3i32;
+  var h = Held(&a);
+  var k = Held(&a);
+  *passHeld(&mut h) = Held(&b);
+  printInt(i64.from(*h.r));                      // 2
+  passHeld(&mut h).r = &c;
+  printInt(i64.from(*h.r));                      // 3
+  var t = &mut k;
+  *(t = &mut h) = Held(&a);
+  printInt(i64.from(*h.r));                      // 1
+  *((&mut h, 1i32).0) = Held(&b);
+  printInt(i64.from(*h.r));                      // 2
+  *Taker(&mut h).r = Held(&c);
+  printInt(i64.from(*h.r));                      // 3
+}
+
+// 'first' returns a borrow of 'h' alone, as its signature says, so a local that dies first
+// may be stored through it while 'k' lives on
+fn storesBySignature() {
+  var a = 1i32;
+  var k = Held(&a);
+  {
+    var b = 2i32;
+    var h = Held(&a);
+    *first(&mut h, &mut k) = Held(&b);
+    printInt(i64.from(*h.r));                    // 2
+  }
+  printInt(i64.from(*k.r));                      // 1
+}
+
+// A borrow copied out through a call's result points where what the slot holds does, not
+// into the list the call lent, so the list may grow
+fn copiedOut() {
+  var x = 4i32;
+  var y = 6i32;
+  var l = List[&i32]();
+  l.push(&x);
+  let v = *at0(&l);
+  l.push(&y);
+  printInt(i64.from(*v));                        // 4
+}
+
+fn main() {
+  views();
+  otherList();
+  usedUp();
+  narrowed();
+  stores();
+  storesBySignature();
+  copiedOut();
+}

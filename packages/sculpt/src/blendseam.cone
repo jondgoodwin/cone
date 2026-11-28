@@ -20,6 +20,15 @@
 // A REFUSAL is a problem line, an unchanged copy and empty lists: 'width' at or below 0; a seam edge out of the
 // mesh. An empty seam is a silent copy.
 //
+// PER-VERTEX WIDTHS. blendSeamWidths(m, seam, widths, problems): widths[i] is the width at the ith vertex of
+// 'seamVertices(m, seam)'. The band is every face with a vertex whose surface distance, from seeds that start
+// 'maxWidth - widths[i]' away (surfaceDistances' offsets), is within maxWidth, so near each seam vertex it
+// reaches that vertex's own width. A width of 0 holds the vertex: no face that has it is in the band, so it,
+// the seam edges it ends and the faces round it are bit for bit the input (its crease stays), and the stretch
+// stays crisp; the band ends one face ring short of it. The rest is blendSeam's rule, with maxWidth in
+// place of 'width'. blendSeam is this call with every width equal, bit for bit. A refusal, as blendSeam's:
+// 'widths' not one per seam vertex; a width below 0; no width above 0.
+//
 // booleanUnionBlended finds its seam without a marker colliding with a crease the inputs already carry: it
 // asks booleanWith for a crease of M = 1 + max(1, the greatest crease of either input), which no input edge has,
 // and the seam is every edge of the result whose "crease" is exactly M. blendSeam then sets those to 0. The
@@ -48,16 +57,74 @@ pub fn blendSeam(m: &PolyMesh, seam: &Array[u32], width: f32, problems: &mut Lis
     i = i + 1usize;
   }
 
-  // The seam's vertices, and the band
-  var seeds = List[u32]();
+  // blendSeam is blendSeamWidths with one width for every seam vertex
+  var widths = List[f32]();
+  let nsv = seamVertices(m, seam).len();
   i = 0usize;
+  while i < nsv { widths.push(width); i = i + 1usize; }
+  blendSeamWidths(m, seam, widths.view(), problems)
+}
+
+// The distinct vertices of the seam's edges, in the order they first appear walking the seam's edges, each
+// edge's to-vertex then its from-vertex. This is the order of blendSeamWidths' 'widths'.
+pub fn seamVertices(m: &PolyMesh, seam: &Array[u32]) List[u32] {
+  var seen = List[bool]();
+  var v = 0usize;
+  while v < m.vertexCount() { seen.push(false); v = v + 1usize; }
+  var out = List[u32]();
+  var i = 0usize;
   while i < seam.len() {
     let h = m.edgeHalfedge(seam[i], 0u32);
-    seeds.push(m.toVertex(h));
-    seeds.push(m.fromVertex(h));
+    var side = 0usize;
+    while side < 2usize {
+      let w = if side == 0usize {m.toVertex(h)} else {m.fromVertex(h)};
+      if !*seen[usize.from(w)] { seen.set(usize.from(w), true); out.push(w); }
+      side = side + 1usize;
+    }
     i = i + 1usize;
   }
-  let dist = surfaceDistances(m, &seeds, &List[f32](), width);
+  out
+}
+
+// blendSeam with a width of its own at each seam vertex (see the header, "PER-VERTEX WIDTHS")
+pub fn blendSeamWidths(m: &PolyMesh, seam: &Array[u32], widths: &Array[f32], problems: &mut List[String]) BlendedSeam {
+  if seam.len() == 0usize { return BlendedSeam(m.clone(), List[u32](), List[u32]()); }
+  let ne = m.edgeCount();
+  var i = 0usize;
+  while i < seam.len() {
+    if usize.from(seam[i]) >= ne { return bsUnchanged(m, problems, "a seam edge is not in the mesh"); }
+    i = i + 1usize;
+  }
+  let sv = seamVertices(m, seam);
+  if widths.len() != sv.len() { return bsUnchanged(m, problems, "widths is not one per seam vertex"); }
+  var width: f32 = 0.;   // the largest width
+  i = 0usize;
+  while i < widths.len() {
+    let w = widths[i];
+    if !(w >= 0.) { return bsUnchanged(m, problems, "a width is below 0"); }
+    if w > width { width = w; }
+    i = i + 1usize;
+  }
+  if width <= 0. { return bsUnchanged(m, problems, "width is not above 0"); }
+
+  // The seeds: the seam's vertices of width above 0, each starting 'width - its own width' away, so its band
+  // reaches its own width. A vertex of width 0 is held: no face that has it is in the band.
+  var held = List[bool]();
+  var hv = 0usize;
+  while hv < m.vertexCount() { held.push(false); hv = hv + 1usize; }
+  var seeds = List[u32]();
+  var offsets = List[f32]();
+  i = 0usize;
+  while i < sv.len() {
+    if widths[i] > 0. {
+      seeds.push(*sv[i]);
+      offsets.push(width - widths[i]);
+    } else {
+      held.set(usize.from(*sv[i]), true);
+    }
+    i = i + 1usize;
+  }
+  let dist = surfaceDistances(m, &seeds, &offsets, width);
   var band = List[u32]();
   var f = 0usize;
   var edgeSum: f64 = 0.;
@@ -65,12 +132,14 @@ pub fn blendSeam(m: &PolyMesh, seam: &Array[u32], width: f32, problems: &mut Lis
   while f < m.faceCount() {
     let vs = m.faceVertices(u32.from(f));
     var near = false;
+    var touchesHeld = false;
     var k = 0usize;
     while k < vs.len() {
       if *dist[usize.from(*vs[k])] <= width { near = true; }
+      if *held[usize.from(*vs[k])] { touchesHeld = true; }
       k = k + 1usize;
     }
-    if near {
+    if near && !touchesHeld {
       band.push(u32.from(f));
       let pts = m.facePositions(u32.from(f));
       k = 0usize;
@@ -97,7 +166,9 @@ pub fn blendSeam(m: &PolyMesh, seam: &Array[u32], width: f32, problems: &mut Lis
   if cc != NoIndex {
     i = 0usize;
     while i < seam.len() {
-      work.setFloat(cc, seam[i], 0.);
+      let h = m.edgeHalfedge(seam[i], 0u32);
+      // an edge with an end held keeps its crease: no band face has it
+      if !*held[usize.from(m.toVertex(h))] && !*held[usize.from(m.fromVertex(h))] { work.setFloat(cc, seam[i], 0.); }
       i = i + 1usize;
     }
   }
