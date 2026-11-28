@@ -1,0 +1,244 @@
+// A layer refused its wire buffer in 'fill', with nothing else under way, is told to the owner by that 'fill': 'feed'
+// asks the layer only when bytes come, and from an end that waits for this one none will. So after 'fill',
+// 'failureOf()' is a Stage.Tls failure and the owner ends the connection in the same turn, the peer having sent
+// nothing more. A server and a client connection over a layer of the test's own (no socket):
+// - refused at once: 'fill' gives nothing, the failure is there, Overloaded;
+// - refused after a buffer was given: the same, with bytes in the wire;
+// - refused again once 'next' has given Closed: it is still there, and 'done' is not true by itself;
+// - refused after 'abort', with bytes the layer already held: the layer's failure stands over the abort's;
+// - a layer that failed without a refusal and still has bytes (a TLS alert) is not told until they are taken.
+
+mod sconnrefused;
+
+import stdio use *;
+import collections use List, String;
+import time use Instant;
+import iobuf use *;
+import iocore use Op, Lane, Outcome, Completion, IoError;
+import http use *;
+import httpconn use *;
+
+const unbounded = 0xFFFFFFFFFFFFFFFFusize;
+
+// Bytes pass through as they are. The wire buffer after the first 'gives' is refused, once or every time after; or,
+// with 'broken', the layer has failed with no refusal: it gives all it holds, and says so once it holds none
+struct Refusing {
+  inq: Chain;
+  outq: Chain;
+  gives: u32;
+  every: bool;
+  broken: bool;
+  refused: bool;
+  sent: bool;           // the protocol has given it bytes to send
+
+  pub fn make(gives: u32, every: bool, broken: bool) Refusing {
+    Refusing(Chain.make(unbounded), Chain.make(unbounded), gives, every, broken, false, false)
+  }
+
+  pub fn wireIn(self: &mut, buf: IoBuf, now: Instant) {
+    if buf.len() > 0usize {inq.push(buf);}
+  }
+  pub fn wireOut(self: &mut, now: Instant) IoBuf {
+    if outq.len() == 0usize {return IoBuf();}
+    if !broken {
+      if gives > 0u32 {
+        gives = gives - 1u32;
+      } else if every || !refused {
+        refused = true;
+        return IoBuf();
+      }
+    }
+    outq.popFront() || IoBuf()
+  }
+  pub fn wireRoom(self: &) usize {65536usize}
+  // What the protocol gives goes out as two buffers, so one can be given and the next refused
+  pub fn plainIn(self: &mut, buf: IoBuf) {
+    sent = true;
+    let half = buf.len() / 2usize;
+    var a = IoBuf(half);
+    a.append(&(buf.view() as &Array[u8])[0usize ..< half]);
+    var b = IoBuf(buf.len() - half);
+    b.append(&(buf.view() as &Array[u8])[half ..< buf.len()]);
+    outq.push(a);
+    outq.push(b);
+  }
+  pub fn plainOut(self: &mut) IoBuf {inq.popFront() || IoBuf()}
+  pub fn pending(self: &) usize {outq.len()}
+  pub fn isOpen(self: &) bool {true}
+  pub fn peerEnded(self: &) bool {false}
+  pub fn closeSend(self: &mut) {}
+  pub fn failed(self: &) bool {refused || (broken && sent && outq.len() == 0usize)}
+  pub fn failureCode(self: &) u32 {0u32}
+  pub fn failureText(self: &) String {String.from("the test's layer")}
+  pub fn overloaded(self: &) bool {refused}
+  pub fn givesRecords(self: &) bool {false}
+  pub fn wantsCall(self: &) bool {false}
+  pub fn takeCall(self: &mut) Op {Op.Call(Lane.general(), &noCall, 0u64, IoBuf())}
+  pub fn callDone(self: &mut, c: &mut Completion, now: Instant) {}
+  pub fn callAnswered(self: &mut, buf: &IoBuf, failed: Option[IoError], now: Instant) {}
+  pub fn describe(self: &) String {String.from("refusing")}
+  pub fn alpn(self: &) String {String()}
+}
+
+fn noCall(arg: u64, buf: &mut IoBuf) Outcome {Outcome.Done(0usize)}
+
+fn say(what: &str, ok: bool) {
+  printStr(what);
+  printStr(": ");
+  printStr(if ok {"yes"} else {"NO"});
+  printStr("\n");
+}
+
+fn piece(text: &str) IoBuf {
+  var b = IoBuf(text.len());
+  b.append(text);
+  b
+}
+
+fn layer(gives: u32, every: bool, broken: bool) Option[Uni[Layer]] {
+  Some[Uni[Layer]](Uni[Refusing](Refusing.make(gives, every, broken)))
+}
+
+// A layer that already holds bytes for the wire and is refused every buffer
+fn holding() Option[Uni[Layer]] {
+  var r = Refusing.make(0u32, true, false);
+  r.outq.push(piece("held"));
+  Some[Uni[Layer]](Uni[Refusing](r))
+}
+
+// Whether the connection says its layer failed for a refused buffer
+fn told(f: &Option[Failure]) bool {
+  match f {
+    case let &Some(x) {x.stage == Stage.Tls && x.error.kind == ErrorKind.Overloaded}
+    else {false}
+  }
+}
+
+fn closedKind(f: &Option[Failure]) bool {
+  match f {
+    case let &Some(x) {x.stage == Stage.Tls && x.error.kind == ErrorKind.Closed}
+    else {false}
+  }
+}
+
+fn none(f: &Option[Failure]) bool {
+  match f {
+    case let &Some(x) {false}
+    else {true}
+  }
+}
+
+// A server connection holding a request, answered with 5 bytes: head and body are two buffers on their way out
+fn answering(gives: u32, every: bool, broken: bool, now: Instant) ServerConn {
+  var c = ServerConn.make(Config.make(), layer(gives, every, broken), now);
+  c.wireIn(piece("GET / HTTP/1.1\r\nHost: a\r\n\r\n"), now);
+  while true {
+    match c.next(now) {
+      case is Nothing {break;}
+      else {}
+    }
+  }
+  c.response().status = 200u16;
+  c.respond(0u32, BodyLength.sized(5u64));
+  c.sendData(0u32, piece("hello"));
+  c.finish(0u32);
+  c
+}
+
+fn asking(gives: u32, every: bool, broken: bool, now: Instant) ClientConn {
+  var c = ClientConn.make(Config.make(), layer(gives, every, broken), now);
+  c.request(RequestHead.make("POST", "/", "a"), BodyLength.sized(5u64), now);
+  c.sendData(0u32, piece("hello"));
+  c.finish(0u32);
+  c
+}
+
+fn servers(now: Instant) {
+  printStr("server, refused at once\n");
+  var a = answering(0u32, false, false, now);
+  say("  nothing is told before fill", none(a.failureOf()));
+  say("  fill gives nothing", a.fill(now) == 0usize);
+  say("  the refusal is told", told(a.failureOf()));
+
+  printStr("server, refused after a buffer\n");
+  var b = answering(1u32, false, false, now);
+  say("  fill gives the first", b.fill(now) > 0usize);
+  say("  the refusal is told", told(b.failureOf()));
+
+  printStr("server, refused again once 'next' has given Closed\n");
+  var c = answering(0u32, true, false, now);
+  c.fill(now);
+  var closed = false;
+  while true {
+    match c.next(now) {
+      case is Nothing {break;}
+      case let Closed(x) {closed = true;}
+      else {}
+    }
+  }
+  say("  next gives Closed", closed);
+  say("  fill gives nothing", c.fill(now) == 0usize);
+  say("  the refusal is told again", told(c.failureOf()));
+  say("  and the connection is not done by itself", !c.done(now));
+
+  printStr("server, refused after abort\n");
+  var e = ServerConn.make(Config.make(), holding(), now);
+  e.abort();
+  say("  fill gives nothing", e.fill(now) == 0usize);
+  say("  the refusal is told", told(e.failureOf()));
+
+  printStr("server, failed with bytes still to send\n");
+  var d = answering(0u32, false, true, now);
+  let n = d.fill(now);
+  say("  fill gives them", n > 0usize);
+  say("  and tells nothing yet", none(d.failureOf()));
+  var out = Chain.make(unbounded);
+  d.takeWire(&mut out);
+  d.wireSent(n);
+  say("  with none left it is told, Closed", d.fill(now) == 0usize && closedKind(d.failureOf()));
+}
+
+fn clients(now: Instant) {
+  printStr("client, refused at once\n");
+  var a = asking(0u32, false, false, now);
+  say("  nothing is told before fill", none(a.failureOf()));
+  say("  fill gives nothing", a.fill(now) == 0usize);
+  say("  the refusal is told", told(a.failureOf()));
+
+  printStr("client, refused after a buffer\n");
+  var b = asking(1u32, false, false, now);
+  say("  fill gives the first", b.fill(now) > 0usize);
+  say("  the refusal is told", told(b.failureOf()));
+
+  printStr("client, refused again once 'next' has given Closed\n");
+  var c = asking(0u32, true, false, now);
+  c.fill(now);
+  var closed = false;
+  while true {
+    match c.next(now) {
+      case is Nothing {break;}
+      case let Closed(x) {closed = true;}
+      else {}
+    }
+  }
+  say("  next gives Closed", closed);
+  say("  fill gives nothing", c.fill(now) == 0usize);
+  say("  the refusal is told again", told(c.failureOf()));
+  say("  and the connection is not done by itself", !c.done(now));
+
+  printStr("client, refused after abort\n");
+  var d = ClientConn.make(Config.make(), holding(), now);
+  d.abort();
+  say("  fill gives nothing", d.fill(now) == 0usize);
+  say("  the refusal is told", told(d.failureOf()));
+}
+
+fn main() i32 {
+  initAll();
+  let now = Instant.now();
+  servers(now);
+  clients(now);
+  print.flush();
+  finalAll();
+  0
+}
