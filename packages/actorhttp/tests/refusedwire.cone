@@ -1,16 +1,22 @@
 // A connection whose output the buffer pool refuses a buffer for, inside its 'fill' and with nothing else under way, ends
-// in that turn and does not wait for the other end to speak (it never would: it waits for the connection). The whole of
-// the pool's try bank is held, so every tryMake is refused, and each case is its own process of this program
-// ('refusedwire <case>') with one actor worker, so no thread's cache holds a block the next take could have:
+// in that turn and does not wait for the other end to speak (it never would: it waits for the connection). Each case is
+// its own process of this program ('refusedwire <case>') with one actor worker, so no thread's cache holds a block the
+// next take could have. In the first four the whole of the pool's try bank is held, so every tryMake is refused:
 // - server-tls: the server has its receive buffer and gets a ClientHello; its handshake's wire buffer is refused: the
 //   connection closes and the refusal is counted;
 // - client-tls: the client's ClientHello is refused: the fetch fails, Overloaded at Stage.Tls;
 // - server-h2c: HTTP/2 itself fails in 'fill' (no buffer for its frames, here the answers to 1000 PINGs): the connection
 //   closes;
 // - client-h2c: HTTP/2 itself fails in 'fill' (no buffer for a second request's frames, a first one waiting for its
-//   answer): the fetch fails, Overloaded.
-// The server listens or the client connects to a socket that never speaks. Every handshake deadline is 60 s, so an
-// owner that does not look after its 'fill' leaves each case waiting past this test's own 15 s, and it says NO.
+//   answer): the fetch fails, Overloaded;
+// - server-tls-write: nothing is read from a connection whose TLS layer is lost. A handler's write of 48 KiB waits for
+//   room (the write watermark is 40 KiB, so two of its three pieces go) when the wire buffer is refused: it answers
+//   closed, though the room the layer made by taking those two would take the third and answer it as sent. Here the
+//   pool still gives the write's own 16 KiB buffers and refuses the 64 KiB one the wire asks for; the other end is a
+//   TLS client by hand that reads no answer.
+// In the first four, the server listens or the client connects to a socket that never speaks. Every handshake deadline
+// is 60 s, so an owner that does not look after its 'fill' leaves each of those waiting past this test's own 15 s, and it
+// says NO.
 
 mod refusedwire;
 
@@ -20,7 +26,7 @@ import process;
 import thread;
 import sync use Channel, Sender, Receiver, Oneshot, OneshotSender, OneshotReceiver;
 import collections use List, String;
-import iobuf use IoBuf, stats;
+import iobuf use IoBuf, stats, flushThread;
 import iocore use SocketAddr, IoError;
 import time use Instant, Duration;
 import http use *;
@@ -29,7 +35,7 @@ import tls;
 import actors;
 import aio use Socket, IoLimits;
 import path use Path;
-import actorhttp use HttpClient, Server, ServerConfig, HttpRoutes;
+import actorhttp use HttpClient, Server, ServerConfig, HttpRoutes, Exchange;
 
 fn certs(name: &str) Path {
   var p = String.from("../../../../../tls/tests/certs/");
@@ -63,6 +69,12 @@ fn holdAll() List[IoBuf] {
   while stats().heldBytes + 8388608usize < stats().maxBytes {
     held.push(IoBuf(1048576usize));
   }
+  holdTries(&mut held);
+  held
+}
+
+// Every try-bank block tryMake will give, of every class, added to 'held'
+fn holdTries(held: &mut List[IoBuf]) {
   var size = 1048576usize;
   while size >= 4096usize {
     while true {
@@ -73,7 +85,20 @@ fn holdAll() List[IoBuf] {
     }
     size = size / 4usize;
   }
-  held
+}
+
+// Up to n buffers of 16 KiB from the try bank, as many as it will give
+fn take16(n: u32) List[IoBuf] {
+  var out = List[IoBuf]();
+  var i = 0u32;
+  while i < n {
+    match IoBuf.tryMake(16384usize) {
+      case var Some(b) {out.push(b);}
+      else {}
+    }
+    i = i + 1u32;
+  }
+  out
 }
 
 // Holds the pool from the runtime's one worker, where the connection's turns run, so that worker's cache is emptied too
@@ -198,6 +223,160 @@ fn pings() IoBuf {
   var out = IoBuf(32768usize);
   let n = out.append(s.view());
   out
+}
+
+// ---------------------------------------------------------------------------
+// The server's write that waits: a TLS client by hand is the other end
+// ---------------------------------------------------------------------------
+
+actor Writer {
+  server: Server;
+  tm: actors.Timer;
+
+  pub async fn open(self, cfg: ServerConfig, var ports: Sender[u16]) {
+    let r = await actorhttp.listen(SocketAddr.localhost(0u16), cfg);
+    var res = r;
+    match &mut res {
+      case var &mut Ok(ok) {server <-> *ok;}
+      case let &mut Err(e) {panic("refusedwire: listen failed");}
+    }
+    ports.send(server.port());
+  }
+
+  // Takes the request, sends the response's head, and then writes with the pool giving 16 KiB buffers and no 64 KiB one.
+  // Says 1 when the pool then gives 16 KiB and not 64 KiB, 2 more when the write answered closed, 4 more when one
+  // refusal was counted
+  pub async fn serve(self, var done: OneshotSender[u64]) {
+    var got = 0u64;
+    match await server.next() {
+      case var Ok(taken) {
+        var ex = taken;
+        ex.start(ResponseHead.make(200u16), BodyLength.unsized());
+        // the head is written, and nothing is left under way
+        tm.set(Instant.now() + Duration.fromSeconds(1i64));
+        let ticked = await tm.next();
+        var body = String.withCapacity(49152usize);
+        var i = 0usize;
+        while i < 49152usize {
+          body.appendByte(97u8);
+          i = i + 1usize;
+        }
+        // Four 16 KiB buffers first, then everything else the try bank will give (no plain buffer past that, so the
+        // bound is only just reached), then three of the four given back (the fourth keeps their slab). What the pool
+        // now has for tryMake is under 64 KiB: three pieces of 16 KiB, or what a refusal leaves of them
+        var spares = take16(4u32);
+        var pin = List[IoBuf]();
+        match spares.pop() {
+          case var Some(b) {pin.push(b);}
+          else {}
+        }
+        var held = List[IoBuf]();
+        holdTries(&mut held);
+        spares = List[IoBuf]();
+        flushThread();
+        // as the write will find it: 64 KiB refused, and 16 KiB still given after the refusal
+        var large = false;
+        match IoBuf.tryMake(65536usize) {
+          case var Some(b) {large = true;}
+          else {}
+        }
+        var small = take16(3u32);
+        if !large && small.len() == 3usize {got = 1u64;}
+        small = List[IoBuf]();
+        flushThread();
+        let w = await ex.write(body);
+        held = List[IoBuf]();
+        pin = List[IoBuf]();
+        if w is Err {got = got + 2u64;}
+        if (await server.refusedBuffers()) == 1u64 {got = got + 4u64;}
+      }
+      case let Err(e) {}
+    }
+    done.send(got);
+  }
+
+  pub async fn stop(self) {server.close();}
+}
+
+// Shakes hands, asks for the response and reads no more, the socket kept open until 'close'
+actor TlsPeer {
+  sock: Socket;
+
+  // 1 when the request went
+  pub async fn ask(self, port: u16, var done: OneshotSender[u64]) {
+    var s = socketOf(await aio.connect(SocketAddr.localhost(port)));
+    sock <-> s;
+    var cfg = tls.ClientConfig.make();
+    cfg.verify = tls.Verifier.roots(readText("ca.pem").view());
+    cfg.offline = true;
+    var up = 0u64;
+    match tls.Client.make(cfg) {
+      case var Ok(c) {
+        var stream = c.stream("localhost");
+        let lim = IoLimits.until(Instant.now() + Duration.fromSeconds(15i64));
+        var asked = false;
+        while true {
+          while true {
+            let b = stream.wireOut(Instant.now());
+            if b.len() == 0usize {break;}
+            let w = await sock.writeIn(b, lim);
+          }
+          if asked {up = 1u64; break;}
+          if stream.isOpen() {
+            var request = IoBuf(256usize);
+            let n = request.append("GET / HTTP/1.1\r\nHost: localhost\r\n\r\n");
+            stream.plainIn(request);
+            asked = true;
+            continue;
+          }
+          let r = await sock.readIn(IoBuf(16384usize), lim);
+          match r {
+            case var Ok(b) {
+              if b.len() == 0usize {break;}
+              stream.wireIn(b, Instant.now());
+            }
+            case let Err(e) {break;}
+          }
+        }
+      }
+      case is Err {}
+    }
+    done.send(up);
+  }
+
+  pub async fn close(self) {sock = Socket.none();}
+}
+
+fn serverWriteCase() {
+  var ptx: Sender[u16];
+  var prx: Receiver[u16];
+  ptx, prx = Channel[u16].make();
+  var cfg = ServerConfig.make().routes(HttpRoutes.make().queue("", "/"));
+  cfg.conn.recvSize = 65536usize;
+  cfg.conn.handshakeTimeout = Duration.fromSeconds(60i64);
+  cfg.conn.protocol.writeWatermark = 40960usize;
+  let certFile = certs("server.pem");
+  let keyFile = certs("server.key");
+  cfg = cfg.secure(tls.ServerConfig.make(&certFile, &keyFile));
+  let writer = Writer(Server.none(), actors.Timer.make());
+  writer.open(cfg, ptx.clone());
+  let port = prx.recv() || 0u16;
+  var tx: OneshotSender[u64];
+  var rx: OneshotReceiver[u64];
+  tx, rx = Oneshot[u64].make();
+  writer.serve(tx);
+  let peer = TlsPeer(Socket.none());
+  var ctx: OneshotSender[u64];
+  var crx: OneshotReceiver[u64];
+  ctx, crx = Oneshot[u64].make();
+  peer.ask(port, ctx);
+  say("  the request is sent", (crx.recv() || 0u64) == 1u64);
+  let got = rx.recv() || 0u64;
+  say("  the pool gives 16 KiB buffers and no 64 KiB one", got % 2u64 == 1u64);
+  say("  the waiting write answers closed", (got / 2u64) % 2u64 == 1u64);
+  say("  one refusal counted", got >= 4u64);
+  peer.close();
+  writer.stop();
 }
 
 fn serverCase(secure: bool) {
@@ -395,11 +574,13 @@ fn main() i32 {
     else if which == "server-h2c" {serverCase(false);}
     else if which == "client-tls" {clientCase(true);}
     else if which == "client-h2c" {clientCase(false);}
+    else if which == "server-tls-write" {serverWriteCase();}
   } else {
     child("server-tls");
     child("client-tls");
     child("server-h2c");
     child("client-h2c");
+    child("server-tls-write");
   }
   finalAll();
   0
