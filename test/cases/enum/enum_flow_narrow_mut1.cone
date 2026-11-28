@@ -1,0 +1,83 @@
+// A 'mut1' reference may be copied, and a copy writes, so the variant under it may be
+// changed by another name, as under a 'mut' one (enum_flow_narrow_shared): a reference
+// narrowed through it into a variant is refused where it is used after a change, and an
+// owner of it is not narrowed at all (enum_typecheck_narrow). Each of these read the new
+// variant's bytes as the old one's when 'mut1' was taken to have no other writer.
+// enum_narrow_mut1_success holds what is accepted beside them.
+
+mod enum_flow_narrow_mut1;
+
+import stdio use *;
+
+enum Slot {
+  struct Whole {
+    pub n: i64;
+  }
+
+  struct Real {
+    pub f: f64;
+  }
+}
+use Slot;
+
+// An owner is a copy of the owner, typed as the variant, so no other copy may write
+fn owner(o: Rc[mut1, Slot]) {
+  let o2 = o;
+  if let Whole(w) = o {                 //~ ErrorBadPerm "A 'mut1' reference to Slot, held by an owner"
+    *o2 = Real(1.5f64);
+    printInt(w.n);
+  }
+}
+
+// Through a borrow of what an owner holds
+fn ownerBorrow(o: Rc[mut1, Slot]) {
+  let o2 = o;
+  if let Whole(w) = &mut1 *o {
+    *o2 = Real(1.5f64);
+    printInt(w.n);                      //~ ErrorVariantReshape
+  }
+}
+
+// Two 'mut1' borrows, which may be of one value
+fn params(a: &mut1 Slot, b: &mut1 Slot) {
+  if let Whole(w) = a {
+    *b = Real(1.5f64);
+    printInt(w.n);                      //~ ErrorVariantReshape
+  }
+}
+
+// A name tested for the variant
+fn byName(a: &mut1 Slot, b: &mut1 Slot) {
+  if a is Whole {
+    *b = Real(1.5f64);
+    printInt(a.n);                      //~ ErrorVariantReshape
+  }
+}
+
+// A 'mut1' borrow of what a 'uni' reference points at, copied
+fn fromUni(u: &uni Slot) {
+  let r = &mut1 *u;
+  let r2 = r;
+  if let Whole(w) = r {
+    *r2 = Real(1.5f64);
+    printInt(w.n);                      //~ ErrorVariantReshape
+  }
+}
+
+// A call handed another copy, whose body stores over it
+fn poke(b: &mut1 Slot) {
+  *b = Real(1.5f64);
+}
+
+fn viaCall(a: &mut1 Slot) {
+  let b = a;
+  match a {
+    case let Whole(w) {
+      poke(b);
+      printInt(w.n);                    //~ ErrorVariantReshape "'poke' is handed"
+    }
+    else {}
+  }
+}
+
+fn main() {}
