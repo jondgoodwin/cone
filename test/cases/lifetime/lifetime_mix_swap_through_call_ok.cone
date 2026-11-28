@@ -1,0 +1,84 @@
+// Row 965: sound swaps through a call's reference stay accepted. Every borrow here is of
+// an owner that outlives every use, and what is read out of the slot a method lent does
+// not keep the receiver borrowed.
+//
+// Verdict: accept, and print what the swaps moved.
+// Basis: as lifetime_mix_swap_through_call_refused.
+
+mod lifetime_mix_swap_through_call_ok;
+
+import stdio use *;
+import collections use *;
+
+fn ident(x: &mut &usize) &mut &usize { x }
+fn pair(x: &mut Array[&usize, 2]) &mut Array[&usize, 2] { x }
+
+fn oneSide() {
+  let a = 1usize;
+  let b = 2usize;
+  var h = &b;
+  var out = [&a];
+  *ident(&mut h) <-> out[0usize];
+  print <- "one side: ", *h, " ", *out[0usize], "\n";
+  h = &a;
+  print <- "repointed: ", *h, " ", *out[0usize], "\n";
+}
+
+fn bothSides() {
+  let a = 1usize;
+  let b = 2usize;
+  var h = &b;
+  var k = &a;
+  *ident(&mut h) <-> *ident(&mut k);
+  print <- "both sides: ", *h, " ", *k, "\n";
+}
+
+fn elements() {
+  let a = 1usize;
+  let b = 2usize;
+  let c = 3usize;
+  var arr = [&a, &b];
+  var t = &c;
+  (*pair(&mut arr))[0usize] <-> (*pair(&mut arr))[1usize];
+  (*pair(&mut arr))[0usize] <-> t;
+  print <- "elements: ", *arr[0usize], " ", *arr[1usize], " ", *t, "\n";
+}
+
+// The element swapped out does not keep the list borrowed: the list may grow while it
+// is still to be used
+fn listThenGrow() {
+  let a = 1usize;
+  let b = 2usize;
+  var l = List[&usize]();
+  l <- &a;
+  var t = &b;
+  l[0usize] <-> t;
+  l <- &a;
+  print <- "list: ", *l[0usize], " ", *l[1usize], " ", *t, "\n";
+  l[0usize] <-> l[1usize];
+  l <- &b;
+  print <- "two of one list: ", *l[0usize], " ", *l[1usize], " ", *l[2usize], "\n";
+}
+
+fn inALoop() {
+  let a = 1usize;
+  let b = 2usize;
+  var l = List[&usize]();
+  l <- &a;
+  var t = &b;
+  var i = 0usize;
+  while i < 3usize {
+    l[0usize] <-> t;
+    i += 1usize;
+  }
+  l <- &a;
+  print <- "loop: ", *l[0usize], " ", *t, "\n";
+}
+
+fn main() {
+  oneSide();
+  bothSides();
+  elements();
+  listThenGrow();
+  inALoop();
+}
