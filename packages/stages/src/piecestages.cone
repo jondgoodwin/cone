@@ -1,0 +1,798 @@
+// ======== Stages on the stream core ========
+//
+//   SocketFrom      reads a connection into a stream:  SocketFrom().run(addr, StreamTo[IoBuf].at(next, 1u64))
+//   TransformPass[T]  a stage over any Transform (inflate, deflate, zstd), making new pieces
+//   HashPass[D]     a stage over any Digester: the pieces go on as they are, the digest goes to a DigestSink
+//   FileTo          writes a stream to an open file, and answers a one-shot with the bytes written
+//
+// They are wired from the sink end back, as today's stages are, each stage made with the StreamTo of the one
+// after it:
+//
+//   let sink = FileTo(file, done);
+//   let hash = HashPass[cryptohash.Sha256](StreamTo[IoBuf].at(sink, 1u64), cryptohash.Sha256.make(), who);
+//   let inf = TransformPass[deflate.Inflater](StreamTo[IoBuf].at(hash, 1u64),
+//     deflate.Inflater.make(deflate.Format.Gzip));
+//   SocketFrom().run(addr, StreamTo[IoBuf].at(inf, 1u64));
+//
+// So wired, a Stop is acted on when the producer's wait on its socket or input is over. To have it reach a
+// socket that is idle, each stage is also given the cancel group of the stream FEEDING it, as an optional last argument
+// 'group' (piece.cone, HEARING A STOP, which shows the wiring). A stage cancels that group as it answers a
+// Stop of its own or passes one on, and when it ends the stream after it early on a failure or a cancel; a
+// transform that is merely done cancels nothing.
+//
+// A stage that makes buffers (SocketFrom, TransformPass) takes them from a ChunkPool: its own, or a
+// pipeline's shared one ('shared'), and waits when the pool is at its cap (piecewindow.cone). The pool a
+// stage makes for itself holds the budget its receiver set ('linkWindow' if none), and never less than two of
+// its pieces, so that two overlap where nobody chose a memory limit; a pool handed in is such a limit, and
+// its cap wins.
+//
+// ONE STREAM PER STAGE, as today's: the tag is not used by these stages. (SocketFrom's 'run' may be called
+// again; each stream it reads has its own window, in the actor's table.)
+//
+// THE COLLECTOR. SocketFrom and TransformPass run ahead, and their answers are collected by a second behaviour,
+// 'collect', so that a buffer goes home as its answer arrives, while the sending behaviour waits on its socket
+// or waits for input. One collector at a time for a window: started when a piece is sent and none is running,
+// it awaits the answers in order and ends when none is left. The sending behaviour never takes a future itself:
+// when its window is full, or at the end, it waits for the collector to bring an answer ('signal').
+//
+// The window and the Stop heard are then state of the actor that two behaviours share, so the five rules of a
+// receiver (piece.cone) hold for them: only the stream's key crosses a wait (1) and the stream is looked up
+// again by it (2); the key carries a generation (3, a pools.Handle); an answer or a wake for a stream that has
+// gone is dropped (4); and each behaviour is safe to enter while another is waiting (5).
+//
+// CANCELLATION, as today's stages. A stage works in the cancel group of the message it handles. When that
+// group is cancelled it answers Stop, ends the stream after it with Failed("streams: cancelled"), once (the
+// hash stage also answers its digest sink with an error), and SocketFrom's reads end by their group. A stage
+// in no group never sees a cancel.
+//
+// SocketFrom connects and reads in the stream's own group where its StreamTo has one, so a receiver that stops
+// ends a read on an idle socket (piece.cone, HEARING A STOP).
+//
+// FAILURE. A transform that fails ends the stream after it with its own typed error, and answers Stop (the
+// error as text) to the stage before it. A file that cannot be written answers Stop and reports the error. The
+// stream's one end follows its last piece's answer.
+
+// A stage that takes its input one piece at a time (rule 5): a behaviour that finds the stage busy waits
+// its turn, in the order it came, and the turn is handed on to it
+struct Turns is Move {
+  busy: bool;
+  queued: usize;                          // behaviours waiting for the turn
+  granted: usize;                         // turns handed on to waiters whose envelope has not arrived
+  waiting: Deque[actors.ReplyOf[bool]];
+
+  fn make() Turns {
+    Turns(false, 0usize, 0usize, Deque[actors.ReplyOf[bool]]())
+  }
+
+  // Whether to wait: if not, the turn is taken
+  fn mustWait(self: &mut) bool {
+    #if #defined("MUT_NO_TURNS") {
+      false
+    } #else {
+      if busy {
+        queued = queued + 1usize;
+        true
+      } else {
+        busy = true;
+        false
+      }
+    }
+  }
+
+  // The envelope of a waiter has arrived
+  fn arrive(self: &mut, rp: actors.ReplyOf[bool]) {
+    if granted > 0usize {
+      granted = granted - 1usize;
+      rp.answer(true);
+    } else {
+      waiting.push(rp);
+    }
+  }
+
+  // The turn is over: handed on to the next waiter, or free
+  fn leave(self: &mut) {
+    #if #defined("MUT_NO_TURNS") {} #else {
+      if queued > 0usize {
+        queued = queued - 1usize;
+        match waiting.popFront() {
+          case let Some(rp) { rp.answer(true); }
+          case is None { granted = granted + 1usize; }
+        }
+      } else {
+        busy = false;
+      }
+    }
+  }
+}
+
+// The pool a stage makes for itself: the budget, and never less than two of its pieces
+fn ownPool(budget: usize) ChunkPool {
+  var cap = if budget == 0usize {linkWindow} else {budget};
+  #if #defined("MUT_POOL_BUDGET") {} #else {
+    let two = 2usize * capacityFor(linkBytes);
+    if cap < two { cap = two; }
+  }
+  ChunkPool.make(cap)
+}
+
+// A producer's run-ahead as the sending behaviour and the collector share it (THE COLLECTOR, above)
+struct Ahead is Move {
+  window: PieceWindow[IoBuf];
+  why: Option[Ending];          // a Stop collected and not yet taken up by the producer
+  heard: u64;                   // answers collected
+  waiter: Option[actors.ReplyOf[bool]];  // the sending behaviour, waiting for the next
+  collecting: bool;             // a collector is running, or its message is on its way
+
+  fn make(window: PieceWindow[IoBuf]) Ahead {
+    Ahead(window, None[Ending], 0u64, None[actors.ReplyOf[bool]], false)
+  }
+
+  // Whether a collector is to be started now: there are answers and none is running. Then it is marked running
+  fn startCollecting(self: &mut) bool {
+    if collecting || window.unanswered() == 0usize { return false; }
+    collecting = true;
+    true
+  }
+
+  // The collector's next answer to await; None when none is left, and the collector is to end
+  fn next(self: &mut) Option[actors.Future[PieceAck[IoBuf]]] {
+    match window.oldest() {
+      case let Some(reply) { return Some[actors.Future[PieceAck[IoBuf]]](reply); }
+      case is None {}
+    }
+    collecting = false;
+    None[actors.Future[PieceAck[IoBuf]]]
+  }
+
+  // An answer has come: counted, its buffer kept or gone home, its Stop noted, the waiting sender woken
+  fn took(self: &mut, a: PieceAck[IoBuf]) {
+    match window.answered(a) {
+      case let Some(w) { if why is None { why = Some[Ending](w); } }
+      case is None {}
+    }
+    heard = heard + 1u64;
+    var r = None[actors.ReplyOf[bool]];
+    r <-> waiter;
+    match r {
+      case let Some(rp) { rp.answer(true); }
+      case is None {}
+    }
+  }
+
+  // The envelope of a sender waiting since 'seen' answers had been collected: answered at once if one has
+  // come since, or if none is outstanding. A wake is only ever "look again", so a sender already parked is
+  // woken rather than lost
+  fn park(self: &mut, seen: u64, rp: actors.ReplyOf[bool]) {
+    if heard != seen || window.unanswered() == 0usize {
+      rp.answer(true);
+    } else {
+      var old = Some[actors.ReplyOf[bool]](rp);
+      old <-> waiter;
+      match old {
+        case let Some(o) { o.answer(true); }
+        case is None {}
+      }
+    }
+  }
+
+  // The Stop noted, taken
+  fn takeStop(self: &mut) Option[Ending] {
+    var w = None[Ending];
+    w <-> why;
+    w
+  }
+}
+
+// A stage that stops cancels the group of the stream feeding it, where it was given one, so that a producer
+// parked on I/O hears of it at once
+fn cancelFeed(group: &Option[CancelGroup]) {
+  #if #defined("MUT_NO_FEED_CANCEL") {} #else {
+    match group {
+      case let &Some(g) { _ = g.cancel(); }
+      case is None {}
+    }
+  }
+}
+
+// ---- a stage over a Transform ----
+
+// What a pull did
+enum Pulled {
+  Wait;                                   // no room for output: wait for an answer and pull again
+  Again;                                  // there may be more to pull
+  Hungry;                                 // the input in hand is used up
+  Over;                                   // the stream is over for this stage
+}
+
+// A stage over a transform 't', its output pieces up to 'linkBytes', run ahead on the stream after it by the
+// budget that stream's receiver set. It takes one input piece at a time, so its answer to a piece is sent
+// when the piece's output has been sent, and a second piece waits its turn.
+//
+//   TransformPass[deflate.Inflater](to, deflate.Inflater.make(deflate.Format.Gzip))
+//   TransformPass[deflate.Inflater](to, inflater, pool)          // its buffers from a pipeline's pool
+//   TransformPass[deflate.Inflater](to, inflater, group)         // 'group' of the stream feeding it, last
+pub actor TransformPass[T: Transform] is PieceSink[IoBuf] {
+  t: T;
+  down: StreamTo[IoBuf];
+  out: Ahead;                   // the output's window, shared with 'collect'
+  turns: Turns;
+  why: Option[Ending];          // the stream is over for us: the reason, as the answers after it are given
+  sated: bool;                  // the transform reached the end of its own stream
+  feed: Option[CancelGroup];    // of the stream feeding us, cancelled when we stop
+
+  pub fn own overload init(self: &new, down: StreamTo[IoBuf], t: T,
+      group: Option[CancelGroup] = None[CancelGroup]) {
+    let budget = down.budget;
+    *self = Self(t: t, down: down, out: Ahead.make(PieceWindow[IoBuf].bytes(budget, ownPool(budget))),
+      turns: Turns.make(), why: None[Ending], sated: false, feed: group);
+  }
+
+  pub fn shared overload init(self: &new, down: StreamTo[IoBuf], t: T, pool: ChunkPool,
+      group: Option[CancelGroup] = None[CancelGroup]) {
+    let budget = down.budget;
+    *self = Self(t: t, down: down, out: Ahead.make(PieceWindow[IoBuf].bytes(budget, pool)),
+      turns: Turns.make(), why: None[Ending], sated: false, feed: group);
+  }
+
+  // The envelope of a behaviour waiting its turn
+  async fn turn(self, rp: actors.ReplyOf[bool]) {
+    turns.arrive(rp);
+  }
+
+  // The collector of the output's answers (THE COLLECTOR). Idle, with no input in hand, the stage holds none of
+  // the buffers that come back, as today's holds none
+  async fn collect(self) {
+    var more = true;
+    while more {
+      match out.next() {
+        case let Some(reply) {
+          let a = await reply;
+          out.took(a);
+          self.noteStop();
+          #if #defined("MUT_KEEP_IDLE_SPARE") {} #else {
+            if !turns.busy { out.window.dropSpare(); }
+          }
+        }
+        case is None { more = false; }
+      }
+    }
+  }
+
+  // The envelope of the behaviour holding the turn, waiting for the collector
+  async fn collected(self, seen: u64, rp: actors.ReplyOf[bool]) {
+    out.park(seen, rp);
+  }
+
+  // What the behaviour holding the turn awaits for one more answer, there being at least one unanswered
+  fn signal(self) actors.Awaitable[bool] {
+    if out.startCollecting() { selfactor.collect(); }
+    let me = selfactor;
+    let seen = out.heard;
+    actors.Awaitable[bool].make(fn(rp: actors.ReplyOf[bool]) [me, seen] { me.collected(seen, rp); })
+  }
+
+  // A piece has been sent: its answer is to be collected
+  fn sentOne(self: &mut) {
+    #if #defined("MUT_NO_COLLECTOR") {} #else {
+      if out.startCollecting() { selfactor.collect(); }
+    }
+  }
+
+  // A Stop the collector heard is ours: the producer hears now, not after our answers are in
+  fn noteStop(self: &mut) {
+    match out.takeStop() {
+      case let Some(w) {
+        self.stopWith(w);
+        if !sated { cancelFeed(&feed); }
+      }
+      case is None {}
+    }
+  }
+
+  pub async fn piece(self, tag: u64, c: IoBuf) PieceAck[IoBuf] {
+    if turns.mustWait() {
+      let me = selfactor;
+      _ = await actors.Awaitable[bool].make(fn(rp: actors.ReplyOf[bool]) [me] { me.turn(rp); });
+    }
+    var cur = c;
+    self.cancelCheck();
+    if why is None && !sated {
+      t.feed(cur.view());
+      var more = true;
+      while more {
+        match self.pullOnce() {
+          case is Wait { _ = await self.signal(); }
+          case is Again {}
+          case is Hungry { more = false; }
+          case is Over { more = false; }
+        }
+      }
+    }
+    // stopped, whoever's the reason: the producer hears now, not after our answers are in
+    if why is Some && !sated { cancelFeed(&feed); }
+    if why is Some && !down.ended() {
+      while out.window.unanswered() > 0usize { _ = await self.signal(); }
+      self.closeDown();
+    }
+    var answer = None[PieceAck[IoBuf]];
+    if !sated {
+      match &why {
+        case let &Some(w) { answer = Some[PieceAck[IoBuf]](Stop[IoBuf](reasonCopy(w))); }
+        case is None {}
+      }
+    }
+    // back to waiting with no input in hand: no buffer is kept for one
+    #if #defined("MUT_KEEP_IDLE_SPARE") {} #else {
+      if turns.queued == 0usize { out.window.dropSpare(); }
+    }
+    turns.leave();
+    match answer {
+      case let Some(a) { return a; }
+      case is None {}
+    }
+    cur.clear();
+    MoreWith[IoBuf](cur)
+  }
+
+  // The end: the transform finishes and its last output goes, every answer is collected, then the one end
+  // goes down
+  pub async fn end(self, tag: u64, how: Ending) {
+    if turns.mustWait() {
+      let me = selfactor;
+      _ = await actors.Awaitable[bool].make(fn(rp: actors.ReplyOf[bool]) [me] { me.turn(rp); });
+    }
+    self.cancelCheck();
+    if why is None && !sated {
+      match how {
+        case is Finished {
+          t.finish();
+          var dry = false;
+          var more = true;
+          while more {
+            match self.pullOnce() {
+              case is Wait { _ = await self.signal(); }
+              case is Again {}
+              case is Hungry {
+                if dry {
+                  self.stopWith(Ending.Failed(AnyError.msg("streams: the transform wants input after the stream's end")));
+                  more = false;
+                }
+                dry = true;
+              }
+              case is Over { more = false; }
+            }
+          }
+          if why is None { why = Some[Ending](Ending.Finished); }
+        }
+        case let Failed(e) { why = Some[Ending](Ending.Failed(e)); }
+      }
+    }
+    while out.window.unanswered() > 0usize { _ = await self.signal(); }
+    self.closeDown();
+    turns.leave();
+  }
+
+  // One pull into a buffer of the window, sent if anything came out; or an answer to await first
+  fn pullOnce(self: &mut) Pulled {
+    self.cancelCheck();
+    if why is Some { return Pulled.Over; }
+    match fresh(&mut out.window, linkBytes) {
+      case is None {
+        if out.window.unanswered() > 0usize { return Pulled.Wait; }
+        return Pulled.Over;
+      }
+      case let Some(b) {
+        var x = b;
+        let st = t.pull(&mut x);
+        if x.isEmpty() {
+          unusedBuffer(&mut out.window, x);
+        } else {
+          let n = x.capacity();
+          out.window.sent(down.sink.piece(down.tag, x), n);
+          self.sentOne();
+        }
+        if st == Status.Done {
+          sated = true;
+          why = Some[Ending](Ending.Finished);
+          return Pulled.Over;
+        }
+        if st == Status.Failed {
+          self.stopWith(self.failure());
+          return Pulled.Over;
+        }
+        if st == Status.NeedInput { return Pulled.Hungry; }
+        return Pulled.Again;
+      }
+    }
+    Pulled.Again
+  }
+
+  fn failure(self: &) Ending {
+    match t.failure() {
+      case let Some(e) { Ending.Failed(e) }
+      case is None { Ending.Failed(AnyError.msg("streams: the transform failed")) }
+    }
+  }
+
+  fn stopWith(self: &mut, w: Ending) {
+    if why is None { why = Some[Ending](w); }
+  }
+
+  fn cancelCheck(self: &mut) {
+    if why is None && !sated && actors.isCancelled() {
+      why = Some[Ending](Ending.Failed(AnyError.msg("streams: cancelled")));
+    }
+  }
+
+  // The one end downstream, with the reason itself; a copy stays for the answers after it. Every answer is in,
+  // so the window's kept buffer goes too: an ended stage holds none
+  fn closeDown(self: &mut) {
+    if down.ended() { return; }
+    #if #defined("MUT_KEEP_SPARE") {} #else { out.window.dropSpare(); }
+    var w = None[Ending];
+    w <-> why;
+    match w {
+      case let Some(e) {
+        why = Some[Ending](reasonCopy(&e));
+        down.end(e);
+      }
+      case is None {}
+    }
+  }
+}
+
+// ---- a stage over a Digester ----
+
+// The piece goes on as it is, and so does its answer: the producer's window bounds the stream. 'to' gets
+// exactly one answer, when the stream ends
+pub actor HashPass[D: Digester] is PieceSink[IoBuf] {
+  d: D;
+  down: StreamTo[IoBuf];
+  to: DigestSink[D.Out];
+  cut: Option[Ending];          // the stage after us said Stop
+  over: bool;                   // the answer to 'to' and the end downstream have gone
+  feed: Option[CancelGroup];    // of the stream feeding us, cancelled when we stop
+
+  pub fn init(self: &new, down: StreamTo[IoBuf], d: D, to: DigestSink[D.Out],
+      group: Option[CancelGroup] = None[CancelGroup]) {
+    *self = Self(d: d, down: down, to: to, cut: None[Ending], over: false, feed: group);
+  }
+
+  // 'feed' and the send are one step before any wait, so pieces in flight together keep their order
+  pub async fn piece(self, tag: u64, c: IoBuf) PieceAck[IoBuf] {
+    self.cancelCheck();
+    if over { return Stop[IoBuf](Ending.Failed(AnyError.msg("streams: cancelled"))); }
+    d.feed(c.view());
+    let a = await down.sink.piece(down.tag, c);
+    match &a {
+      case let &Stop(w) {
+        if cut is None { cut = Some[Ending](reasonCopy(w)); }
+        cancelFeed(&feed);
+      }
+      else {}
+    }
+    a
+  }
+
+  pub async fn end(self, tag: u64, how: Ending) {
+    self.cancelCheck();
+    if over { return; }
+    over = true;
+    match &cut {
+      case let &Some(w) { to.digest(Err[D.Out, AnyError](reasonError(w))); }
+      case is None {
+        match &how {
+          case is Finished { to.digest(Ok[D.Out, AnyError](d.finish())); }
+          case let &Failed(e) { to.digest(Err[D.Out, AnyError](textCopy(e))); }
+        }
+      }
+    }
+    down.end(how);
+  }
+
+  fn cancelCheck(self: &mut) {
+    if over || !actors.isCancelled() { return; }
+    over = true;
+    cancelFeed(&feed);
+    to.digest(Err[D.Out, AnyError](AnyError.msg("streams: cancelled")));
+    down.end(Ending.Failed(AnyError.msg("streams: cancelled")));
+  }
+}
+
+// ---- the file end ----
+
+// Writes each piece at its offset, which it reserves on arrival, so pieces in flight together land where they
+// belong. 'done' gets the bytes written when the stream finished and every write is done, or the failure
+pub actor FileTo is PieceSink[IoBuf] {
+  file: File;
+  at: u64;                      // the next offset to give a piece
+  written: u64;
+  flying: usize;                // writes not yet answered
+  failed: Option[AnyError];
+  ending: Option[Ending];       // the end, arrived while writes were in flight
+  reported: bool;
+  done: OneshotSender[Result[u64, AnyError]];
+  feed: Option[CancelGroup];    // of the stream feeding us, cancelled when we stop
+
+  pub fn init(self: &new, file: File, done: OneshotSender[Result[u64, AnyError]],
+      group: Option[CancelGroup] = None[CancelGroup]) {
+    *self = Self(file: file, at: 0u64, written: 0u64, flying: 0usize, failed: None[AnyError],
+      ending: None[Ending], reported: false, done: done, feed: group);
+  }
+
+  pub async fn piece(self, tag: u64, c: IoBuf) PieceAck[IoBuf] {
+    if failed is None && actors.isCancelled() { failed = Some[AnyError](AnyError.msg("streams: cancelled")); }
+    match &failed {
+      case let &Some(e) {
+        cancelFeed(&feed);
+        return Stop[IoBuf](Ending.Failed(textCopy(e)));
+      }
+      case is None {}
+    }
+    var cur = c;
+    let n = u64.from(cur.len());
+    if n == 0u64 {
+      cur.clear();
+      return MoreWith[IoBuf](cur);
+    }
+    let cap = cur.capacity();
+    let mine = at;
+    at = at + n;
+    flying = flying + 1usize;
+    let w = await file.writeAt(mine, cur);
+    flying = flying - 1usize;
+    var answer = None[PieceAck[IoBuf]];
+    match w {
+      case let Ok(back) {
+        written = written + n;
+        var b = back;
+        b.clear();
+        answer = Some[PieceAck[IoBuf]](MoreWith[IoBuf](b));
+      }
+      case let Err(e) {
+        // a failed write lost the buffer: the producer is answered with an empty one of its size
+        if failed is None { failed = Some[AnyError](AnyError.from(e)); }
+        cancelFeed(&feed);
+        answer = Some[PieceAck[IoBuf]](Stop[IoBuf](Ending.Failed(AnyError.msg("streams: the file write failed"))));
+      }
+    }
+    self.settle();
+    match answer {
+      case let Some(a) { return a; }
+      case is None {}
+    }
+    MoreWith[IoBuf](IoBuf(cap))
+  }
+
+  pub async fn end(self, tag: u64, how: Ending) {
+    if actors.isCancelled() && failed is None { failed = Some[AnyError](AnyError.msg("streams: cancelled")); }
+    ending = Some[Ending](how);
+    self.settle();
+  }
+
+  // The end has come and no write is in flight: the file is closed and 'done' told, once
+  fn settle(self: &mut) {
+    if reported || flying > 0usize || ending is None { return; }
+    reported = true;
+    var old = File.none();
+    old <-> file;
+    var how = None[Ending];
+    how <-> ending;
+    var bad = None[AnyError];
+    bad <-> failed;
+    match bad {
+      case let Some(e) { done.send(Err[u64, AnyError](e)); return; }
+      case is None {}
+    }
+    match how {
+      case let Some(h) {
+        match h {
+          case is Finished { done.send(Ok[u64, AnyError](written)); }
+          case let Failed(e) { done.send(Err[u64, AnyError](e)); }
+        }
+      }
+      case is None {}
+    }
+  }
+}
+
+// ---- the socket end ----
+
+// Reads a connected socket into a stream, in pieces of 'linkBytes', running ahead by the budget the receiver
+// set, its buffers from its own pool or a pipeline's shared one
+pub actor SocketFrom {
+  pool: Option[ChunkPool];
+  streams: GenPool[Ahead];      // each stream being read: its 'run' and its 'collect' share it
+
+  pub fn own overload init(self: &new) {
+    *self = Self(pool: None[ChunkPool], streams: GenPool[Ahead]());
+  }
+
+  pub fn shared overload init(self: &new, pool: ChunkPool) {
+    *self = Self(pool: Some[ChunkPool](pool), streams: GenPool[Ahead]());
+  }
+
+  // Connect to addr and stream what it sends into 'to'
+  pub async fn run(self, addr: SocketAddr, to: StreamTo[IoBuf]) {
+    var dest = to;
+    var mine = ownPool(dest.budget);
+    match &pool {
+      case let &Some(p) { mine = p.clone(); }
+      case is None {}
+    }
+    // the waits on I/O run in the stream's group where the receiver gave one, so that it can end them
+    var waits = actors.currentGroup();
+    #if #defined("MUT_NO_STOP_GROUP") {} #else {
+      match dest.group {
+        case let Some(g) { waits = g; }
+        case is None {}
+      }
+    }
+    var cut = false;                 // that group was cancelled, the message's own was not
+    let r = await aio.connectIn(addr, IoLimits.within(waits));
+    var conn = Socket.none();
+    match r {
+      case let Ok(s) { conn = s; }
+      case let Err(e) {
+        dest.end(Ending.Failed(AnyError.from(e)));
+        return;
+      }
+    }
+    // from here the stream is known by its key alone across every wait
+    let key = streams.add(Ahead.make(PieceWindow[IoBuf].bytes(dest.budget, mine)));
+    var stopped = None[Ending];
+    var more = true;
+    while more {
+      if actors.isCancelled() {
+        stopped = Some[Ending](Ending.Failed(AnyError.msg("streams: cancelled")));
+        more = false;
+      } else if waits.isCancelled() {
+        cut = true;                  // the reason is in the receiver's Stop, collected below
+        more = false;
+      } else {
+        var buf = None[IoBuf];
+        var full = false;
+        match streams.borrowMut(key) {
+          case let Some(a) {
+            #if #defined("MUT_IGNORE_STOP") {} #else {
+              if a.why is Some {
+                stopped = a.takeStop();
+                more = false;
+              }
+            }
+            if more {
+              match fresh(&mut a.window, linkBytes) {
+                case let Some(b) { buf = Some[IoBuf](b); }
+                case is None { full = true; }
+              }
+            }
+          }
+          case is None { more = false; }
+        }
+        if full {
+          _ = await self.signal(key);
+        } else {
+          var taken = None[IoBuf];
+          taken <-> buf;
+          match taken {
+            case let Some(b) {
+              let got = await conn.readIn(b, IoLimits.within(waits));
+              match got {
+                case let Ok(data) {
+                  match streams.borrowMut(key) {
+                    case let Some(a) {
+                      var heardStop = false;
+                      #if #defined("MUT_IGNORE_STOP") {} #else { heardStop = a.why is Some; }
+                      if data.isEmpty() {
+                        unusedBuffer(&mut a.window, data);
+                        more = false;
+                      } else if heardStop {
+                        // a Stop came while the read was parked: what was read is not sent
+                        unusedBuffer(&mut a.window, data);
+                        stopped = a.takeStop();
+                        more = false;
+                      } else {
+                        let n = data.capacity();
+                        a.window.sent(dest.sink.piece(dest.tag, data), n);
+                        #if #defined("MUT_NO_COLLECTOR") {} #else {
+                          if a.startCollecting() { selfactor.collect(key); }
+                        }
+                      }
+                    }
+                    case is None { more = false; }
+                  }
+                }
+                case let Err(e) {
+                  if actors.isCancelled() {
+                    stopped = Some[Ending](Ending.Failed(AnyError.msg("streams: cancelled")));
+                  } else if waits.isCancelled() {
+                    cut = true;
+                  } else {
+                    stopped = Some[Ending](Ending.Failed(AnyError.from(e)));
+                  }
+                  more = false;
+                }
+              }
+            }
+            case is None {}
+          }
+        }
+      }
+    }
+    // every answer in before the end
+    var draining = true;
+    while draining {
+      match streams.borrowMut(key) {
+        case let Some(a) {
+          if a.window.unanswered() == 0usize {
+            draining = false;
+            if stopped is None { stopped = a.takeStop(); }
+          }
+        }
+        case is None { draining = false; }
+      }
+      if draining { _ = await self.signal(key); }
+    }
+    _ = streams.remove(key);
+    // cut short with no Stop to give the reason
+    if stopped is None && cut { stopped = Some[Ending](Ending.Failed(AnyError.msg("streams: cancelled"))); }
+    var how = Ending.Finished;
+    var s = None[Ending];
+    s <-> stopped;
+    match s {
+      case let Some(w) { how = w; }
+      case is None {}
+    }
+    dest.end(how);
+  }                                  // conn closes here
+
+  // The collector of the stream 'key' (THE COLLECTOR): its answers in order, each buffer home as it arrives.
+  // While the read is parked the stream holds the one buffer it fills, so none that comes back is kept
+  async fn collect(self, key: Handle) {
+    var more = true;
+    while more {
+      var next = None[actors.Future[PieceAck[IoBuf]]];
+      match streams.borrowMut(key) {
+        case let Some(a) { next = a.next(); }
+        case is None {}
+      }
+      match next {
+        case let Some(reply) {
+          let ans = await reply;
+          match streams.borrowMut(key) {
+            case let Some(a) {
+              a.took(ans);
+              #if #defined("MUT_KEEP_IDLE_SPARE") {} #else {
+                if a.window.inHand() { a.window.dropSpare(); }
+              }
+            }
+            case is None { more = false; }
+          }
+        }
+        case is None { more = false; }
+      }
+    }
+  }
+
+  // The envelope of 'run', waiting for the collector of the stream 'key'
+  async fn collected(self, key: Handle, seen: u64, rp: actors.ReplyOf[bool]) {
+    match streams.borrowMut(key) {
+      case let Some(a) { a.park(seen, rp); }
+      case is None { rp.answer(false); }
+    }
+  }
+
+  // What 'run' awaits for one more answer of the stream 'key', there being at least one unanswered
+  fn signal(self, key: Handle) actors.Awaitable[bool] {
+    var seen = 0u64;
+    match streams.borrowMut(key) {
+      case let Some(a) {
+        seen = a.heard;
+        if a.startCollecting() { selfactor.collect(key); }
+      }
+      case is None {}
+    }
+    let me = selfactor;
+    actors.Awaitable[bool].make(fn(rp: actors.ReplyOf[bool]) [me, key, seen] { me.collected(key, seen, rp); })
+  }
+}

@@ -214,9 +214,13 @@ enum SiMode {
     // that could run any code (through a virtual reference or a function pointer) is taken to write
     // any global, whatever it is handed
     SiModeTypeG,
-    SiModeOutG
+    SiModeOutG,
+    // Does the function, or one it calls, name a global that reaches 'cont', so that it may
+    // come by a value of one without being handed it (siFromGlobal)
+    SiModeNames
 };
 #define SiOwnKey 0x10   // a bit of the memo's mode, not a mode: asked under skOwnShared
+#define SiGlobalMax 64
 
 typedef struct {
     int mode;               // SiMode, SiModeTypeG and SiModeOutG as SiModeType and SiModeOut
@@ -241,6 +245,11 @@ typedef struct {
     int nheld;
     INode *consumed[SiHeldMax];     // readRaw calls whose result is written back in place
     int nconsumed;
+    // SiModeOut: the locals that may hold a global's value, or a way to one (siFromGlobal).
+    // Past the room for them, every local is taken to
+    VarDclNode *fromglobal[SiGlobalMax];
+    int nfromglobal;
+    int allfromglobal;
 } SiCtx;
 
 // Is this variable the parameter, or a local that holds a reference to a place of
@@ -520,6 +529,182 @@ static int siWriteHits(INode *lval, SiCtx *c) {
     return t != NULL && siTypeHoldsStorage(t);
 }
 
+// ---- What a global gives, in SiModeOut ----------------------------------------
+//
+// A function handed nothing that reaches the collection's type comes by a value of it
+// that others hold only from a global: by the global's name, or by a value that came from
+// one -- an owner copied out ('let t = cur', a pattern's binding of 'match cur'), or what
+// a call that names a global answers ('cur()'). A store through any of those is a store
+// into what the global holds, as one spelled from its name is
+
+static int siAsk(FnDclNode *fn, uint32_t k, int mode, INode *cont);
+
+// Does a value of this type hold, own or point at one of the collection's type?
+static int siReachesCont(INode *type, INode *cont) {
+    return type != NULL && (itypeGetTypeDcl(type) == cont || reshapeReach(type, cont, 0) != 0);
+}
+
+static int siIsGlobalVar(VarDclNode *var) {
+    return var->scope == 0 || (var->flags & FlagStatic);
+}
+
+static int siHeldFromGlobal(SiCtx *c, VarDclNode *var) {
+    if (c->allfromglobal)
+        return var->scope > 0;
+    for (int i = 0; i < c->nfromglobal; ++i) {
+        if (c->fromglobal[i] == var)
+            return 1;
+    }
+    return 0;
+}
+
+static FnDclNode *siCalleeOf(FnCallNode *call) {
+    INode *fnn = call->objfn;
+    return isNameUseNode(fnn) && ((NameUseNode *)fnn)->dclnode && ((NameUseNode *)fnn)->dclnode->tag == FnDclTag
+        ? (FnDclNode *)((NameUseNode *)fnn)->dclnode : NULL;
+}
+
+// Does the call itself bring a global's value, whatever it is handed: its callee, or what
+// that calls, names a global reaching the type, or is code that cannot be read and answers
+// a value that reaches it
+static int siCallNames(FnCallNode *call, SiCtx *c) {
+    FnDclNode *callee = siCalleeOf(call);
+    if (callee && ((callee->dclinfo.facts & DclIntrinsic) || (callee->value && callee->value->tag == IntrinsicTag)
+            || fnDclIsInit(callee)))
+        return 0;
+    if ((call->flags & FlagVDisp) || !siVisible(callee))
+        return siReachesCont(call->vtype, c->cont);
+    int answer = siAsk(callee, 0, SiModeNames, c->cont);
+    if (answer == SiPending)
+        c->pending = 1;
+    return answer == SiYes;
+}
+
+static int siGlobalNode(INode *node, void *vc) {
+    SiCtx *c = (SiCtx *)vc;
+    if (node->tag == FnCallTag)
+        return siCallNames((FnCallNode *)node, c);
+    VarDclNode *var = siNamedVar(node);
+    if (var == NULL)
+        return 0;
+    if (siIsGlobalVar(var))
+        return siReachesCont(((IExpNode *)node)->vtype, c->cont);
+    // A local holds a global's value only by a way to it (a reference, an owner, a virtual
+    // reference): a value of the type it holds itself is a copy, and its own
+    return siHeldFromGlobal(c, var)
+        && (reshapeReach(((IExpNode *)node)->vtype, c->cont, 0) & (ReachBorrowed | ReachVirtual)) != 0;
+}
+
+// May this place or value be a global's, or reached from one?
+static int siFromGlobal(INode *e, SiCtx *c) {
+    return siVisit(e, siGlobalNode, c);
+}
+
+// The local a place is of, through fields, elements and dereferences, else NULL
+static VarDclNode *siPlaceLocal(INode *e) {
+    for (;;) {
+        switch (e->tag) {
+        case CastTag:
+            e = ((CastNode *)e)->exp;
+            continue;
+        case BorrowTag:
+        case ArrayBorrowTag:
+            e = ((RefNode *)e)->vtexp;
+            continue;
+        case DerefTag:
+            e = ((StarNode *)e)->vtexp;
+            continue;
+        case FldAccessTag:
+        case ArrIndexTag:
+            e = ((FnCallNode *)e)->objfn;
+            continue;
+        case FnCallTag:
+            if (((FnCallNode *)e)->args == NULL || ((FnCallNode *)e)->args->used == 0)
+                return NULL;
+            e = nodesGet(((FnCallNode *)e)->args, 0);
+            continue;
+        default: {
+            VarDclNode *var = siNamedVar(e);
+            return var && !siIsGlobalVar(var) ? var : NULL;
+        }
+        }
+    }
+}
+
+static void siHoldFromGlobal(SiCtx *c, VarDclNode *var) {
+    if (var == NULL || siIsGlobalVar(var) || siHeldFromGlobal(c, var))
+        return;
+    if (c->nfromglobal < SiGlobalMax)
+        c->fromglobal[c->nfromglobal++] = var;
+    else
+        c->allfromglobal = 1;
+}
+
+// One pass over a body for the locals that may hold a global's value: one given such a
+// value, one a place of which is, and one lent to be written to a call that has one
+static int siGlobalLocals(INode *node, void *vc) {
+    SiCtx *c = (SiCtx *)vc;
+    switch (node->tag) {
+    case VarDclTag: {
+        VarDclNode *var = (VarDclNode *)node;
+        if (var->value && siFromGlobal(var->value, c))
+            siHoldFromGlobal(c, var);
+        break;
+    }
+    case AssignTag: {
+        AssignNode *asgn = (AssignNode *)node;
+        if (asgn->lval->tag != VTupleTag && siFromGlobal(asgn->rval, c))
+            siHoldFromGlobal(c, siPlaceLocal(asgn->lval));
+        else if (asgn->lval->tag == VTupleTag && siFromGlobal(asgn->rval, c)) {
+            INode **nodesp;
+            uint32_t cnt;
+            for (nodesFor(((TupleNode *)asgn->lval)->elems, cnt, nodesp))
+                siHoldFromGlobal(c, siPlaceLocal(*nodesp));
+        }
+        break;
+    }
+    case SwapTag: {
+        SwapNode *swap = (SwapNode *)node;
+        if (siFromGlobal(swap->lval, c) || siFromGlobal(swap->rval, c)) {
+            siHoldFromGlobal(c, siPlaceLocal(swap->lval));
+            siHoldFromGlobal(c, siPlaceLocal(swap->rval));
+        }
+        break;
+    }
+    case FnCallTag: {
+        FnCallNode *call = (FnCallNode *)node;
+        if (call->args == NULL || !siFromGlobal(node, c))
+            break;
+        INode **nodesp;
+        uint32_t cnt;
+        for (nodesFor(call->args, cnt, nodesp)) {
+            INode *at = iexpGetTypeDcl(*nodesp);
+            if (at && at->tag == RefTag && (permGetFlags(((RefNode *)at)->perm) & MayWrite))
+                siHoldFromGlobal(c, siPlaceLocal(*nodesp));
+        }
+        break;
+    }
+    default:
+        break;
+    }
+    return 0;
+}
+
+// SiModeNames: a global named, or a call that brings one
+static int siNamesNode(INode *node, void *vc) {
+    SiCtx *c = (SiCtx *)vc;
+    if (node->tag == FnCallTag) {
+        if (siCallNames((FnCallNode *)node, c))
+            c->hit = 1;
+    }
+    else {
+        VarDclNode *var = siNamedVar(node);
+        if (var && siIsGlobalVar(var) && siReachesCont(((IExpNode *)node)->vtype, c->cont))
+            c->hit = 1;
+    }
+    return c->hit;
+}
+
 // ---- The type modes: a function that reshapes a value of one type --------------
 
 // Is the place written, or some value it is inside, of the collection's type: its
@@ -583,7 +768,7 @@ static int siTypeWriteHits(INode *lval, SiCtx *c) {
             && (reshapeIsSum(c->cont) || reshapeIsOwner(c->cont) || !siPlaceInCont(lval, c->cont)
                 || (c->own && !siStoredShaping(iexpGetTypeDcl(lval), 0))))
         return 0;
-    return c->mode != SiModeOut || siRooted(lval, c);
+    return c->mode != SiModeOut || siRooted(lval, c) || siFromGlobal(lval, c);
 }
 
 // May the callee write through its parameter 'k'?
@@ -760,11 +945,14 @@ static void siCallType(FnCallNode *call, SiCtx *c) {
         INode *ba = arg;
         while (ba->tag == CastTag && !(ba->flags & FlagConvert))
             ba = ((CastNode *)ba)->exp;
-        // A value the function owns whole, lent or handed over, is nobody else's
-        if ((ba->tag == BorrowTag && reshapeUniqueLocalOf(((RefNode *)ba)->vtexp, c->cont))
+        // A value the function owns whole, lent or handed over, is nobody else's. (An owner
+        // copied out of a global is not: what it points at is the global's)
+        if (c->mode == SiModeOut) {
+            if (!siRooted(ba, c) && !siFromGlobal(ba, c))
+                continue;
+        }
+        else if ((ba->tag == BorrowTag && reshapeUniqueLocalOf(((RefNode *)ba)->vtexp, c->cont))
                 || reshapeUniqueLocalOf(ba, c->cont))
-            continue;
-        if (c->mode == SiModeOut && !siRooted(ba, c))
             continue;
         INode *at = iexpGetTypeDcl(arg);
         if (reshapeReach(at, c->cont, 1) == 0)
@@ -1005,7 +1193,16 @@ static int siAsk(FnDclNode *fn, uint32_t k, int mode, INode *cont) {
         ctx.isref = ptype != NULL && ptype->tag == RefTag;
         ctx.pointee = ctx.isref ? itypeGetTypeDcl(((RefNode *)ptype)->vtexp) : NULL;
     }
-    siVisit(fn->value, siWalkNode, &ctx);
+    // Which locals hold what a global gave, worked out before the walk that asks: a loop
+    // may store through one before the line that gives it the value
+    if (base == SiModeOut) {
+        int held;
+        do {
+            held = ctx.nfromglobal + ctx.allfromglobal;
+            siVisit(fn->value, siGlobalLocals, &ctx);
+        } while (ctx.nfromglobal + ctx.allfromglobal > held);
+    }
+    siVisit(fn->value, base == SiModeNames ? siNamesNode : siWalkNode, &ctx);
     // An element read into a local that is used otherwise than written back left
     for (int i = 0; i < ctx.nheld && !ctx.hit; ++i) {
         if (ctx.helduses[i] != ctx.heldwrites[i])

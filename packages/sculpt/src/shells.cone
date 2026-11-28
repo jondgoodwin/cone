@@ -1,0 +1,220 @@
+// ======== Shells: a triangle mesh's connected pieces ========
+//
+// An STL or any scan is often many separate pieces in one file (a horse: the
+// body, straps, buckles, a hair strand each). The shells of a Mesh are its
+// connected pieces: triangles joined when they share an edge, an edge being
+// a pair of vertices, whichever way each triangle runs it. Triangles that
+// meet only at a vertex are different shells. An edge three or more triangles
+// share joins them all. A Mesh welds nothing (an STL's readers do, 'meshFromStl'
+// among them), so two triangles that overlap with different vertices are
+// different shells.
+//
+// - 'triangleShells': each triangle's shell number. Shells are numbered from 0
+//   in the order of their lowest triangle, so the numbering is the same on every
+//   run and does not depend on the vertex order.
+// - 'splitShells': the shells as a list of meshes, in that order. Each is a
+//   Mesh of its own (this package works on triangle meshes without a face
+//   channel, so a Mesh per shell is the form that carries every channel; the
+//   shell numbers of 'triangleShells' are the other form), by 'takeTriangles'.
+// - 'takeTriangles': a Mesh of the listed triangles in the listed order, vertices
+//   numbered by their first use, with the positions, normals, uvs, colors and
+//   tangents of the vertices it keeps, and the material groups of the
+//   triangles it keeps (runs of one material become one group; a triangle in no
+//   group is in none).
+
+// A list of meshes, one for each of a mesh's shells, say
+pub alias Shells = List[Mesh];
+
+// Each triangle's shell, numbered from 0 by the shell's lowest triangle
+pub fn triangleShells(m: &Mesh) List[u32] {
+  let nt = m.indices.len() / 3usize;
+  var parent = List[u32].withCapacity(nt);
+  var t = 0usize;
+  while t < nt {
+    parent.push(u32.from(t));
+    t = t + 1usize;
+  }
+  // The first triangle to name each edge; each later one joins it
+  var seen = Dict[u64, u32]();
+  t = 0usize;
+  while t < nt {
+    var k = 0usize;
+    while k < 3usize {
+      let a = *m.indices[3usize * t + k];
+      let b = *m.indices[3usize * t + (k + 1usize) % 3usize];
+      if a != b {
+        let lo = if a < b { a } else { b };
+        let hi = if a < b { b } else { a };
+        let key = (u64.from(lo) << 32u64) | u64.from(hi);
+        match seen.getCopy(&key) {
+          case let Some(first) { joinSets(&mut parent, first, u32.from(t)); }
+          else { seen.insert(key, u32.from(t)); }
+        }
+      }
+      k = k + 1usize;
+    }
+    t = t + 1usize;
+  }
+  // A set's root is its lowest member, so numbering the roots as they come
+  // numbers the shells by lowest triangle
+  var number = List[u32].withCapacity(nt);
+  var out = List[u32].withCapacity(nt);
+  var next = 0u32;
+  t = 0usize;
+  while t < nt {
+    number.push(NoIndex);
+    t = t + 1usize;
+  }
+  t = 0usize;
+  while t < nt {
+    let r = usize.from(rootOf(&mut parent, u32.from(t)));
+    if *number[r] == NoIndex {
+      number.set(r, next);
+      next = next + 1u32;
+    }
+    out.push(*number[r]);
+    t = t + 1usize;
+  }
+  out
+}
+
+// The shells of the mesh as meshes, in the order of their lowest triangles
+pub fn splitShells(m: &Mesh) Shells {
+  let ids = triangleShells(m);
+  var count = 0u32;
+  var t = 0usize;
+  while t < ids.len() {
+    if *ids[t] + 1u32 > count { count = *ids[t] + 1u32; }
+    t = t + 1usize;
+  }
+  // The triangles grouped by shell, by counting: shell s's are flat[start[s] ..< start[s + 1]]
+  var start = List[u32]();
+  var s = 0u32;
+  while s <= count {
+    start.push(0u32);
+    s = s + 1u32;
+  }
+  t = 0usize;
+  while t < ids.len() {
+    let at = usize.from(*ids[t]) + 1usize;
+    start.set(at, *start[at] + 1u32);
+    t = t + 1usize;
+  }
+  s = 0u32;
+  while s < count {
+    start.set(usize.from(s) + 1usize, *start[usize.from(s) + 1usize] + *start[usize.from(s)]);
+    s = s + 1u32;
+  }
+  var fill = List[u32]();
+  var flat = List[u32]();
+  s = 0u32;
+  while s < count {
+    fill.push(*start[usize.from(s)]);
+    s = s + 1u32;
+  }
+  t = 0usize;
+  while t < ids.len() {
+    flat.push(0u32);
+    t = t + 1usize;
+  }
+  t = 0usize;
+  while t < ids.len() {
+    let sh = usize.from(*ids[t]);
+    flat.set(usize.from(*fill[sh]), u32.from(t));
+    fill.set(sh, *fill[sh] + 1u32);
+    t = t + 1usize;
+  }
+  let all = flat.view();
+  var remap = List[u32].withCapacity(m.positions.len());
+  var v = 0usize;
+  while v < m.positions.len() {
+    remap.push(NoIndex);
+    v = v + 1usize;
+  }
+  var out = Shells();
+  s = 0u32;
+  while s < count {
+    let lo = usize.from(*start[usize.from(s)]);
+    let hi = usize.from(*start[usize.from(s) + 1usize]);
+    out.push(takeWith(m, &all[lo ..< hi], &mut remap));
+    s = s + 1u32;
+  }
+  out
+}
+
+// A Mesh of the triangles numbered in 'tris' (a number past the last triangle
+// is ignored), in that order
+pub fn takeTriangles(m: &Mesh, tris: &Array[u32]) Mesh {
+  var remap = List[u32].withCapacity(m.positions.len());
+  var v = 0usize;
+  while v < m.positions.len() {
+    remap.push(NoIndex);
+    v = v + 1usize;
+  }
+  takeWith(m, tris, &mut remap)
+}
+
+// 'takeTriangles' with the vertex table given, every entry NoIndex, and left so
+fn takeWith(m: &Mesh, tris: &Array[u32], remap: &mut List[u32]) Mesh {
+  let nt = m.indices.len() / 3usize;
+  let hasNormal = m.normals.len() == m.positions.len() && m.normals.len() > 0usize;
+  let hasUv = m.uvs.len() == m.positions.len() && m.uvs.len() > 0usize;
+  let hasColor = m.colors.len() == m.positions.len() && m.colors.len() > 0usize;
+  let hasTangent = m.tangents.len() == m.positions.len() && m.tangents.len() > 0usize;
+  var out = Mesh();
+  var used = List[u32]();
+  var mats = List[u32]();
+  var i = 0usize;
+  while i < tris.len {
+    let t = usize.from(tris[i]);
+    if t < nt {
+      var k = 0usize;
+      while k < 3usize {
+        let v = *m.indices[3usize * t + k];
+        if *remap[usize.from(v)] == NoIndex {
+          remap.set(usize.from(v), u32.from(out.positions.len()));
+          used.push(v);
+          out.positions.push(*m.positions[usize.from(v)]);
+          if hasNormal { out.normals.push(*m.normals[usize.from(v)]); }
+          if hasUv { out.uvs.push(*m.uvs[usize.from(v)]); }
+          if hasColor { out.colors.push(*m.colors[usize.from(v)]); }
+          if hasTangent { out.tangents.push(*m.tangents[usize.from(v)]); }
+        }
+        out.indices.push(*remap[usize.from(v)]);
+        k = k + 1usize;
+      }
+      mats.push(materialOf(m, t));
+    }
+    i = i + 1usize;
+  }
+  i = 0usize;
+  while i < used.len() {
+    remap.set(usize.from(*used[i]), NoIndex);
+    i = i + 1usize;
+  }
+  if m.groups.len() > 0usize {
+    var t = 0usize;
+    while t < mats.len() {
+      let mat = *mats[t];
+      var e = t + 1usize;
+      while e < mats.len() && *mats[e] == mat { e = e + 1usize; }
+      if mat != NoIndex { out.addGroup(u32.from(3usize * t), u32.from(3usize * (e - t)), mat); }
+      t = e;
+    }
+  }
+  out
+}
+
+// The material slot of triangle t: its group's, NoIndex when no group holds it
+// (or the mesh has none, when slot 0 is every triangle's)
+fn materialOf(m: &Mesh, t: usize) u32 {
+  if m.groups.len() == 0usize { return 0u32; }
+  var g = 0usize;
+  while g < m.groups.len() {
+    let grp = *m.groups[g];
+    let s = usize.from(grp.start);
+    if 3usize * t >= s && 3usize * t < s + usize.from(grp.count) { return grp.material; }
+    g = g + 1usize;
+  }
+  NoIndex
+}

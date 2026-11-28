@@ -297,7 +297,7 @@ int fnIsTraitMethod(INode *dclnode) {
 // - named by a body an importer expands (DclExpandReached): an inline,
 //   generic or macro body, a trait default, a generic type's method --
 //   private or not; or
-// - a module's 'init', its 'final' or the 'drop' it is given (DclLifecycle),
+// - a module's 'init' or its 'final' (DclLifecycle),
 //   public or not, since the program's stitched init and final call them; or
 // - a public function or global of a module; or
 // - a type or function an 'actor' generated, or a function of such a type

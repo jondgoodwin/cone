@@ -37,10 +37,9 @@ typedef struct ModuleNode {
     INode *traitname;        // 'mod A is T': T as written, a NameUseNode bound to the module trait once modTraitConform finds it; else NULL
     struct ModTraitNode *trait; // The module trait 'is' names, once resolved; else NULL
     uint32_t ntaken;         // How many of 'nodes', at its end, are copies of the trait's defaults, made resolved (modTraitConform)
-    Nodes *setorder;         // The globals its 'init' assigns, in the order the flow pass first met an assignment to each (modInitNoteSet); NULL where none
     Nodes *setups;           // The assignments that set its 'let' globals given a value that is not a constant (modAddSetup): in the order type check met them, then in the order they run once modLifecycle has ordered them; NULL where none
     struct FnDclNode *initfn; // The module's own 'init', once modLifecycle has checked it; else NULL
-    struct FnDclNode *finalfn; // What finalizes the module: the 'drop' modLifecycle gives it where a global needs dropping, else its own 'final'; else NULL
+    struct FnDclNode *finalfn; // The module's own 'final', once modLifecycle has checked it; else NULL. No global is finalized
     GenericInfo *genericinfo; // 'mod stack[T]': a generic module, its type parameters and its instances; else NULL
     struct ModuleNode *generic; // An instance of a generic module: the generic it was cloned from; else NULL
     Nodes *instdeps;         // An instance: the modules it follows in the init order besides its generic (pgmInstanceOrder); else NULL
@@ -63,10 +62,6 @@ void modHook(ModuleNode *oldmod, ModuleNode *newmod);
 // Whether a module is a generic module, or a submodule inside one: compiled
 // only as each instance's copy of it, never itself type checked or generated
 int modIsTemplate(ModuleNode *mod);
-
-// Whether the module's finalizer finalizes this global (itypeNeedsFinal, and
-// not C's storage): what modGiveDrop builds and an include file keeps
-int modGlobalFinalized(struct VarDclNode *var);
 
 // Put every name each of the program's modules holds by FOLDING into its
 // namespace: what its 'extends' and its imports admit, what its globals' 'use'
@@ -166,6 +161,5 @@ void modInitCall(struct FlowState *fstate, struct FnCallNode *call);
 // refuse the value as it refuses any global's
 int modAddSetup(struct VarDclNode *var);
 void modInitFlowEnd(ModuleNode *mod, uint16_t *saved);
-void modInitNoteSet(struct VarDclNode *var);
 
 #endif

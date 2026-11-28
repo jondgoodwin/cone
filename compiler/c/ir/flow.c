@@ -449,6 +449,69 @@ VarDclNode *flowLvalRootVar(INode *lval) {
     }
 }
 
+// The use of the local whose own storage the element or range 'index' picks
+// lies in, or NULL. The way to it goes through fields, elements of arrays held
+// by value, and the borrows type check makes of them to borrow from it ('&a[i]'
+// is '(&a)[i]', and each link of the chain after it, FlagBorrow, gives the next
+// reference into the same storage). Any other reference on the way is not the
+// variable's own storage: what happens to it meanwhile is the loan walk's
+// (flowGateIndex)
+static NameUseNode *flowIndexedLocal(INode *index) {
+    INode *place = index;
+    while (1) {
+        if (isNameUseNode(place) && isExpNode(place)) {
+            INode *dcl = ((NameUseNode *)place)->dclnode;
+            if (dcl->tag != VarDclTag || ((VarDclNode *)dcl)->scope == 0 || (dcl->flags & FlagStatic))
+                return NULL;
+            return (NameUseNode *)place;
+        }
+        switch (place->tag) {
+        case FldAccessTag:
+        case ArrIndexTag: {
+            INode *from = ((FnCallNode *)place)->objfn;
+            uint16_t type = iexpGetTypeDcl(from)->tag;
+            int chain = from->tag == BorrowTag || from->tag == ArrayBorrowTag
+                || ((from->tag == ArrIndexTag || from->tag == FldAccessTag) && (from->flags & FlagBorrow));
+            if (!chain && (type == RefTag || type == ArrayRefTag || type == VirtRefTag || type == PtrTag))
+                return NULL;
+            place = from;
+            break;
+        }
+        case BorrowTag:
+        case ArrayBorrowTag:
+            place = ((RefNode *)place)->vtexp;
+            break;
+        case CastTag:
+            if (place->flags & FlagConvert)
+                return NULL;
+            place = ((CastNode *)place)->exp;
+            break;
+        default:
+            return NULL;
+        }
+    }
+}
+
+// Walk the indexes of a place read or borrowed. Generation makes the address of
+// what is indexed before it makes the index, and reaches the element after, so
+// an index that moves the variable holding what is indexed uses it after the
+// move, as 'let i = take(a); a[i]' does. (A store's index is walked before the
+// store asks about its variable, assignlvalrtype)
+void flowIndexArgs(FlowState *fstate, FnCallNode *index) {
+    NameUseNode *use = flowIndexedLocal((INode *)index);
+    VarDclNode *var = use ? (VarDclNode *)use->dclnode : NULL;
+    // One already moved was refused as the place was walked
+    int held = var && !(var->flowtempflags & (VarMoved | VarHollow));
+    flowGateIndex(fstate, (INode *)index);
+    INode **argsp;
+    uint32_t cnt;
+    for (nodesFor(index->args, cnt, argsp))
+        flowLoadValue(fstate, argsp);
+    if (held && (var->flowtempflags & (VarMoved | VarHollow)))
+        errorMsgNode((INode *)use, ErrorMove,
+            "This variable's value is moved out by the index, before the element is reached. It is no longer there to index.");
+}
+
 // A copy of 'nodes' with 'node' added, so that a list an undo log remembers is
 // never changed under it
 static Nodes *flowNodesWith(Nodes *nodes, INode *node) {
@@ -2294,7 +2357,7 @@ static int flowGateReachesOwner(INode *type, int depth) {
     case ArrayRefTag:
     case VirtRefTag: {
         RefNode *ref = (RefNode *)type;
-        uint16_t flags = permGetFlags(ref->perm);
+        uint16_t flags = permWriterFlags(ref->perm);
         if (itypeGetTypeDcl(ref->region) != borrowRef && (flags & MayAlias) && !(flags & MayIntRefSum))
             return 1;
         // A borrowed trait object: what is behind it is not named, and may hold such an owner
@@ -2524,6 +2587,49 @@ static int flowGatePlaceLent(INode *place) {
             return 1;
         default:
             return 0;
+        }
+    }
+}
+
+// A call is lent what an owning reference points at ('run(&mut *t.task)'), the owner one
+// others may share, of a type some 'var' global reaches: the global may be another way to
+// that owner, and the callee may store over it by the global's name, freeing what it was
+// lent. No other argument shows it, so the call itself has the function walked
+void flowGateGlobalOwner(FlowState *fstate, Nodes *args) {
+    if (reshapeGlobalCount() == 0)
+        return;
+    INode **argsp;
+    uint32_t cnt;
+    for (nodesFor(args, cnt, argsp)) {
+        INode *place = *argsp;
+        INode *lent = iexpGetTypeDcl(place);
+        if ((lent->tag != RefTag && lent->tag != ArrayRefTag && lent->tag != VirtRefTag) || !flowGateIsBorrowRef(lent))
+            continue;
+        // Down the way to what is lent. An owner on it is one dereferenced, or one converted
+        // to the borrow ('t.task.run()')
+        while (1) {
+            INode *from;
+            if (place->tag == BorrowTag || place->tag == ArrayBorrowTag)
+                from = ((RefNode *)place)->vtexp;
+            else if (place->tag == CastTag)
+                from = ((CastNode *)place)->exp;
+            else if (place->tag == FldAccessTag || place->tag == ArrIndexTag)
+                from = ((FnCallNode *)place)->objfn;
+            else if (place->tag == DerefTag)
+                from = ((StarNode *)place)->vtexp;
+            else
+                break;
+            if (place->tag == DerefTag || place->tag == CastTag) {
+                INode *type = iexpGetTypeDcl(from);
+                if ((type->tag == RefTag || type->tag == ArrayRefTag || type->tag == VirtRefTag)
+                        && !flowGateIsBorrowRef(type)
+                        && (permGetFlags(((RefNode *)type)->perm) & MayAliasWrite)
+                        && reshapeMutGlobalsReach(reshapeOwnerCont(type))) {
+                    fstate->gate |= FlowGateShape;
+                    return;
+                }
+            }
+            place = from;
         }
     }
 }

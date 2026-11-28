@@ -40,6 +40,7 @@ support = ["modulesub.cone",
            "modulemacro.cone", "modulemacro_overload.cone", "moduledeclared.cone",
            "modulefold.cone", "modulefoldlate.cone", "modfolder",
            "moduleextbase.cone", "modulepkgs", "modulepkgfiles", "modulefileorder", "modtree",
+           "moduleexitpkgs",
            "moduleinline.cone", "moduleextern.cone",
            "modulenomod.cone", "modulecomments.cone", "modulecfree.cone",
            "module_gpu_cbinding.cone"]
@@ -1113,12 +1114,11 @@ diagnostics = 10
 # what 'init' and 'final' must be.
 [scenario.module_init]
 category = "run"
-description = "Every module's 'init' in the module order and every finalizer in the reverse, through 'initAll()' and 'finalAll()': a 'let' global assigned by 'init', one module's 'init' reading another's global, a module with only 'final', and a module's 'drop' finalizing its globals after its 'final'"
+description = "Every module's 'init' in the module order and every 'final' in the reverse, through 'initAll()' and 'finalAll()': a 'let' global assigned by 'init', one module's 'init' reading another's global, a module with only 'final', and no global finalized, though some have types with a 'final'"
 tags = ["typecheck", "genllvm", "runtime"]
 
-# The stitched pair is the program's own. A module's finalizer is the 'drop' it
-# is given where a global needs finalizing -- base's, with no 'final' of base's
-# own, and middle's -- and its own 'final' otherwise: top has no 'drop'.
+# The stitched pair is the program's own. A module's finalizer is its own
+# 'final': base has none, and no module is given a 'drop' for its globals.
 [[scenario.module_init.check]]
 name = "the-stitched-pair-and-each-modules-finalizer"
 target = "symbols"
@@ -1126,29 +1126,53 @@ contains = [
   "define internal cone.initAll comdat nodeduplicate",
   "define internal cone.finalAll comdat nodeduplicate",
   "define internal base.init comdat nodeduplicate",
-  "define internal base.drop comdat nodeduplicate",
-  "define internal middle.drop comdat nodeduplicate",
+  "define internal middle.final comdat nodeduplicate",
   "define internal top.final comdat nodeduplicate",
   "global internal base.mark comdat nodeduplicate",
 ]
-excludes = ["top.drop", "top.init", "base.final", "constant internal base.mark"]
+excludes = ["base.drop", "middle.drop", "top.drop", "top.init", "base.final", "constant internal base.mark"]
 
 [scenario.module_final_globals]
 category = "run"
-description = "A module's finalizer releases every global whose value has anything to do as it dies, after the module's 'final', in the reverse of declaration order and once each: an owning reference, single or counted, plain or virtual (the counted one shared with a local first), a tuple and an array of values that finalize"
+description = "No global is finalized at the program's end: not an owning reference, plain or virtual, a tuple or an array of values that finalize, or owners behind a lock, though the module's 'final' runs and a value assigned over is finalized; the module may declare a 'drop' of its own"
 tags = ["genllvm", "runtime"]
+
+[scenario.module_final_flush]
+category = "run"
+description = "A module's 'final' writes out what a global still holds, as anything a program must do outside the process is done there, and the global's own value is never finalized"
+tags = ["genllvm", "runtime"]
+
+[scenario.module_global_exit_order_actors]
+category = "run"
+description = "A running actor reads a dependency's global after 'main' returns, with 'actors' imported before the module holding it: the global is never finalized, so the order of the module finalizers does not matter to it"
+tags = ["genllvm", "runtime"]
+
+# 'cache' is a package on the search path, not a submodule, so that the order of
+# the two import lines is the order of the two packages
+[[scenario.module_global_exit_order_actors.run]]
+name = "search-path"
+options = ["--path=test/cases/module/moduleexitpkgs"]
+
+[scenario.module_global_exit_order_cache]
+category = "run"
+description = "As module_global_exit_order_actors with the two imports exchanged, printing the same"
+tags = ["genllvm", "runtime"]
+
+[[scenario.module_global_exit_order_cache.run]]
+name = "search-path"
+options = ["--path=test/cases/module/moduleexitpkgs"]
 
 [scenario.module_init_link]
 category = "run"
-description = "A package compiled on its own, whose 'init' and finalizer the program's stitched init and final call through the include file its compile generates, and whose type's private 'final' the program's drop of a value calls, linked and run"
+description = "A package compiled on its own, whose 'init' and 'final' the program's stitched init and final call through the include file its compile generates, and whose type's private 'final' the program's drop of a value calls, linked and run"
 tags = ["genllvm", "runtime"]
 link = ["package/lib.conebuild"]
 include = ["include/lib.cone"]
 
-# lib's 'init', 'final' and 'drop' are private, and a library compile exports
-# them: the program's stitched init and final call them from another object.
-# So is Handle's 'final', which the program's drop of a Handle it made calls:
-# a type's 'final' and 'clone' are called wherever a value is dropped or copied.
+# lib's 'init' and 'final' are private, and a library compile exports them: the
+# program's stitched init and final call them from another object. So is
+# Handle's 'final', which the program's drop of a Handle it made calls: a type's
+# 'final' and 'clone' are called wherever a value is dropped or copied.
 [[scenario.module_init_link.check]]
 name = "the-library-exports-its-lifecycle"
 target = "symbols"
@@ -1156,24 +1180,21 @@ object = "lib"
 contains = [
   "define lib.init comdat nodeduplicate",
   "define lib.final comdat nodeduplicate",
-  "define lib.drop comdat nodeduplicate",
   "define lib.Handle.final comdat nodeduplicate",
 ]
+excludes = ["define lib.drop"]
 
-# The program derives lib's finalizer from the include file as lib's compile
-# does from lib's source -- a 'drop', since a global it declares finalizes --
-# and declares what its stitched pair calls. lib's 'final' is called only from
-# lib's 'drop', so the program never names it.
+# The program declares what its stitched pair calls, from the include file.
 [[scenario.module_init_link.check]]
-name = "the-program-calls-lib-init-and-drop"
+name = "the-program-calls-lib-init-and-final"
 target = "symbols"
 contains = [
   "declare lib.init",
-  "declare lib.drop",
+  "declare lib.final",
   "define internal cone.initAll comdat nodeduplicate",
   "define internal cone.finalAll comdat nodeduplicate",
 ]
-excludes = ["declare lib.final", "define lib.init", "define lib.drop"]
+excludes = ["declare lib.drop", "define lib.init", "define lib.final"]
 
 # A package the program reaches only through other packages: the program
 # imports a and c, each of which imports b, and b holds a submodule. b and its
@@ -1206,7 +1227,7 @@ excludes = ["define b."]
 category = "reject"
 description = "A global without a value that 'init' does not assign, reads one before assigning it, or assigns an 'imm' one twice; one assigned elsewhere; a module with no 'init'; and an 'init' or 'final' not declared as the program calls it"
 tags = ["typecheck"]
-diagnostics = 12
+diagnostics = 11
 
 # THE PROGRAM'S 'main' is what the C runtime calls, and what it returns is the
 # process's exit status. module_main_void pins that a 'main' returning nothing
@@ -4515,7 +4536,7 @@ tags = ["typecheck", "runtime"]
 
 [scenario.module_final_setup_order]
 category = "run"
-description = "A module's globals are finalized in the reverse of the order they are set, which is the order 'init' first assigns each, not the order declared: a global 'init' never sets is set first; a branch whose arms set the same globals in different orders takes the first order written; an earlier-declared global set from a later one is finalized before it"
+description = "No global is finalized however it was set: assigned by 'init' in any order or arm of a branch, or given a constant where declared"
 tags = ["genllvm", "runtime"]
 
 [scenario.module_init_reach]
@@ -4531,12 +4552,12 @@ diagnostics = 9
 
 [scenario.module_setup_order]
 category = "run"
-description = "A 'let' global given a value that is not a constant is a setup the module runs before its 'init': ordered by what each reads whatever order they are written in, one reading another directly and one through a function of the module; finalized in the exact reverse of the order set (a constant value first, the setups in the order they ran, then what 'init' sets)"
+description = "A 'let' global given a value that is not a constant is a setup the module runs before its 'init': ordered by what each reads whatever order they are written in, one reading another directly and one through a function of the module; none of them is finalized as the program ends"
 tags = ["typecheck", "genllvm", "runtime"]
 
 [scenario.module_setup_modules]
 category = "run"
-description = "Setups across modules: a module with a setup and no 'init' is given one that runs it; the imported module's setups run before the importer's, whose setup reads the imported module's global through a call into it; finals run in the exact reverse across the two modules"
+description = "Setups across modules: a module with a setup and no 'init' is given one that runs it; the imported module's setups run before the importer's, whose setup reads the imported module's global through a call into it; neither module's global is finalized as the program ends"
 tags = ["typecheck", "genllvm", "runtime"]
 
 [scenario.module_setup_reject]
@@ -4558,14 +4579,14 @@ tags = ["typecheck", "genllvm", "runtime"]
 
 [scenario.module_setup_link]
 category = "run"
-description = "A package compiled on its own, whose module has setups and no 'init': the library compile gives it an 'init' that runs them and exports it, its include file declares that 'init', and the program's stitched init calls it before the program's own setup, which reads the package's setups; the package's finalizer, linked, runs them in the reverse"
+description = "A package compiled on its own, whose module has setups and no 'init': the library compile gives it an 'init' that runs them and exports it, its include file declares that 'init', and the program's stitched init calls it before the program's own setup, which reads the package's setups; the package's globals are not finalized as the program ends"
 tags = ["genllvm", "runtime"]
 link = ["package/lib.conebuild"]
 include = ["include/lib.cone"]
 
 [scenario.module_setup_link_untyped]
 category = "run"
-description = "A package whose 'pub' setups are untyped ('pub let first = make(1)'): its include file declares each with the type its value has, as it does a typed one, and the program's stitched init and final run them as for module_setup_link"
+description = "A package whose 'pub' setups are untyped ('pub let first = make(1)'): its include file declares each with the type its value has, as it does a typed one, and the program's stitched init runs them as for module_setup_link"
 tags = ["genllvm", "runtime"]
 link = ["package/lib.conebuild"]
 include = ["include/lib.cone"]

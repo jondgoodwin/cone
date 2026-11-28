@@ -1,0 +1,127 @@
+// The address of what is indexed is made before the index, and the element reached after
+// it. So an index that moves the variable holding what is indexed uses it after the
+// move, whatever is then done with the element, as 'let i = take(a); a[i]' does. Each
+// of these would reach what 'take' has freed. move_index_success holds what is accepted
+// beside each.
+
+mod move_flow_index;
+
+struct Item { pub a: Array[usize, 3]; }
+alias Items = Array[Uni[Item], 2];
+struct Holder { pub items: Items; }
+struct Named { pub u: Uni[Item]; pub n: usize; }
+alias NamedPair = Array[Named, 2];
+alias Grid = Array[Items, 2];
+
+fn item(v: usize) Uni[Item] { Uni[Item](Item([v, v, v])) }
+fn items() Items { [item(1usize), item(2usize)] }
+fn take(a: Items) usize { 0usize }
+fn takeHolder(h: Holder) usize { 0usize }
+fn takePair(t: (Items, usize)) usize { 0usize }
+fn takeGrid(g: Grid) usize { 0usize }
+fn takeNamed(a: NamedPair) usize { 0usize }
+fn count(s: &Array[Uni[Item]]) usize { s.len }
+
+fn read() {
+  var a = items();
+  let v = a[take(a)].a[0usize];                 //~ ErrorMove "moved out by the index"
+}
+
+fn borrowed() {
+  var a = items();
+  let r = &a[take(a)];                          //~ ErrorMove "moved out by the index"
+  let v = r.a[0usize];
+}
+
+fn borrowedMutably() {
+  var a = items();
+  let r = &mut a[take(a)];                      //~ ErrorMove "moved out by the index"
+  r.a[0usize] = 7usize;
+}
+
+// A store into what the element owns reaches it through the element
+fn storedThrough() {
+  var a = items();
+  a[take(a)].a[0usize] = 9usize;                //~ ErrorMove "moved out by the index"
+}
+
+fn compound() {
+  var a = items();
+  a[take(a)].a[0usize] += 1usize;               //~ ErrorMove "moved out by the index"
+}
+
+fn swapped() {
+  var a = items();
+  var x = item(7usize);
+  x <-> a[take(a)];                             //~ ErrorMove "moved out by the index"
+}
+
+fn fieldRead() {
+  var h = Holder(items());
+  let v = h.items[takeHolder(h)].a[0usize];     //~ ErrorMove "moved out by the index"
+}
+
+fn fieldBorrowed() {
+  var h = Holder(items());
+  let r = &h.items[takeHolder(h)];              //~ ErrorMove "moved out by the index"
+}
+
+fn tupleElement() {
+  var t = (items(), 0usize);
+  let r = &t.0[takePair(t)];                    //~ ErrorMove "moved out by the index"
+}
+
+// An index of the whole row, and an index within a row already reached
+fn outerOfNested() {
+  var g = [items(), items()];
+  let r = &g[takeGrid(g)][0usize];              //~ ErrorMove "moved out by the index"
+}
+
+fn innerOfNested() {
+  var g = [items(), items()];
+  let r = &g[0usize][takeGrid(g)];              //~ ErrorMove "moved out by the index"
+}
+
+fn fieldOfElement() {
+  var a = [Named(item(1usize), 1usize), Named(item(2usize), 2usize)];
+  let r = &a[takeNamed(a)].u;                   //~ ErrorMove "moved out by the index"
+}
+
+fn parameter(a: Items) {
+  let r = &a[take(a)];                          //~ ErrorMove "moved out by the index"
+}
+
+fn onOnePath(c: bool) {
+  var a = items();
+  let r = &a[if c {take(a)} else {0usize}];     //~ ErrorMove "moved out by the index"
+  let v = r.a[0usize];
+}
+
+fn movedInABlock() {
+  var a = items();
+  let r = &a[{let b = a; 0usize}];              //~ ErrorMove "moved out by the index"
+}
+
+fn range() {
+  var a = items();
+  let n = count(&a[take(a)..<2usize]);          //~ ErrorMove "moved out by the index"
+}
+
+fn main() {
+  read();
+  borrowed();
+  borrowedMutably();
+  storedThrough();
+  compound();
+  swapped();
+  fieldRead();
+  fieldBorrowed();
+  tupleElement();
+  outerOfNested();
+  innerOfNested();
+  fieldOfElement();
+  parameter(items());
+  onOnePath(false);
+  movedInABlock();
+  range();
+}
