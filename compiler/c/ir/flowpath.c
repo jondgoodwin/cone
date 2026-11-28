@@ -1561,6 +1561,24 @@ static PathSet *pwSlotRead(StarNode *deref, PathSet *base) {
     return base;
 }
 
+// Is this the temporary an operator changing its operand in place borrows it through?
+static int pwIsOpTemp(VarDclNode *var) {
+    return var->namesym == tempName && var->value && var->value->tag == BorrowTag;
+}
+
+// May a copy of a value of this type write what a borrow it holds reaches? A reference does
+// where its permission writes, or where what it points at holds a borrow of its own; any other
+// value holding a borrow is taken to
+static int pwCopiesWriter(INode *type) {
+    if (!pwCarries(type))
+        return 0;
+    INode *dcl = itypeGetTypeDcl(type);
+    if (dcl->tag != RefTag && dcl->tag != ArrayRefTag && dcl->tag != VirtRefTag)
+        return 1;
+    RefNode *ref = (RefNode *)dcl;
+    return (permGetFlags(ref->perm) & MayWrite) != 0 || pwCarries(ref->vtexp);
+}
+
 // A place read, or moved when 'move' says the value goes to a new holder
 static PathSet *pwPlaceValue(INode **nodep, int move) {
     Place pl;
@@ -1590,6 +1608,12 @@ static PathSet *pwPlaceValue(INode **nodep, int move) {
     // ('*&uni r') carries that borrow's loan too
     if (pwCarries(((IExpNode *)*nodep)->vtype))
         holds = pathSetUnion(holds, pl.kept);
+    // A copy of a '&mut' borrow is another name for what it borrows, wherever it goes: a
+    // local, a field, a callee. The temporary an operator changing its operand in place
+    // borrows it through (pwVarDcl) is the operator's own
+    if (!moves && !pwIsOpTemp(pathVars[pl.var].var) && !iexpIsMove(*nodep)
+            && pwCopiesWriter(((IExpNode *)*nodep)->vtype))
+        loanCopied(holds);
     // A holder moved away whole holds nothing here: its value, and the
     // finalizer that might read its borrows, went with the move
     if (moves && !pl.deref && pl.nsteps == 0 && pathVars[pl.var].holder)
@@ -1642,6 +1666,12 @@ static PathSet *pwLend(INode *site, Place *pl, INode *perm, int access, uint32_t
     uint32_t id = loanMake(site, &lent, perm);
     if (loan)
         *loan = id;
+    // A borrow of a variable that holds a '&mut' reads it out, even read-only ('&r', a
+    // closure's capture of 'r'): another name for what it borrows, whether a variable keeps
+    // the borrow or a call is handed it
+    INode *borrowed = iexpGetTypeDcl(site);
+    if (!pl->deref && borrowed->tag == RefTag && pwCopiesWriter(((RefNode *)borrowed)->vtexp))
+        loanCopied(pathVars[pl->var].holds);
     // A borrow into what an owner points at: the owner stored over frees it (pwOwnerLent)
     if (pl->ownertype && id)
         pwOwnerLent(pl, id);
@@ -3066,7 +3096,7 @@ static int pwShapeBorrow(Place *recvpl, uint32_t recvloan, INode *container) {
         loanShapeMark(recvloan, container);
     // Frozen because the reference holds a 'mut' borrow of a 'uni' source and nothing else
     // reaches the source yet: marked when something does
-    else if (loanHoldsUniqAlias(pathVars[recvpl->var].holds))
+    else if (loanHoldsUniqMut(pathVars[recvpl->var].holds))
         loanShapeLazy(recvloan, container);
     return !frozen;
 }
@@ -4712,6 +4742,10 @@ static PathSet *pwAssign(AssignNode *node) {
         uint32_t index = 0;
         // A parallel assignment stores each value in its own slot
         Nodes *rvals = node->rval->tag == VTupleTag ? ((TupleNode *)node->rval)->elems : NULL;
+        // Several values from one expression (a call's) may hold one '&mut' borrow, so each
+        // name given them is another for what it borrows
+        if (rvals == NULL)
+            loanCopied(holds);
         // A seam in the places comes after the value is made, which is in
         // flight across it, and the indexes of every place are made next
         // (genlTerm, AssignTag)
