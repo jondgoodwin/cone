@@ -1215,11 +1215,9 @@ static uint32_t pwStandIn(INode *ref, PathSet *holds) {
 // here. Which place it points at the walk does not say, so a dereference of it is read as
 // through a name given that value ('let r = pick(&a, &b); *r'): through every place the
 // value's loans name, a call's being those its signature gives its result.
-// It is a temporary of its statement, but what it holds is
-// not dropped when the statement ends: a view made through it may be marked for the shape
-// check later (loanShapeLazy), and where the view points is then read from what the
-// stand-in holds. One variable per dereference, so that a loop's next walk finds the loans
-// of it that the last one made
+// It is a temporary of its statement, but what it holds is not dropped when the statement
+// ends. One variable per dereference, so that a loop's next walk finds the loans of it that
+// the last one made
 static uint32_t pwYieldStandIn(INode *ref, PathSet *holds) {
     uint32_t i = 0;
     while (i < nyields && yields[i].ref != ref)
