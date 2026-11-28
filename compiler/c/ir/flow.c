@@ -2885,8 +2885,11 @@ static void flowGateLends(FlowState *fstate, FnCallNode *call, uint32_t i, INode
         break;
     case BorrowTag:
     case ArrayBorrowTag:
-    case ArrIndexTag:
         break;
+    // '&uni s[i]' on a slice is the index of a borrow of the slice
+    case ArrIndexTag:
+        flowGateLends(fstate, call, i, ((FnCallNode *)node)->objfn);
+        return;
     case VTupleTag:
         for (nodesFor(((TupleNode *)node)->elems, cnt, nodesp))
             flowGateLends(fstate, call, i, *nodesp);
