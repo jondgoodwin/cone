@@ -153,6 +153,18 @@ int permGetFlags(INode *perm) {
     return ((PermNode *)perm)->permflags;
 }
 
+// The flags the question "may another name write?" reads. The table gives 'mut1'
+// no MayAliasWrite, and MayIntRefSum, yet a 'mut1' reference may be copied and a
+// copy writes: it may free storage another copy borrows into, or change the
+// variant under another copy's payload reference. So it answers as 'mut' does,
+// until what 'mut1' is to promise is designed (row 960). Coercion and every other
+// flag stay 'mut1's own
+int permWriterFlags(INode *perm) {
+    if (itypeGetTypeDcl(perm) == (INode *)mut1Perm)
+        return mutPerm->permflags;
+    return permGetFlags(perm);
+}
+
 // Are the permissions the same?
 int permIsSame(INode *node1, INode *node2) {
     node1 = itypeGetTypeDcl(node1);
