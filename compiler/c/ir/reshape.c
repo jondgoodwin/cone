@@ -654,6 +654,10 @@ static int reshapeExempt(FnCallNode *call, FnDclNode *callee) {
         || shapeKeepingCall(call);
 }
 
+int reshapeCallExempt(FnCallNode *call) {
+    return reshapeExempt(call, reshapeCallee(call));
+}
+
 static int reshapeCallBody(FnCallNode *call, FnDclNode *meth, int recvunique, INode *cont, INode *owner,
         INode *recvowner, ReshapeVerdict *verdict, VarDclNode **mine, int nmine, int skiprecv, const uint8_t *apart) {
     FnDclNode *callee = reshapeCallee(call);
