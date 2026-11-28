@@ -659,6 +659,11 @@ fn field(a: &amp;mut Ship, b: &amp;mut Ship) i64 {
   y.v
 }
 </pre>
+	<p>A method's receiver is such a borrow too, held to the same rule as a function's argument. Where what an owner
+		holds leads back to the owner, a method called on it (<span class="pre">t.task.run()</span>, where
+		<span class="pre">run</span> reaches <span class="pre">t</span> through a field of its own and stores over
+		<span class="pre">task</span>) would free the very value it works on, and is refused with error 1339, as
+		<span class="pre">run(&amp;mut *t.task)</span> is.</p>
 	<p>Writing the value the owner points at, a field of it, or the whole value in place, replaces nothing the owner
 		frees, so a callee that only reads, or writes through the borrow, is accepted, as is an owner of another type,
 		another field of the ship, and an owner stored over after the borrow's last use:</p>
@@ -801,14 +806,14 @@ fn replaced() i32 {
   }
 }
 </pre>
-	<p>A <span class="pre">uni</span>, <span class="pre">imm</span> or <a href="mem-permissions.html#mut1">mut1</a>
-		reference has no other name to change it, so it is not asked.</p>
+	<p>A <span class="pre">uni</span> or <span class="pre">imm</span> reference has no other name to change it, so it
+		is not asked.</p>
 	<p>A name narrowed by a test, <span class="pre">if s is Circle</span>
 		(<a href="mod-substitution.html#flow">flow typing</a>), is followed the same way. For a local, or a
 		<span class="pre">uni</span> reference, that is only where a <span class="pre">&amp;mut</span> borrow of it
 		made earlier is still held at the test: the change is refused where the name is next used as the variant.
-		Where the name is a <span class="pre">uni</span>, <span class="pre">imm</span> or
-		<a href="mem-permissions.html#mut1">mut1</a> reference and the <span class="pre">&amp;mut</span> borrow is of the
+		Where the name is a <span class="pre">uni</span> or <span class="pre">imm</span> reference and the
+		<span class="pre">&amp;mut</span> borrow is of the
 		name itself (<span class="pre">let r = &amp;mut s;</span>), pointing the name at another value through it
 		(<span class="pre">*r = other</span>, or a call handed <span class="pre">r</span> that may) is a change too.
 		Test it again after the change, or bind the payload by value.</p>
@@ -1086,6 +1091,33 @@ fn viaParam(h: &amp;Holder, g: &amp;mut Ed) {
   useHolder(h, g.items[0usize].label.view());  // Error 1339: g may be gl, and the closure may write it
 }
 </pre>
+	<p>A <span class="pre">var</span> global that holds a way to <a href="#owners">an owner</a> is another name for its
+		holder. A function reshapes through that global not only by storing through its name, but by storing through
+		whatever it got from it: a copy of the owner the global holds, a pattern's binding, what a function that names the
+		global answers, passed on or kept:</p>
+<pre>
+struct Idle { pub count: i64; }
+struct Tcb { pub task: Rc[mut, Idle]; }
+var cur: Option[Rc[mut, Tcb]] = None[Rc[mut, Tcb]];
+
+fn run(self: &amp;mut Idle) {
+  match cur {
+    case let Some(t) { t.task = Rc[mut, Idle](100); }  // frees the task cur's Tcb owns
+    else {}
+  }
+  self.count += 1;
+}
+
+fn start() {
+  let t1 = Rc[mut, Tcb](Rc[mut, Idle](7));
+  cur = Some(t1);
+  run(&amp;mut *t1.task);          // Error 1339: run stores over the owner of what it is lent
+}
+</pre>
+	<p>What a method lends from behind a virtual reference, as <span class="pre">Error</span>'s <span class="pre">source</span>
+		does, may point at a value of any type that is one of the trait. A <span class="pre">var</span> global is taken to
+		hold it only if its type could: it holds a type that declares the trait, or one with every method and field the
+		trait has, or owns something behind a virtual reference. A global that holds none of these is not asked about.</p>
 
 	<h2 id="notfollowed">What the check does not follow</h2>
 	<p>The check does not tell two values of one type apart. A function handed a <span class="pre">List[Pt]</span> that

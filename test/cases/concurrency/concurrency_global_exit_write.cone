@@ -1,0 +1,46 @@
+// A global outlives main: a behaviour still queued or running when main returns
+// writes through a global 'Arc[Mutex, Registry]'. A global is never finalized,
+// so the registry is still there to be written.
+mod concurrency_global_exit_write;
+
+import stdio use *;
+import collections use *;
+import actors;
+import sync use *;
+import thread;
+import time use Duration;
+
+struct Registry {
+  pub seen: List[u64];
+}
+
+let reg: Arc[Mutex, Registry];
+
+fn @initpure init() {
+  reg = Arc[Mutex, Registry](Registry(List[u64]()));
+}
+
+actor Writer {
+  n: u64 = 0u64;
+
+  pub async fn write(self) {
+    thread.sleep(Duration.fromMillis(300i64));
+    printStr("behaviour: writing the registry\n");
+    var i = 0u64;
+    while i < 1000u64 {
+      let r = &mut *reg;
+      r.seen.push(i);
+      i = i + 1u64;
+    }
+    let r = &mut *reg;
+    printStr("behaviour: items (expected 1000) ");
+    print <- r.seen.len();
+    printStr("\n");
+  }
+}
+
+fn main() {
+  let w = Writer();
+  w.write();
+  printStr("main returns\n");
+}

@@ -1,0 +1,61 @@
+// What a 'mut1' reference still allows beside enum_flow_narrow_mut1: a reference into a
+// variant used before another copy changes it, a variant bound by value, and a list's
+// element copied out before another copy replaces the list.
+
+mod enum_narrow_mut1_success;
+
+import collections use *;
+import stdio use *;
+
+enum Slot {
+  struct Whole {
+    pub n: i64;
+  }
+
+  struct Real {
+    pub f: f64;
+  }
+}
+use Slot;
+
+fn usedFirst(a: &mut1 Slot, b: &mut1 Slot) {
+  if let Whole(w) = a {
+    w.n = w.n + 1i64;
+    printInt(w.n);
+    *b = Real(1.5f64);
+  }
+}
+
+fn byValue(a: &mut1 Slot, b: &mut1 Slot) {
+  if let Whole(w) = *a {
+    *b = Real(1.5f64);
+    printInt(w.n);
+  }
+}
+
+fn element(o: Rc[mut1, List[i32]]) {
+  let o2 = o;
+  let v = (*o)[0usize];
+  *o2 = List[i32]();
+  printInt(i64.from(v));
+  printInt(i64.from((*o).len()));
+}
+
+//   usedFirst: 7+1 = 8 through one borrow of the owner's Slot, then it is made Real
+//   byValue: w is a copy of 5 made before the store
+//   element: 3 copied out, the list replaced through one copy and seen empty through the other: 30
+fn main() {
+  let p = Rc[mut1, Slot](Whole(7i64));
+  let p2 = p;
+  usedFirst(&mut1 *p, &mut1 *p2);
+  printStr(" ");
+  let q = Rc[mut1, Slot](Whole(5i64));
+  let q2 = q;
+  byValue(&mut1 *q, &mut1 *q2);
+  printStr(" ");
+  var l = List[i32]();
+  l.push(3i32);
+  let o = Rc[mut1, List[i32]](l);
+  element(o);
+  printStr("\n");
+}
