@@ -1017,18 +1017,23 @@ made an alias loan (`loanFlightOwnRo`), the callee taking it as a view others ma
 A free function's borrowed argument that its result carries (`pwLentArg`) keeps the
 exclusive freeze: a generator over a `&mut List` reshapes its own list.
 
-**A second name made from the borrow is an event too** (`loanCopied`, on the loans the
-value carries). One `mut` borrow held in one place is the exclusive loan of the walk's
-freezing; once copied, two variables, or a variable and a callee, reach one place, so
-the loan is `aliased` as above, whether it is an alias loan or one a call returned and
-froze (`loanFreezeWritable`; it stays frozen against its source's own name). It is made
-by: a copy of a value that carries a borrow it may write through (`pwPlaceValue`: a
-local, a field, an element, an argument); any borrow of a variable that holds such a
+**A second name for the borrow is an event of its own** (`loanCopied`, `Loan.copied`, on
+the loans the value carries). One `mut` borrow held in one place is the exclusive loan of
+the walk's freezing; once copied, two variables, or a variable and a callee, reach one
+place, so the borrow excludes nothing through itself (`loanIsExclusive`), whether it is
+an alias loan or one a call returned and froze (`loanFreezeWritable`): each view held
+through a reference holding it is marked for the shape check, and so is each made later.
+The borrow's source is no more aliased than it was, so an element borrowed from a local
+list and handed on is still a name for the element alone, and a copy of a view marks
+nothing beneath it (`loanBeneathView`: `&mut (*r)[0]` is not another `r`). A second name
+is made by: a copy of a value that carries a borrow it may write through (`pwPlaceValue`:
+a local, a field, an element, an argument); any borrow of a variable that holds such a
 value, which reads it out (`pwLend`: `&r`, `&mut r`, a closure's capture), kept or handed
 to a call; several values given from one expression (`pwAssign`: `a, b = f(&mut l)`);
-and a writing reborrow through the reference that another variable keeps (`loanHeldBy`:
-`let b = &mut *r`). The temporary an operator changing its operand in place borrows
-through copies nothing (`pwIsOpTemp`).
+and a writing reborrow of the whole or a field through the reference, which another
+variable keeps (`loanHeldBy`: `let b = &mut *r`). A value read out of a variable the
+compiler made, as a match binds from the one holding what it matches, copies nothing
+(`loanVarIsMade`).
 
 A holder reaching its loan's source through the loan — `*b = 9`, `r.x` — uses
 the holder; it does not access the source.
