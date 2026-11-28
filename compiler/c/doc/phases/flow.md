@@ -873,9 +873,8 @@ decided only as the program runs, so it holds what the value carries in a stand-
 view made through it holds the loans of each, and is marked for the shape check as one
 through a name is. The loans of borrows that may write are kept on the place too
 (`pwWritingLoans`, `Place.kept`), as `*&uni x` keeps its own. The stand-in is a temporary,
-but what it holds is not dropped at its statement's end (`PathVar.yielded`): a view marked
-later (`loanShapeLazy`) reads from it where the view points. Other values that are no place
-(an assignment's value, a tuple element, a field of a struct literal, a call's result where
+but what it holds is not dropped at its statement's end (`PathVar.yielded`). Other values
+that are no place (an assignment's value, a tuple element, a field of a struct literal, a call's result where
 the stand-in of the paragraph on a reference a call returned is not made) are still read as
 values, and what is dereferenced there is not followed.
 
@@ -1016,6 +1015,16 @@ making a `mut` borrow of the same local (`step(&w, &mut w.entities[0])`, `p.m(&p
 made an alias loan (`loanFlightOwnRo`), the callee taking it as a view others may change.
 A free function's borrowed argument that its result carries (`pwLentArg`) keeps the
 exclusive freeze: a generator over a `&mut List` reshapes its own list.
+
+**A borrow through a reference keeps where it points.** A view taken through a reference
+variable (`&(*r)[0]`) points where `r` pointed as the borrow was made, whatever happens to
+`r` after. Its loan is of `*r`, and the mark for the shape check may come later (a lazy loan
+promoted, a view marked once the reference is lent), when `r` has left scope or holds another
+borrow. So the loan keeps what `r` held where the borrow was made (`Loan.way`: the union over
+the paths and a loop's passes), and its roots, with whether it is in a `var` global, are taken
+from that (`loanRootsNote`), not from what `r` holds at the mark. A later pass of a loop that
+adds to it notes the roots of a loan already marked again, since the pass may find the loan
+frozen and mark it no more.
 
 A holder reaching its loan's source through the loan — `*b = 9`, `r.x` — uses
 the holder; it does not access the source.
@@ -2276,9 +2285,28 @@ given the unseen loan a virtual call's result has (below), under the trait. Noth
 through `opaq` or a lock. Past 200 deep or 100000 types the answer is yes. `flowGateReachesOwner`
 answers yes for every borrowed virtual reference, so such a function's caller is walked. A plain
 reference to an open trait calls no method (`fnCallLowerTraitMethod`), so its referent is walked
-as a struct is, field by field. Not followed: a downcast of the trait object in the callee, which
-can reach past a shared owner in the concrete value that no method or field of the trait hands
-out. Tests: `collection_flow_reshape_handed_trait`, `collection_reshape_handed_trait_success`.
+as a struct is, field by field. Tests: `collection_flow_reshape_handed_trait`,
+`collection_reshape_handed_trait_success`.
+
+**A downcast of a trait object** (`Loan.narrowed`, `Loan.hidden`, `pwHiddenLeaves`). A caller
+can't see what a downcast reaches, so the body is checked: a borrow that passed a shared owner
+from a narrowed trait object may not leave the function (returned, yielded, stored where it may
+outlive the function, or handed to a call that may store it there) unless the trait's methods or
+fields could give it (Error 1064). The marks:
+- The value a downcast gives (a `CastTag` from a virtual reference to a reference) holds its
+  loans marked with the trait (`loanNarrow`; a caller loan takes a second of the same part).
+  A borrow made through a variable holding one carries the mark.
+- A call's result from an argument that reaches a trait object is marked too where neither the
+  trait's signature nor the parameter's own type (outside trait objects, `pwShows`) names what
+  the result may point at (`pwTraitGivesAll`): the callee narrowed it, as `downcastRef` does.
+  A type the parameter shows is already judged by type at the caller, so it is left alone.
+- A marked borrow whose place dereferences an owner others may write through (`Place.ownwrite`:
+  `Rc[mut]`, with no borrowed reference read since but a `&uni`) is hidden. So is the reach loan
+  a call's result gets from a marked argument whose parameter type has a shared owner of its own
+  to pass (`helper(c)`).
+- Leaving: `pwTraitCouldGive` exempts what the trait's methods could hand out, or what its
+  fields reach in the same container.
+Tests: `collection_flow_downcast_leaves`, `collection_downcast_leaves_success`.
 
 **A result borrowed from behind a virtual call's receiver** (`pwReachShared`, argument 0 of a
 `FlagVDisp` call: a method called through a virtual reference, a closure behind `&<fn`, a method

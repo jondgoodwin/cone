@@ -1,0 +1,131 @@
+// A view taken through a named reference ('&(*r)[0usize]') borrows what the reference
+// borrows, for as long as the view lives, whatever happens to the reference: it leaves
+// scope, or is given another borrow. Each function here was accepted, and the view read
+// freed storage (collection_view_outlives_ref_success holds what stays accepted).
+
+mod collection_flow_view_outlives_ref;
+
+import stdio use *;
+import collections use *;
+
+struct Box { pub items: List[i32]; }
+
+fn make() List[i32] {
+  var l = List[i32]();
+  l.push(7i32);
+  l
+}
+
+fn grow(l: &mut List[i32]) {
+  var i = 0i32;
+  while i < 100i32 { l.push(i); i += 1i32; }
+}
+
+// ---- The reference leaves scope ----
+
+fn innerBlock() {
+  var m = make();
+  var n = make();
+  var v = &n[0usize];
+  { let r = &mut m; v = &(*r)[0usize]; }
+  m.push(1i32);                          //~ ErrorShapeReshape "could change the shape"
+  printInt(i64.from(*v));
+}
+
+fn indexedThrough() {
+  var m = make();
+  var n = make();
+  var v = &n[0usize];
+  { let r = &mut m; v = &r[0usize]; }
+  m.push(1i32);                          //~ ErrorShapeReshape "could change the shape"
+  printInt(i64.from(*v));
+}
+
+fn fieldPath() {
+  var b = Box(make());
+  var n = make();
+  var v = &n[0usize];
+  { let r = &mut b; v = &(*r).items[0usize]; }
+  b.items.push(1i32);                    //~ ErrorShapeReshape "could change the shape"
+  printInt(i64.from(*v));
+}
+
+fn ifArm(c: bool) {
+  var m = make();
+  var n = make();
+  var v = &n[0usize];
+  if c { let r = &mut m; v = &(*r)[0usize]; }
+  m.push(1i32);                          //~ ErrorShapeReshape "could change the shape"
+  printInt(i64.from(*v));
+}
+
+fn loopBody() {
+  var m = make();
+  var n = make();
+  var v = &n[0usize];
+  var k = 0i32;
+  while k < 1i32 { let r = &mut m; v = &(*r)[0usize]; k += 1i32; }
+  m.push(1i32);                          //~ ErrorShapeReshape "could change the shape"
+  printInt(i64.from(*v));
+}
+
+fn lentOn() {
+  var m = make();
+  var n = make();
+  var v = &n[0usize];
+  { let r = &mut m; v = &(*r)[0usize]; }
+  grow(&mut m);                          //~ ErrorShapeReshape "could change the shape"
+  printInt(i64.from(*v));
+}
+
+// ---- The reference is given another borrow ----
+
+fn repointed() {
+  var m = make();
+  var o = make();
+  var r = &mut m;
+  var v = &(*r)[0usize];
+  r = &mut o;
+  m.push(1i32);                          //~ ErrorShapeReshape "could change the shape"
+  printInt(i64.from(*v));
+}
+
+fn eitherOfTwo() {
+  var m = make();
+  var o = make();
+  var n = make();
+  var v = &n[0usize];
+  {
+    var r = &mut o;
+    if n.len == 1usize { r = &mut m; }
+    v = &(*r)[0usize];
+  }
+  grow(&mut m);                          //~ ErrorShapeReshape "could change the shape"
+  printInt(i64.from(*v));
+}
+
+// ---- A later pass of a loop gives the reference more to borrow ----
+
+// The second pass takes the view of 'o', after the mark made in the first
+fn laterPass() {
+  var m = make();
+  var o = make();
+  var n = make();
+  var z = make();
+  var zr = &mut z;
+  var s = &mut o;
+  var r = &mut m;
+  var v = &n[0usize];
+  var k = 0i32;
+  while k < 2i32 {
+    v = &(*r)[0usize];
+    z.push(k);
+    r = s;
+    k += 1i32;
+  }
+  zr.push(2i32);
+  grow(&mut o);                          //~ ErrorShapeReshape "could change the shape"
+  printInt(i64.from(*v));
+}
+
+fn main() {}
