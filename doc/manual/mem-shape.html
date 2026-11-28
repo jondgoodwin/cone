@@ -749,10 +749,25 @@ fn handed(h: &amp;&lt;Firster, o2: Rc[mut, List[i32]]) {
   v;
 }
 </pre>
-	<p style="margin-left: 40px;"><i>Note: Not checked yet: a function that finds the concrete type behind the virtual
-		reference (<span class="pre">is</span>, <span class="pre">match</span>, <span class="pre">downcastRef</span>) and
-		returns a borrow from past a shared owner in it, which no method or field of the trait hands out. Such a borrow
-		is not held against a store or a call through another holder, so it can dangle.</i></p>
+	<p>A function that finds the concrete type behind a virtual reference (<span class="pre">is</span>,
+		<span class="pre">match</span>, <span class="pre">downcastRef</span>) reaches what no signature names, so there
+		it is the body that is checked. A borrow reached from a narrowed trait object and then past a shared owner
+		(<span class="pre">Rc</span>, or any owner that another holder can change through) may not leave the function,
+		returned, or stored through a parameter or a global, unless the trait's methods or fields could hand it out
+		(Error 1064). A borrow of the concrete value's own storage is not held back, and a value copied out past the
+		owner is no borrow:</p>
+<pre>
+struct Holder { pub rc: Rc[mut, List[i32]]; pub n: i32; pub fn count(self: &amp;) i32 { return 1i32; } }
+
+fn first(h: &amp;&lt;Counter, zero: &amp;i32) &amp;i32 {
+  if let Holder(c) = h { return &amp;(*c.rc)[0usize]; }   // Error 1064: past the Rc
+  return zero;
+}
+fn n(h: &amp;&lt;Counter, zero: &amp;i32) &amp;i32 {
+  if let Holder(c) = h { return &amp;c.n; }              // Ok: the Holder's own field
+  return zero;
+}
+</pre>
 
 	<h2 id="enums">An enum's variant</h2>
 	<p>For an enum, nothing is frozen. A reference into the payload of an enum's variant, the binding of

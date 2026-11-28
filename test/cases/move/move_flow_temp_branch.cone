@@ -1,0 +1,122 @@
+// The owner an 'if', a 'match', a loop or a block hands a value read where it
+// stands moves into that temporary, which finalizes it at the end of the
+// statement, so its source may not be used after, whichever arm ran -- as when
+// the value is bound with 'let'. What could not be moved into a variable (a
+// field of a struct, a global) may not be moved into a temporary either, nor an
+// owner a borrow still reaches.
+mod move_flow_temp_branch;
+
+struct Noisy {
+  pub n: i32;
+  pub fn get(self: &) i32 { self.n }
+  fn final(self: &uni) {}
+}
+struct Hold { pub r: Rc[Noisy]; }
+
+fn show(n: i32) {}
+
+fn afterField(c: bool) {
+  let a = Rc[Noisy](Noisy(1));
+  let b = Rc[Noisy](Noisy(10));
+  show((if c {a} else {b}).n);
+  show(a.n);                                                //~ ErrorMove "moved out"
+  show(b.n);                                                //~ ErrorMove "moved out"
+}
+
+fn afterMethod(c: bool) {
+  let a = Rc[Noisy](Noisy(1));
+  show((if c {a} else {Rc[Noisy](Noisy(10))}).get());
+  show(a.n);                                                //~ ErrorMove "moved out"
+}
+
+fn afterOperand(c: bool) {
+  let a = Rc[Noisy](Noisy(1));
+  show((if c {a} else {a}).n + a.n);                        //~ ErrorMove "moved out"
+}
+
+fn afterMatch(c: bool) {
+  let a = Rc[Noisy](Noisy(1));
+  let b = Rc[Noisy](Noisy(10));
+  show((match c { case true {a} else {b} }).n);
+  show(a.n);                                                //~ ErrorMove "moved out"
+}
+
+fn afterLoop(c: bool) {
+  let a = Rc[Noisy](Noisy(1));
+  let b = Rc[Noisy](Noisy(10));
+  show((while { if c { break a; } if !c { break b; } }).n);
+  show(b.n);                                                //~ ErrorMove "moved out"
+}
+
+fn afterBlock() {
+  let a = Rc[Noisy](Noisy(1));
+  show({ show(0); a }.n);
+  show(a.n);                                                //~ ErrorMove "moved out"
+}
+
+fn afterUni(c: bool) {
+  let a = Uni[Noisy](Noisy(1));
+  let b = Uni[Noisy](Noisy(10));
+  show((if c {a} else {b}).n);
+  show(a.n);                                                //~ ErrorMove "moved out"
+}
+
+fn afterByValue(c: bool) {
+  let a = Noisy(1);
+  let b = Noisy(10);
+  show((if c {a} else {b}).n);
+  show(a.n);                                                //~ ErrorMove "moved out"
+}
+
+fn afterCompound(c: bool) {
+  let a = Rc[Noisy](Noisy(1));
+  let b = Rc[Noisy](Noisy(10));
+  (if c {a} else {b}).n += 5;
+  show(a.n);                                                //~ ErrorMove "moved out"
+}
+
+fn afterTuple() {
+  let a = Rc[Noisy](Noisy(1));
+  show((a, 2).0.n);
+  show(a.n);                                                //~ ErrorMove "moved out"
+}
+
+fn inLoop(c: bool) {
+  let a = Rc[Noisy](Noisy(1));
+  var i = 0;
+  while i < 2 {
+    show((if c {a} else {Rc[Noisy](Noisy(10))}).n);         //~ ErrorMove "moved out"
+    i = i + 1;
+  }
+}
+
+fn whileBorrowed(c: bool) {
+  let a = Rc[Noisy](Noisy(1));
+  let b = Rc[Noisy](Noisy(10));
+  let r = &a.n;
+  show((if c {a} else {b}).n);                              //~ ErrorFrozen "borrowed"
+  show(*r);
+}
+
+// A value discarded
+fn afterDiscard(c: bool) {
+  let a = Rc[Noisy](Noisy(1));
+  let b = Rc[Noisy](Noisy(10));
+  _ = if c {a} else {b};
+  show(a.n);                                                //~ ErrorMove "moved out"
+}
+
+// A borrow an initializer takes through the value keeps it in a hidden local,
+// which was already so
+fn afterExtended(c: bool) {
+  let a = Rc[Noisy](Noisy(1));
+  let b = Rc[Noisy](Noisy(10));
+  let x = &*(if c {a} else {b});
+  show(x.n);
+  show(a.n);                                                //~ ErrorMove "moved out"
+}
+
+fn fieldArm() {
+  let h = Hold(Rc[Noisy](Noisy(1)));
+  show({ h.r }.n);                                          //~ ErrorMoveField "field"
+}
