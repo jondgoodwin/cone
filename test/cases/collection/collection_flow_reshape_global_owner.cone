@@ -1,0 +1,140 @@
+// A borrow of what an owner points at, lent to a function that stores over that owner through a
+// 'var' global: the global is another way to the owner, and the store frees what the function was
+// lent. Each way the function can come by the owner from the global is held: the global's pattern
+// binding, a copy of the global, what a function that names the global answers, the owner passed on
+// to a function that stores through it, the whole global passed on, and a function that reaches it
+// only through another; the last lends it as a method's receiver. No other argument shows the owner,
+// so the call itself has the caller walked.
+// Each was accepted, and freed 'self' while it was in use (ErrorShapeReshape now).
+//
+// The globals' own declarations are of an 'Option', which the shareable-globals check does not look
+// into.
+
+mod collection_flow_reshape_global_owner;
+
+import stdio use *;
+
+struct Idle {
+  pub count: i64;
+  pub fn tick(self: &mut) {
+    replace();
+    count += 1;
+  }
+}
+struct Tcb { pub task: Rc[mut, Idle]; }
+
+var cur: Option[Rc[mut, Tcb]] = None[Rc[mut, Tcb]];
+
+fn held() Option[Rc[mut, Tcb]] { cur }
+
+fn byBinding(self: &mut Idle) {
+  match cur {
+    case let Some(t) { t.task = Rc[mut, Idle](100); }
+    else {}
+  }
+  self.count += 1;
+}
+
+fn byCopy(self: &mut Idle) {
+  let c = cur;
+  match c {
+    case let Some(t) { t.task = Rc[mut, Idle](100); }
+    else {}
+  }
+  self.count += 1;
+}
+
+fn byAnswer(self: &mut Idle) {
+  match held() {
+    case let Some(t) { t.task = Rc[mut, Idle](100); }
+    else {}
+  }
+  self.count += 1;
+}
+
+fn put(t: Rc[mut, Tcb]) { t.task = Rc[mut, Idle](100); }
+
+fn byOwnerPassed(self: &mut Idle) {
+  match cur {
+    case let Some(t) { put(t); }
+    else {}
+  }
+  self.count += 1;
+}
+
+fn putHeld(c: Option[Rc[mut, Tcb]]) {
+  match c {
+    case let Some(t) { t.task = Rc[mut, Idle](100); }
+    else {}
+  }
+}
+
+fn byGlobalPassed(self: &mut Idle) {
+  let c = cur;
+  putHeld(c);
+  self.count += 1;
+}
+
+fn replace() {
+  match cur {
+    case let Some(t) { t.task = Rc[mut, Idle](100); }
+    else {}
+  }
+}
+
+fn byCallee(self: &mut Idle) {
+  replace();
+  self.count += 1;
+}
+
+fn binding() {
+  let t1 = Rc[mut, Tcb](Rc[mut, Idle](7));
+  cur = Some(t1);
+  byBinding(&mut *t1.task);                     //~ ErrorShapeReshape "through a global"
+}
+
+fn copied() {
+  let t1 = Rc[mut, Tcb](Rc[mut, Idle](7));
+  cur = Some(t1);
+  byCopy(&mut *t1.task);                        //~ ErrorShapeReshape "through a global"
+}
+
+fn answered() {
+  let t1 = Rc[mut, Tcb](Rc[mut, Idle](7));
+  cur = Some(t1);
+  byAnswer(&mut *t1.task);                      //~ ErrorShapeReshape "through a global"
+}
+
+fn ownerPassed() {
+  let t1 = Rc[mut, Tcb](Rc[mut, Idle](7));
+  cur = Some(t1);
+  byOwnerPassed(&mut *t1.task);                 //~ ErrorShapeReshape "through a global"
+}
+
+fn globalPassed() {
+  let t1 = Rc[mut, Tcb](Rc[mut, Idle](7));
+  cur = Some(t1);
+  byGlobalPassed(&mut *t1.task);                //~ ErrorShapeReshape "through a global"
+}
+
+fn callee() {
+  let t1 = Rc[mut, Tcb](Rc[mut, Idle](7));
+  cur = Some(t1);
+  byCallee(&mut *t1.task);                      //~ ErrorShapeReshape "through a global"
+}
+
+fn method() {
+  let t1 = Rc[mut, Tcb](Rc[mut, Idle](7));
+  cur = Some(t1);
+  t1.task.tick();                               //~ ErrorShapeReshape "through a global"
+}
+
+fn main() {
+  method();
+  binding();
+  copied();
+  answered();
+  ownerPassed();
+  globalPassed();
+  callee();
+}

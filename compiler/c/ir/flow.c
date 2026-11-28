@@ -2591,6 +2591,49 @@ static int flowGatePlaceLent(INode *place) {
     }
 }
 
+// A call is lent what an owning reference points at ('run(&mut *t.task)'), the owner one
+// others may share, of a type some 'var' global reaches: the global may be another way to
+// that owner, and the callee may store over it by the global's name, freeing what it was
+// lent. No other argument shows it, so the call itself has the function walked
+void flowGateGlobalOwner(FlowState *fstate, Nodes *args) {
+    if (reshapeGlobalCount() == 0)
+        return;
+    INode **argsp;
+    uint32_t cnt;
+    for (nodesFor(args, cnt, argsp)) {
+        INode *place = *argsp;
+        INode *lent = iexpGetTypeDcl(place);
+        if ((lent->tag != RefTag && lent->tag != ArrayRefTag && lent->tag != VirtRefTag) || !flowGateIsBorrowRef(lent))
+            continue;
+        // Down the way to what is lent. An owner on it is one dereferenced, or one converted
+        // to the borrow ('t.task.run()')
+        while (1) {
+            INode *from;
+            if (place->tag == BorrowTag || place->tag == ArrayBorrowTag)
+                from = ((RefNode *)place)->vtexp;
+            else if (place->tag == CastTag)
+                from = ((CastNode *)place)->exp;
+            else if (place->tag == FldAccessTag || place->tag == ArrIndexTag)
+                from = ((FnCallNode *)place)->objfn;
+            else if (place->tag == DerefTag)
+                from = ((StarNode *)place)->vtexp;
+            else
+                break;
+            if (place->tag == DerefTag || place->tag == CastTag) {
+                INode *type = iexpGetTypeDcl(from);
+                if ((type->tag == RefTag || type->tag == ArrayRefTag || type->tag == VirtRefTag)
+                        && !flowGateIsBorrowRef(type)
+                        && (permGetFlags(((RefNode *)type)->perm) & MayAliasWrite)
+                        && reshapeMutGlobalsReach(reshapeOwnerCont(type))) {
+                    fstate->gate |= FlowGateShape;
+                    return;
+                }
+            }
+            place = from;
+        }
+    }
+}
+
 // Does making this value do no more than read: names, literals, places and the
 // built-in operators on them? Anything else may call, or store
 int flowGateOnlyReads(INode *node) {

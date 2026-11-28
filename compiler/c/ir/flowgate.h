@@ -113,6 +113,10 @@ static inline void flowGateJoin(FlowState *fstate, Nodes *elems) {
 static inline void flowGateShape(FlowState *fstate, FnCallNode *call) {
     if (fstate->gate & FlowGateShape)
         return;
+    if (call->args)
+        flowGateGlobalOwner(fstate, call->args);
+    if (fstate->gate & FlowGateShape)
+        return;
     // A call with a writable argument matters once a borrow is lent before it (a
     // borrow held across a loop is a holder, which gates the function itself)
     if (fstate->shapelend) {

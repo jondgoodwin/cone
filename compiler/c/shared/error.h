@@ -324,7 +324,7 @@ enum ErrorCode {
 
     // A module's 'init' and 'final'
     ErrorGlobalUninit = 1140,   // A global declared without an initial value that its module's 'init' never assigns, or whose module has no 'init'
-    ErrorModLifecycle = 1141,   // A module's 'init' or 'final' not declared as 'fn @initpure init()' or 'fn final()', or a module's own 'drop' where it needs its finalizer given that name
+    ErrorModLifecycle = 1141,   // A module's 'init' or 'final' not declared as 'fn @initpure init()' or 'fn final()'
 
     // A generic module, 'mod stack[T];'
     ErrorGenModBare = 1142,     // A generic module named without type arguments where only an instance has members: a path through it, an import's 'use' clause or default fold of it, 'extends' or a standalone 'use' naming it
