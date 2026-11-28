@@ -1,0 +1,213 @@
+// A Stop anywhere in a chain of stages reaches an idle socket (piece.cone, HEARING A STOP). The chain is
+// SocketFrom -> TransformPass -> HashPass -> FileTo, its groups nested from the sink end and each stage given the
+// group of the stream feeding it. The server holds the connection open and silent for 1.5 s and tells when its
+// own read saw the connection go: within 100 ms of the stop, since the stages cancel their feeding group.
+//
+//   A. TransformPass stops (a piece reaches it in a cancelled group)
+//   B. HashPass stops, the same way
+//   C. FileTo stops, the same way
+//   D. TransformPass fails of its own: the server's first bytes are no gzip stream
+//   E. SocketFrom -> PieceBridge -> an old sink, which says stop
+//
+// Mutant, run as 'congo test --no-cache -D NAME':
+//   MUT_NO_FEED_CANCEL   a stage given the group does not cancel it: all five fail (the read lasts 1.5 s)
+
+mod piecechain;
+
+import testing use *;
+import collections use *;
+import iobuf use IoBuf;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import time use Instant, Duration;
+import thread;
+import actors;
+import aio use Socket, File, IoLimits;
+import iocore use SocketAddr, IoError, Access, CancelGroup;
+import path use Path;
+import fs;
+import streams use *;
+import stages use *;
+import deflate;
+import cryptohash;
+
+fn socketOf(r: Result[Socket, IoError]) Socket {
+  var res = r;
+  var s = Socket.none();
+  match &mut res {
+    case var &mut Ok(ok) {s <-> *ok;}
+    case let &mut Err(e) { panic("socketOf: the operation failed"); }
+  }
+  s
+}
+
+fn nowNanos() u64 { u64.from(Instant.now().nanos()) }
+
+// Accepts one connection, writes 'junk' bytes that are no gzip stream (none when 0), then says nothing: it reads
+// until the other side goes, or 1.5 s pass, and tells when that was
+actor Server {
+  pub async fn serve(self, junk: usize, port: OneshotSender[u16], gone: OneshotSender[u64]) {
+    let listener = socketOf(await aio.listen(SocketAddr.localhost(0u16)));
+    let addr = await listener.localAddr();
+    var p = port;
+    match addr {
+      case let Ok(a) { p.send(a.port()); }
+      case is Err { p.send(0u16); return; }
+    }
+    let conn = socketOf(await listener.accept());
+    if junk > 0usize {
+      var buf = IoBuf(junk);
+      var i = 0usize;
+      var text = List[u8]();
+      while i < junk { text.push('U'); i = i + 1usize; }
+      buf.append(text.view());
+      _ = await conn.write(buf);
+    }
+    _ = await conn.readIn(IoBuf(16usize), IoLimits.until(Instant.now() + Duration.fromMillis(1500i64)));
+    var g = gone;
+    g.send(nowNanos());
+  }
+}
+
+pub actor Digests is DigestSink[Array[u8, 32]] {
+  pub async fn digest(self, r: Result[Array[u8, 32], AnyError]) {}
+}
+
+// An old sink that says stop when asked
+pub actor Old is ChunkSink {
+  up: Option[ChunkSource];
+
+  pub fn init(self: &new) { *self = Self(up: None[ChunkSource]); }
+
+  pub async fn attach(self, source: ChunkSource) { up = Some[ChunkSource](source); }
+
+  pub async fn accept(self, c: IoBuf) {}
+
+  pub async fn end(self, how: Ending) { up = None[ChunkSource]; }
+
+  pub async fn quit(self) {
+    match &up {
+      case let &Some(u) { u.stop(Ending.Failed(AnyError.msg("old: enough"))); }
+      case is None {}
+    }
+  }
+}
+
+// One piece to 'sink', sent in whatever group the message that asks for it carries
+pub actor Poke {
+  pub async fn go(self, sink: PieceSink[IoBuf]) {
+    var b = IoBuf(100usize);
+    b.setLen(100usize);
+    _ = await sink.piece(1u64, b);
+  }
+}
+
+fn pokeCancelled(sink: PieceSink[IoBuf]) {
+  let g = CancelGroup.make();
+  _ = g.cancel();
+  let p = Poke();
+  actors.withGroup(&g, fn() [p, sink] { p.go(sink); });
+}
+
+// Makes the chain, sink end first, with its groups nested from the sink end, and answers the stage to stop
+pub actor Chain {
+  pub async fn run(self, port: u16, name: String, which: u32, done: OneshotSender[Result[u64, AnyError]],
+      made: OneshotSender[PieceSink[IoBuf]]) {
+    let opened = await aio.openFile(&Path.from(name.view()), Access.Create);
+    var file = File.none();
+    match opened {
+      case let Ok(f) { file = f; }
+      case let Err(e) { panic("piecechain: the file did not open"); }
+    }
+    let intoFile = actors.currentGroup().child();
+    let intoHash = intoFile.child();
+    let intoInf = intoHash.child();
+    let sink = FileTo(file, done, Some[CancelGroup](intoFile));
+    let hash = HashPass[cryptohash.Sha256](StreamTo[IoBuf].at(sink, 1u64, 0usize, Some[CancelGroup](intoFile)),
+      cryptohash.Sha256.make(), Digests(), Some[CancelGroup](intoHash));
+    let inf = TransformPass[deflate.Inflater](StreamTo[IoBuf].at(hash, 1u64, 0usize, Some[CancelGroup](intoHash)),
+      deflate.Inflater.make(deflate.Format.Gzip), Some[CancelGroup](intoInf));
+    SocketFrom().run(SocketAddr.localhost(port), StreamTo[IoBuf].at(inf, 1u64, 0usize, Some[CancelGroup](intoInf)));
+    var m = made;
+    if which == 0u32 { m.send(inf); } else if which == 1u32 { m.send(hash); } else { m.send(sink); }
+  }
+}
+
+// The server, its port and the word of when the connection went
+fn served(junk: usize) (u16, OneshotReceiver[u64]) {
+  var ptx: OneshotSender[u16];
+  var prx: OneshotReceiver[u16];
+  ptx, prx = Oneshot[u16].make();
+  var gtx: OneshotSender[u64];
+  var grx: OneshotReceiver[u64];
+  gtx, grx = Oneshot[u64].make();
+  Server().serve(junk, ptx, gtx);
+  (prx.recv() || 0u16, grx)
+}
+
+fn within(grx: OneshotReceiver[u64], from: u64, label: &str) {
+  var rx = grx;
+  let at = rx.recv() || 0u64;
+  expectBool(at >= from && (at - from) / 1000000u64 < 100u64, true, label);
+}
+
+// 'which' stage is stopped (0 transform, 1 hash, 2 file), or none: the server's junk fails the transform
+fn chain(which: u32, junk: usize, label: &str) {
+  let name = "piecechain.tmp";
+  var port: u16;
+  var gone: OneshotReceiver[u64];
+  port, gone = served(junk);
+  var dtx: OneshotSender[Result[u64, AnyError]];
+  var drx: OneshotReceiver[Result[u64, AnyError]];
+  dtx, drx = Oneshot[Result[u64, AnyError]].make();
+  var mtx: OneshotSender[PieceSink[IoBuf]];
+  var mrx: OneshotReceiver[PieceSink[IoBuf]];
+  mtx, mrx = Oneshot[PieceSink[IoBuf]].make();
+  let started = nowNanos();
+  Chain().run(port, String.from(name), which, dtx, mtx);
+  var from = started;
+  match mrx.recv() {
+    case let Some(stage) {
+      if junk == 0usize {
+        thread.sleep(Duration.fromMillis(200i64));          // connected, and parked in its first read
+        from = nowNanos();
+        pokeCancelled(stage);
+      }
+    }
+    case is None { expectBool(false, true, label); }
+  }
+  within(gone, from, label);
+  match drx.recv() {
+    case let Some(r) {
+      match r {
+        case let Ok(n) { expectBool(false, true, label); }
+        case is Err { expectBool(true, true, label); }
+      }
+    }
+    case is None { expectBool(false, true, label); }
+  }
+  _ = fs.removeFile(&Path.from(name));
+}
+
+fn main() i32 {
+  initAll();
+  chain(0u32, 0usize, "A: a stop at the transform ends the idle read, and the file reports a failure");
+  chain(1u32, 0usize, "B: a stop at the hash ends the idle read, and the file reports a failure");
+  chain(2u32, 0usize, "C: a stop at the file ends the idle read, and the file reports a failure");
+  chain(0u32, 100usize, "D: a transform that fails ends the idle read, and the file reports a failure");
+  {
+    var port: u16;
+    var gone: OneshotReceiver[u64];
+    port, gone = served(0usize);
+    let old = Old();
+    let feeding = CancelGroup.make();
+    let bridge = PieceBridge(old, Some[CancelGroup](feeding));
+    SocketFrom().run(SocketAddr.localhost(port), StreamTo[IoBuf].at(bridge, 1u64, 0usize, Some[CancelGroup](feeding)));
+    thread.sleep(Duration.fromMillis(200i64));
+    let from = nowNanos();
+    old.quit();
+    within(gone, from, "E: an old sink's stop reaches the read through the bridge");
+  }
+  finalAll();
+  expectUInt(iobuf.stats().lent, 0u64, "every buffer is back in its pool");
+  done()
+}

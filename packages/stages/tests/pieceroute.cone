@@ -1,0 +1,235 @@
+// A routed response with a proxy, actors only, on the stream core: a stand-in connection takes the requests, a
+// Proxy handler asks a Back end for its response and returns the back end's body in its own, and the connection
+// takes that body: from then on the pieces go from the back end's actor to the connection's, and the handler sees
+// no message for them.
+//
+//   20 requests of 10 pieces each through the proxy:
+//   - the connection takes all 200 pieces (and their 200 KiB), 20 ends, all Finished
+//   - the Proxy ran 'handle' 20 times and nothing else (it counts its behaviours; 'count' is the 21st, the check's)
+//   - the back end delivered 20 streams, one 'deliver' each
+//   - the workers handled 2 messages a piece plus a fixed number a request (the slope between 10 and 0 pieces)
+
+mod pieceroute;
+
+import testing use *;
+import collections use *;
+import iobuf use IoBuf;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import actors;
+import stages use *;
+
+pub struct Request is Sendable {
+  pub id: u64;
+  pub pieces: u64;                    // how many pieces the body has
+}
+
+pub use Body;
+pub enum Body is Move, Sendable {
+  Empty;
+  Streamed(StreamFrom[IoBuf]);
+}
+
+pub struct Response is Move, Sendable {
+  pub status: u32;
+  pub body: Body;
+
+  pub fn takeBody(self: &mut) Body {
+    var b = Body.Empty;
+    b <-> body;
+    b
+  }
+}
+
+pub actor trait Handler {
+  pub async fn handle(self, req: Request) Response;
+}
+
+pub struct Counts is Sendable {
+  pub pieces: u64;
+  pub bytes: u64;
+  pub ends: u64;
+  pub finished: u64;
+  pub served: u64;
+  pub heads: u64;
+  pub delivers: u64;
+}
+
+// ---- the connection: one StreamTo per stream, a tag of its own for each ----
+
+pub actor Conn is PieceSink[IoBuf] {
+  pieces: u64;
+  bytes: u64;
+  ends: u64;
+  finished: u64;
+  served: u64;
+  heads: u64;
+
+  pub fn init(self: &new) {
+    *self = Self(pieces: 0u64, bytes: 0u64, ends: 0u64, finished: 0u64, served: 0u64, heads: 0u64);
+  }
+
+  pub async fn serve(self, req: Request, h: Handler) {
+    served = served + 1u64;
+    var resp = await h.handle(req);
+    heads = heads + 1u64;
+    match resp.takeBody() {
+      case is Empty {}
+      case let Streamed(s) {
+        var sf = s;
+        sf.to(StreamTo[IoBuf].at(selfactor, req.id));
+      }
+    }
+  }
+
+  pub async fn piece(self, tag: u64, c: IoBuf) PieceAck[IoBuf] {
+    pieces = pieces + 1u64;
+    bytes = bytes + u64.from(c.len());
+    var b = c;
+    b.clear();
+    MoreWith[IoBuf](b)
+  }
+
+  pub async fn end(self, tag: u64, how: Ending) {
+    ends = ends + 1u64;
+    match how {
+      case is Finished { finished = finished + 1u64; }
+      case is Failed {}
+    }
+  }
+
+  pub async fn report(self, to: OneshotSender[Counts]) {
+    var t = to;
+    t.send(Counts(pieces, bytes, ends, finished, served, heads, 0u64));
+  }
+}
+
+// ---- the back end, and the proxy ----
+
+pub struct BackResp is Move, Sendable {
+  pub status: u32;
+  pub body: Option[StreamFrom[IoBuf]];
+}
+
+pub actor Back is PieceSource[IoBuf] {
+  delivers: u64;
+  want: Deque[(u64, u64)];
+
+  pub fn init(self: &new) {
+    *self = Self(delivers: 0u64, want: Deque[(u64, u64)]());
+  }
+
+  // The head, and the body on offer
+  pub async fn fetch(self, req: Request) BackResp {
+    want.push((req.id, req.pieces));
+    BackResp(200u32, Some[StreamFrom[IoBuf]](StreamFrom[IoBuf].of(selfactor, req.id)))
+  }
+
+  pub async fn deliver(self, tag: u64, to: StreamTo[IoBuf]) {
+    delivers = delivers + 1u64;
+    var dest = to;
+    var n = 0u64;
+    var k = want.len();
+    while k > 0usize {
+      match want.popFront() {
+        case let Some(w) {
+          if w.0 == tag { n = w.1; } else { want.push(w); }
+        }
+        case is None {}
+      }
+      k = k - 1usize;
+    }
+    var i = 0u64;
+    var stopped = false;
+    while i < n && !stopped {
+      var b = IoBuf(1024usize);
+      b.setLen(1024usize);
+      let a = await dest.sink.piece(dest.tag, b);
+      match a {
+        case is Stop { stopped = true; }
+        else {}
+      }
+      i = i + 1u64;
+    }
+    dest.end(Ending.Finished);
+  }
+
+  pub async fn decline(self, tag: u64) {}
+  pub async fn count(self, to: OneshotSender[Counts]) {
+    var t = to;
+    t.send(Counts(0u64, 0u64, 0u64, 0u64, 0u64, 0u64, delivers));
+  }
+}
+
+pub actor Proxy is Handler {
+  back: Back;
+  seen: u64;
+  pub fn init(self: &new, back: Back) { *self = Self(back: back, seen: 0u64); }
+  pub async fn handle(self, req: Request) Response {
+    seen = seen + 1u64;
+    let head = await back.fetch(req);
+    var h = head;
+    // the back end's body, as it is: nothing of it comes through this actor
+    var b = None[StreamFrom[IoBuf]];
+    b <-> h.body;
+    match b {
+      case let Some(s) { Response(h.status, Body.Streamed(s)) }
+      case is None { Response(h.status, Body.Empty) }
+    }
+  }
+  pub async fn count(self, to: OneshotSender[u64]) { var t = to; t.send(seen); }
+}
+
+fn run(requests: u64, pieces: u64) (Counts, u64, u64) {
+  var tx: OneshotSender[Counts];
+  var rx: OneshotReceiver[Counts];
+  tx, rx = Oneshot[Counts].make();
+  var btx: OneshotSender[Counts];
+  var brx: OneshotReceiver[Counts];
+  btx, brx = Oneshot[Counts].make();
+  var ptx: OneshotSender[u64];
+  var prx: OneshotReceiver[u64];
+  ptx, prx = Oneshot[u64].make();
+  let m0 = actors.stats().messages;
+  var msgs = 0u64;
+  {
+    let conn = Conn();
+    let back = Back();
+    let proxy = Proxy(back);
+    let h: Handler = proxy;
+    var id = 1u64;
+    while id <= requests {
+      conn.serve(Request(id, pieces), h);
+      id = id + 1u64;
+    }
+    actors.waitQuiet();
+    msgs = actors.stats().messages - m0;
+    conn.report(tx);
+    back.count(btx);
+    proxy.count(ptx);
+  }
+  let c = rx.recv() || Counts(0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
+  let b = brx.recv() || Counts(0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
+  let seen = prx.recv() || 0u64;
+  (Counts(c.pieces, c.bytes, c.ends, c.finished, c.served, c.heads, b.delivers), seen, msgs)
+}
+
+fn main() i32 {
+  initAll();
+  let flat = run(20u64, 0u64);
+  let full = run(20u64, 10u64);
+  let c = full.0;
+  expectUInt(c.served, 20u64, "the connection served 20 requests");
+  expectUInt(c.heads, 20u64, "and had 20 responses from the proxy");
+  expectUInt(c.pieces, 200u64, "it took all 200 pieces");
+  expectUInt(c.bytes, 204800u64, "their 200 KiB");
+  expectUInt(c.ends, 20u64, "with 20 ends");
+  expectUInt(c.finished, 20u64, "all Finished");
+  expectUInt(c.delivers, 20u64, "the back end delivered 20 streams, one 'deliver' each");
+  expectUInt(full.1, 20u64, "the proxy handled 20 'handle' and nothing for any piece");
+  expectUInt(flat.1, 20u64, "(as it did with no pieces)");
+  let perPiece = (full.2 - flat.2) / 200u64;
+  expectUInt(perPiece, 2u64, "the workers handled 2 messages a piece: the call and its answer");
+  finalAll();
+  expectUInt(iobuf.stats().lent, 0u64, "every buffer is back in its pool");
+  done()
+}
