@@ -1,0 +1,147 @@
+// earblend: the knight's right ear unioned onto the head, hard and with the seam blended at three widths
+// (blendSeam / booleanUnionBlended), with the numbers each build gives. The measures that judge the result
+// (the ear's arc line, the edge round at stations round the ear root, the rim angle and the miss against the
+// source) are Python, in C:/src/zz-w70/judge.py, reading the files this writes.
+//
+//   congo run --release --example earblend [widths in mm, default 0.15 0.3 0.6]   (from packages/sculpt)
+//
+// Input in C:/src/zz-w70/ (made by prep_ear.py): head.obj, the ears-off knight (knight-noears-r4.stl, closed);
+// ear-R.obj, the source's right ear (Knight-avalli.stl faces perc/ear4-faces-R.npy, a flap or two dropped,
+// capped at its root and pushed 1 mm into the head along its axis, so the union has a seam).
+// Output there: union-hard.obj, blend-<width in um>.obj, blend-<width in um>-faces.txt (the band's faces in
+// the result), and the numbers on stdout.
+
+mod earblend;
+
+import stdio use *;
+import collections use *;
+import geomath use *;
+import mesh use *;
+import fs;
+import path use Path as FilePath;
+import sculpt use *;
+import time use Instant;
+
+let dir = "C:/src/zz-w70/";
+
+fn loadObj(name: &str) PolyMesh {
+  var full = String.from(dir);
+  full.append(name);
+  var problems = List[String]();
+  let m = readPolyObj(&FilePath.from(full.view()), &mut problems);
+  if problems.len() > 0usize { print <- "problems reading ", name, ": ", problems.len(), " first: ", problems[0usize].view(), "\n"; }
+  m
+}
+
+fn saveObj(m: &PolyMesh, name: &str) {
+  var full = String.from(dir);
+  full.append(name);
+  if !writeObj(m, &FilePath.from(full.view())) { print <- "could not write ", full.view(), "\n"; }
+}
+
+fn saveFaces(faces: &List[u32], name: &str) {
+  var text = String();
+  var i = 0usize;
+  while i < faces.len() {
+    text.appendInt(i64.from(*faces[i]));
+    text.append("\n");
+    i = i + 1usize;
+  }
+  var full = String.from(dir);
+  full.append(name);
+  let fp = FilePath.from(full.view());
+  if let Err(e) = fs.writeFile(&fp, text.view()) { print <- "could not write ", full.view(), ": ", e, "\n"; }
+}
+
+fn volumeOf(m: &PolyMesh) f64 {
+  var sum = 0.0;
+  var f = 0usize;
+  while f < m.faceCount() {
+    let pts = m.facePositions(u32.from(f));
+    var i = 1usize;
+    while i + 1usize < pts.len() {
+      let a = DVec3.from(*pts[0usize]);
+      let b = DVec3.from(*pts[i]);
+      let c = DVec3.from(*pts[i + 1usize]);
+      sum = sum + a.x * (b.y * c.z - b.z * c.y) + a.y * (b.z * c.x - b.x * c.z) + a.z * (b.x * c.y - b.y * c.x);
+      i = i + 1usize;
+    }
+    f = f + 1usize;
+  }
+  sum / 6.0
+}
+
+fn main() i32 {
+  var t0 = Instant.now();
+  let head = loadObj("head.obj");
+  let ear = loadObj("ear-R.obj");
+  print <- "head ", head.vertexCount(), " vertices ", head.faceCount(), " faces; ear ", ear.vertexCount(), " vertices ",
+    ear.faceCount(), " faces; loaded in ", t0.elapsed().secondsF64(), " s; validate ", head.validate().len(), " ", ear.validate().len(), "\n";
+
+  t0 = Instant.now();
+  var problems = List[String]();
+  let hard = booleanWith(&head, &ear, BooleanUnion, 2., &mut problems);
+  let tHard = t0.elapsed().secondsF64();
+  print <- "hard union: ", hard.vertexCount(), " vertices ", hard.faceCount(), " faces, volume ", volumeOf(&hard),
+    " (head ", volumeOf(&head), " + ear ", volumeOf(&ear), "), ", tHard, " s, problems ", problems.len(), "\n";
+  var pi = 0usize;
+  while pi < problems.len() { print <- "  ", problems[pi].view(), "\n"; pi = pi + 1usize; }
+  saveObj(&hard, "union-hard.obj");
+  let ch = hard.findFloatChannel(EdgeDomain, "crease");
+  var seam = List[u32]();
+  var seamLen: f64 = 0.;
+  var e = 0usize;
+  while ch != NoIndex && e < hard.edgeCount() {
+    if hard.float(ch, u32.from(e)) == 2. {
+      seam.push(u32.from(e));
+      let h = hard.edgeHalfedge(u32.from(e), 0u32);
+      let d = *hard.positions[usize.from(hard.toVertex(h))] - *hard.positions[usize.from(hard.fromVertex(h))];
+      seamLen = seamLen + f64.from(d.length());
+    }
+    e = e + 1usize;
+  }
+  print <- "seam: ", seam.len(), " edges, length ", seamLen, " mm\n";
+  var st = String();
+  var si = 0usize;
+  while si < seam.len() {
+    let h = hard.edgeHalfedge(*seam[si], 0u32);
+    let a = *hard.positions[usize.from(hard.fromVertex(h))];
+    let b = *hard.positions[usize.from(hard.toVertex(h))];
+    st.appendF32(a.x); st.append(" ");
+    st.appendF32(a.y); st.append(" ");
+    st.appendF32(a.z); st.append(" ");
+    st.appendF32(b.x); st.append(" ");
+    st.appendF32(b.y); st.append(" ");
+    st.appendF32(b.z); st.append("\n");
+    si = si + 1usize;
+  }
+  var sname = String.from(dir);
+  sname.append("seam.txt");
+  let sp = FilePath.from(sname.view());
+  if let Err(e) = fs.writeFile(&sp, st.view()) { print <- "could not write seam.txt: ", e, "\n"; }
+
+  var wi = 0usize;
+  let widths: Array[f32, 3] = [0.15f32, 0.3f32, 0.6f32];
+  while wi < 3usize {
+    let w = widths[wi];
+    var p = List[String]();
+    t0 = Instant.now();
+    let r = blendSeam(&hard, seam.view(), w, &mut p);
+    let t = t0.elapsed().secondsF64();
+    let um = i64.from(w * 1000.);
+    var name = String.from("blend-");
+    name.appendInt(um);
+    var objName = String.from(name.view());
+    objName.append(".obj");
+    var facesName = String.from(name.view());
+    facesName.append("-faces.txt");
+    saveObj(&r.mesh, objName.view());
+    saveFaces(&r.faces, facesName.view());
+    print <- "width ", w, ": band ", r.faces.len(), " triangles, ", r.vertices.len(), " free vertices; mesh ", r.mesh.faceCount(),
+      " faces; volume ", volumeOf(&r.mesh), "; validate ", r.mesh.validate().len(), "; ", t, " s; problems ", p.len(), "\n";
+    pi = 0usize;
+    while pi < p.len() { print <- "  ", p[pi].view(), "\n"; pi = pi + 1usize; }
+    wi = wi + 1usize;
+  }
+  0i32
+}
