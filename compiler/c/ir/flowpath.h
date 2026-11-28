@@ -147,7 +147,7 @@ typedef struct {
     VarDclNode *guardname; // a lock's hidden guard: the variable the writer named that held a borrow through it
     uint32_t narrow;    // a name narrowed by a test or a store: its stand-in's index (pwNarrowName), else 0
     uint8_t narrowed;   // it is such a stand-in, bearing the name it stands for
-    uint8_t compound;   // it is the stand-in for the place a compound assignment writes (pwCompoundPlace)
+    uint8_t compound;   // it is the stand-in for the place a compound assignment writes (pwCompoundPlace); 2: moves alone pend
     uint8_t indexed;    // it is the stand-in for the place an index picks from (pwIndexStandIn)
     uint8_t swapped;    // ... or for one side of a swap, while the other side is made (pwSwap)
     uint8_t yielded;    // a temporary's stand-in that goes on holding what it held when the statement ends (pwYieldStandIn)
