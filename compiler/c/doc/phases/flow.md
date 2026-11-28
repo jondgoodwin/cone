@@ -1023,12 +1023,12 @@ freezing; once copied, two variables, or a variable and a callee, reach one plac
 the loan is `aliased` as above, whether it is an alias loan or one a call returned and
 froze (`loanFreezeWritable`; it stays frozen against its source's own name). It is made
 by: a copy of a value that carries a borrow it may write through (`pwPlaceValue`: a
-local, a field, an element, an argument, a variable read out of `&r`); a closure's
-capture of a variable (`pwLend`); several values given from one expression
-(`pwAssign`: `a, b = f(&mut l)`); and, as another variable keeps it (`loanHeldBy`), a
-writing reborrow through the reference (`let b = &mut *r`) or any borrow of the variable
-that holds it (`&mut r`). The temporary an operator changing its operand in place
-borrows through is none of these (`pwIsOpTemp`).
+local, a field, an element, an argument); any borrow of a variable that holds such a
+value, which reads it out (`pwLend`: `&r`, `&mut r`, a closure's capture), kept or handed
+to a call; several values given from one expression (`pwAssign`: `a, b = f(&mut l)`);
+and a writing reborrow through the reference that another variable keeps (`loanHeldBy`:
+`let b = &mut *r`). The temporary an operator changing its operand in place borrows
+through copies nothing (`pwIsOpTemp`).
 
 A holder reaching its loan's source through the loan — `*b = 9`, `r.x` — uses
 the holder; it does not access the source.
