@@ -738,7 +738,7 @@ static void assignFlowLvalReads(FlowState *fstate, INode **lvalp) {
 void assignFlow(FlowState *fstate, AssignNode **nodep) {
     AssignNode *node = *nodep;
 
-    flowLoadValue(fstate, &node->rval);
+    flowAssignValue(fstate, node->lval, &node->rval);
 
     if (node->lval->tag == VTupleTag) {
         INode **lvalp;

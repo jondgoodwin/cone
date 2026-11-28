@@ -187,6 +187,15 @@ void flowGateJoinAsk(FlowState *fstate, Nodes *elems);
 void flowGateShapeAsk(FlowState *fstate, INode *call);
 // A call with a writable argument
 void flowGateShapeWrite(FlowState *fstate, Nodes *args);
+// The temporary a compound assignment's store writes through ('x += e' is
+// '{let tmp = &mut x; *tmp = *tmp + e}'), or NULL for any other store
+VarDclNode *flowCompoundTemp(INode *lval);
+// The use of the local in whose own storage the place that temporary was made
+// for lies, or NULL where it is reached through a reference
+struct NameUseNode *flowCompoundLocal(VarDclNode *tmp);
+// Walk the value of an assignment, refusing a compound one whose right side
+// moves the variable holding its place
+void flowAssignValue(FlowState *fstate, INode *lval, INode **rvalp);
 // A store, which may be the one that ends a compound assignment through a temporary
 void flowGateCompound(FlowState *fstate, INode *lval, INode *rval);
 // An index of a place, whose address is made before the index is

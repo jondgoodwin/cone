@@ -1602,10 +1602,25 @@ whether it moves away or replaces what the place was borrowed from by its own
 name. So `l[0usize] += grow(&mut l)` is `ErrorShapeReshape`, as
 `let p = &mut l[0usize]; let v = grow(&mut l); *p = v` is, and
 `l[0usize] += take(l)` is `ErrorFrozen`, as the same through `p` is. Nothing
-else is asked of it: a read or a write of the collection there is accepted, and
-a place in a variable's own storage (`x += {x = 5; 1}`) has no stand-in. A
+else is asked of it: a read or a write of the collection there is accepted. A
 function whose only such borrow is the temporary has nothing that holds it, so
 the gate marks it (`flowGateCompound`, `FlowGateShape` above).
+
+**A compound assignment whose right side moves what it writes into.** A place
+reached through any other borrow stays where it is when what was borrowed is
+replaced, but a move takes its value away. Its stand-in pends on moves alone
+(`PathVar.compound` 2), so `let r = &mut s; r.n += take(s)` is `ErrorFrozen`,
+as `r.n = take(s)` is. A place in a variable's own storage, named by the
+statement itself (`s.n`, `a[i].n`, `t.1`, `x`, `(&mut s.n)`), is the tree
+walk's: `flowAssignValue`, which walks the value of every assignment, refuses
+(`ErrorMove`) a right side after which the local the temporary's borrow lies in
+stands moved or hollow and did not before: the same answer as
+`let v = take(s); s.n += v`. A right side that moves the value and gives the
+variable a new one is accepted, as is a move on a path that leaves, and one that
+only replaces it (`x += {x = 5; 1}`). The local is found as an index's is
+(`flowPlaceLocal`, "An index that moves what it indexes", below). Where the
+type declares the operator (`+=`, `<-`) the compound assignment is a call handed
+`&mut x`, and the borrow in flight refuses the move as for any argument.
 
 **A place's base, held while its index is made.** Generation takes the address
 of what an index picks from before it makes the index (`genlAddr`, and a

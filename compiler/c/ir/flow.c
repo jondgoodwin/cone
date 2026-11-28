@@ -449,15 +449,14 @@ VarDclNode *flowLvalRootVar(INode *lval) {
     }
 }
 
-// The use of the local whose own storage the element or range 'index' picks
-// lies in, or NULL. The way to it goes through fields, elements of arrays held
-// by value, and the borrows type check makes of them to borrow from it ('&a[i]'
-// is '(&a)[i]', and each link of the chain after it, FlagBorrow, gives the next
-// reference into the same storage). Any other reference on the way is not the
-// variable's own storage: what happens to it meanwhile is the loan walk's
-// (flowGateIndex)
-static NameUseNode *flowIndexedLocal(INode *index) {
-    INode *place = index;
+// The use of the local whose own storage 'place' lies in, or NULL. The way to
+// it goes through fields, elements of arrays held by value, and the borrows
+// type check makes of them to borrow from it ('&a[i]' is '(&a)[i]', and each
+// link of the chain after it, FlagBorrow, gives the next reference into the
+// same storage). Any other reference on the way is not the variable's own
+// storage: what happens to it meanwhile is the loan walk's (flowGateIndex,
+// flowGateCompound)
+static NameUseNode *flowPlaceLocal(INode *place) {
     while (1) {
         if (isNameUseNode(place) && isExpNode(place)) {
             INode *dcl = ((NameUseNode *)place)->dclnode;
@@ -498,7 +497,7 @@ static NameUseNode *flowIndexedLocal(INode *index) {
 // move, as 'let i = take(a); a[i]' does. (A store's index is walked before the
 // store asks about its variable, assignlvalrtype)
 void flowIndexArgs(FlowState *fstate, FnCallNode *index) {
-    NameUseNode *use = flowIndexedLocal((INode *)index);
+    NameUseNode *use = flowPlaceLocal((INode *)index);
     VarDclNode *var = use ? (VarDclNode *)use->dclnode : NULL;
     // One already moved was refused as the place was walked
     int held = var && !(var->flowtempflags & (VarMoved | VarHollow));
@@ -510,6 +509,44 @@ void flowIndexArgs(FlowState *fstate, FnCallNode *index) {
     if (held && (var->flowtempflags & (VarMoved | VarHollow)))
         errorMsgNode((INode *)use, ErrorMove,
             "This variable's value is moved out by the index, before the element is reached. It is no longer there to index.");
+}
+
+// The temporary a compound assignment's store writes through, or NULL
+VarDclNode *flowCompoundTemp(INode *lval) {
+    if (lval->tag != DerefTag)
+        return NULL;
+    INode *ref = ((StarNode *)lval)->vtexp;
+    if (!isNameUseNode(ref))
+        return NULL;
+    VarDclNode *tmp = (VarDclNode *)((NameUseNode *)ref)->dclnode;
+    if (tmp == NULL || tmp->tag != VarDclTag || tmp->namesym != tempName || tmp->value == NULL)
+        return NULL;
+    return tmp;
+}
+
+// A temporary given a reference some name holds writes through it, and one
+// given a borrow writes into the place that borrow names
+NameUseNode *flowCompoundLocal(VarDclNode *tmp) {
+    if (tmp->value == NULL || (tmp->value->tag != BorrowTag && tmp->value->tag != ArrayBorrowTag))
+        return NULL;
+    return flowPlaceLocal(tmp->value);
+}
+
+// Walk the value of an assignment. A compound one, 'x += e' as
+// '{let tmp = &mut x; *tmp = *tmp + e}' (fnCallOpAssgn), reaches its place
+// before 'e' and writes into it after, so an 'e' that moves the variable the
+// place lies in uses it after the move, as 'let v = e; x += v' does. A move
+// that gives the variable a new value before the write is none.
+void flowAssignValue(FlowState *fstate, INode *lval, INode **rvalp) {
+    VarDclNode *tmp = flowCompoundTemp(lval);
+    NameUseNode *use = tmp ? flowCompoundLocal(tmp) : NULL;
+    VarDclNode *var = use ? (VarDclNode *)use->dclnode : NULL;
+    // One already moved was refused as the place was borrowed
+    int held = var && !(var->flowtempflags & (VarMoved | VarHollow));
+    flowLoadValue(fstate, rvalp);
+    if (held && (var->flowtempflags & (VarMoved | VarHollow)))
+        errorMsgNode((INode *)use, ErrorMove,
+            "This variable's value is moved out by the right side of the compound assignment, before the result is stored. It is no longer there to change.");
 }
 
 // A copy of 'nodes' with 'node' added, so that a list an undo log remembers is
@@ -2644,15 +2681,10 @@ int flowGateOnlyReads(INode *node) {
 // place is one a change could free, and 'e' does more than read, the function is
 // walked, for what changes it before the store (flowpath.c, pwCompoundPlace)
 void flowGateCompound(FlowState *fstate, INode *lval, INode *rval) {
-    if ((fstate->gate & FlowGateShape) || lval->tag != DerefTag)
+    if (fstate->gate & FlowGateShape)
         return;
-    INode *ref = ((StarNode *)lval)->vtexp;
-    if (!isNameUseNode(ref))
-        return;
-    VarDclNode *tmp = (VarDclNode *)((NameUseNode *)ref)->dclnode;
-    if (tmp == NULL || tmp->tag != VarDclTag || tmp->namesym != tempName || tmp->value == NULL)
-        return;
-    if (flowGatePlaceLent(tmp->value) && !flowGateOnlyReads(rval))
+    VarDclNode *tmp = flowCompoundTemp(lval);
+    if (tmp && flowGatePlaceLent(tmp->value) && !flowGateOnlyReads(rval))
         fstate->gate |= FlowGateShape;
 }
 

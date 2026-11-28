@@ -164,7 +164,10 @@ into the variant; one that could change a collection's shape or replace an owner
 returning a reference or a reference bound to it. A move of what the place was borrowed
 from, or a store or swap over it by its own name, is `ErrorFrozen` (`l[0] += take(l)`,
 `u.x += {u = ...; 5}`): the stand-in's write is the borrow's later use. Nothing else is
-asked of it (`loanUseCompound`): `x += x` reads what it writes.
+asked of it (`loanUseCompound`): `x += x` reads what it writes. A place that rests on no
+value that changes shape is asked about moves alone, whether through a named borrow or in a
+variable's own storage (flow.md, "A compound assignment whose right side moves what it
+writes into").
 
 ## A call in an index
 

@@ -1783,7 +1783,7 @@ void loanUseCompound(uint32_t var, INode *usenode) {
             continue;
         if (pend->kind == PendingShape)
             loanShapeFire(pend, usenode);
-        else if (pend->kind == AccessMove || pend->kind == AccessReplace)
+        else if (pend->kind == AccessMove || (pend->kind == AccessReplace && pathVars[var].compound == 1))
             loanAccessFire(pend, usenode);
     }
 }
