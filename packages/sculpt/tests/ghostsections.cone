@@ -1,0 +1,388 @@
+// The sculpt package's ghost sections (loftTaggedFramed's beforeStart and afterEnd, GhostSection, SweepSpec's
+// beforeStart, afterEnd and ghostAt), checked with the testing package against values worked out by hand (and by a
+// short script that evaluates the same Catmull-Rom); only a failure prints, so ghostsections.out holds the summary alone.
+// Frame Z(z) is origin (0, 0, z), tangent (0, 0, 1), profile x on world x, y on world y. The square of half width w
+// has tags 0 1 2 3; its column 0 is the corner (w, w). Every run has 'between' 7 (8 rings a band, 1/8 steps).
+//
+// The continuity measure is the turn at the shared ring: the angle between the column's last segment in the first run
+// (ring 15 to the shared ring 16) and its first segment in the second (the shared ring to the second run's ring 1),
+// the largest over the 4 columns. A column is a smooth curve through the sections, so the turn of the continuous run
+// W (all the sections in one loft, shared ring 16 of its 33) is the measure's own floor, from the 1/8 steps.
+//
+// - Straight: 5 sections Z(0)..Z(4), half widths w = 1 + z^2 / 4 = 1, 1.25, 2, 3.25, 5. W is the one loft of the five.
+//   Run A is sections 0-2, run B sections 2-4, sharing section 2 (so ring 16 of A is ring 0 of B, the point
+//   (2, 2, 2) of column 0 exactly... (w = 2 at z = 2)).
+//   Slope across the shared ring, per unit z (knots 1 apart): the true central slope is (3.25 - 1.25) / 2 = 1.00.
+//   A without ghost ends on the mirror of its inside neighbour: (2.75 - 1.25) / 2 = 0.75; B without one starts at
+//   (3.25 - 0.75) / 2 = 1.25: a kink. With ghosts (A's afterEnd section 3, B's beforeStart section 1) both are 1.00.
+//   Turns, from the hand Catmull-Rom of the 1/8 steps: W 1.6887 degrees at the shared ring; A and B with ghosts
+//   1.6887; without 12.2487. The ring before the shared one: W and A with the ghost (1.87890625, 1.87890625, 1.875);
+//   without the ghost (1.90283203, 1.90283203, 1.875), 0.0338 away. B's ring 1: (2.12890625, 2.12890625, 2.125) with
+//   the ghost, (2.15283203, ...) without.
+//   Mutant: the same check with the ghost ignored (None passed in its place) must FAIL the continuity row (12.25 against
+//   the allowed 1.69 + 0.02); a ghost that is read but not used would show the same.
+//   Mirror ghost: a ghost that is the mirror of the inside neighbour about the end (Z(3), w = 2 2 - 1.25 = 2.75 after
+//   A) is the extrapolation the end already makes: the same mesh to 1e-5 as with no ghost.
+// - Curved: the sections' frames on a circle of radius 4 in the xz-plane, 30 degrees apart (angles 0, 30, 60, 90, 120;
+//   origin (4 (1 - cos a), 0, 4 sin a), tangent (sin a, 0, cos a), x on (cos a, 0, -sin a), y on world y), the
+//   square of half width 1. Shared section at 60 degrees. Column 0's ring 15 (in A and W with the ghost) is
+//   (2.33874894, 1, 2.49687619), B's ring 1 (2.66826732, 1, 2.68712372). Turns: W 4.2242 degrees at the shared ring,
+//   A with B with ghosts 4.2242, without ghosts 26.8902.
+// - SweepSpec: two specs, A the square of half width w = 1 to 2 (2 values each) along z 0 to 2 with 3 rings, B w = 2 to 5
+//   along z 2 to 4 with 3 rings (so A's sections at z 0, 1, 2 have w 1, 1.5, 2 and B's at z 2, 3, 4 have w 2, 3.5, 5): the
+//   slope at the shared ring jumps from 0.5 to 1.5 per unit z with no ghost and is (3.5 - 1.5) / 2 = 1.0 on both
+//   sides with the ghosts 'B.ghostAt(0.5)' (the section at z = 3, w = 3.5, in B's path frame at z = 3) as A's afterEnd
+//   and 'A.ghostAt(0.5)' (z = 1, w = 1.5) as B's beforeStart. Hermite at s = 7/8 on [1, 2], p1 = 1.5, p2 = 2, m1 = 0.5:
+//   h00 = 0.0429688, h10 = 0.0136719, h01 = 0.9570312, h11 = -0.0957031; with m2 = 1.0: x = 0.0644531 + 0.0068359 +
+//   1.9140625 - 0.0957031 = 1.8896484 (the corner's |x| and |y| at ring 15); with m2 = 0.5 (no ghost) 1.9375.
+//   B's ring 1 (s = 1/8 on [2, 3], p1 = 2, p2 = 3.5, m1 = 1.0 with the ghost, m2 = 1.5): 2.1396484; with no ghost
+//   (m1 = (3.5 - 0.5) / 2 = 1.5, m2 = 1.5) 2.1875. Turns: the continuous run of the five sections 6.3626 degrees; A and
+//   B with ghosts 6.3626; without ghosts 29.4962.
+// - Refusals: a ghost with a different tag count; an open ghost on closed sections; a ghost at the end frame's origin;
+//   a SweepSpec ghost with a part-way closing; 'ghostAt' with t outside [0, 1].
+// - Without ghosts nothing moves: 'framedlofts' keeps 'loftTaggedFramed with the path's frames is loftTagged, bit for
+//   bit' (None and None), which passed before the ghosts and passes after.
+
+mod ghostsections;
+
+import testing use *;
+import collections use *;
+import geomath use *;
+import mesh use *;
+import sculpt use *;
+
+let near: f32 = 0.00001;
+let degPerRad: f32 = 57.29578;
+
+fn f1(a: f32) List[f32] { var v = List[f32](); v.push(a); v }
+fn f2(a: f32, b: f32) List[f32] { var v = List[f32](); v.push(a); v.push(b); v }
+fn c1(a: f32) RunCurve { RunCurve.of(f1(a)) }
+fn c2(a: f32, b: f32) RunCurve { RunCurve.of(f2(a, b)) }
+
+fn squareFrom(h: f32) Profile {
+  let pts = List[Vec2](4) <- Vec2(h, h), Vec2(-h, h), Vec2(-h, -h), Vec2(h, -h);
+  Profile(pts, true)
+}
+
+fn fourTags() List[u32] {List[u32](4) <- 0u32, 1u32, 2u32, 3u32}
+
+fn sq(w: f32) TaggedProfile {
+  let p = squareFrom(w);
+  let t = fourTags();
+  TaggedProfile.of(&p, t.view())
+}
+
+fn zFrame(z: f32) Frame {Frame(Vec3(0., 0., z), Vec3(0., 0., 1.), Vec3(1., 0., 0.), Vec3(0., 1., 0.))}
+
+// The frame on the circle of radius 4 at a degrees
+fn arcFrame(deg: f32) Frame {
+  let a = deg * 0.017453292;
+  Frame(Vec3(4. * (1. - cos(a)), 0., 4. * sin(a)), Vec3(sin(a), 0., cos(a)), Vec3(cos(a), 0., 0. - sin(a)),
+    Vec3(0., 1., 0.))
+}
+
+fn ghost(w: f32, f: Frame) Option[GhostSection] { Some[GhostSection](GhostSection(sq(w), f)) }
+fn noGhost() Option[GhostSection] { None[GhostSection] }
+
+// The squares of half widths ws[lo..hi], and the frames fs[lo..hi]
+fn secsOf(ws: &List[f32], lo: usize, hi: usize) List[TaggedProfile] {
+  var s = List[TaggedProfile]();
+  var i = lo;
+  while i < hi { s.push(sq(*ws[i])); i = i + 1usize; }
+  s
+}
+
+fn framesOf(fs: &List[Frame], lo: usize, hi: usize) List[Frame] {
+  var f = List[Frame]();
+  var i = lo;
+  while i < hi { f.push(*fs[i]); i = i + 1usize; }
+  f
+}
+
+fn five(a: f32, b: f32, c: f32, d: f32, e: f32) List[f32] {
+  var v = List[f32]();
+  v.push(a); v.push(b); v.push(c); v.push(d); v.push(e);
+  v
+}
+
+fn fiveFrames(a: Frame, b: Frame, c: Frame, d: Frame, e: Frame) List[Frame] {
+  var v = List[Frame]();
+  v.push(a); v.push(b); v.push(c); v.push(d); v.push(e);
+  v
+}
+
+fn build(secs: &List[TaggedProfile], frs: &List[Frame], before: &Option[GhostSection], after: &Option[GhostSection],
+    label: &Array[u8]) PolyMesh {
+  var problems = List[String]();
+  let m = loftTaggedFramed(secs, frs, &None[TaggedCurve], &None[TaggedCurve], before, after, 7u32, false, false,
+    &mut problems);
+  expectInt(i64.from(problems.len()), 0, label);
+  m
+}
+
+fn pt(m: &PolyMesh, i: usize) Vec3 { *m.positions[i] }
+
+fn turnDeg(a: Vec3, b: Vec3, c: Vec3) f32 {
+  let u = b - a;
+  let v = c - b;
+  atan2(u.cross(v).length(), u.dot(v)) * degPerRad
+}
+
+// The largest over the 4 columns of the turn at the shared ring, 'first' ending in it and 'second' starting from it
+// (ring r of a mesh of n columns at r n)
+fn sharedTurn(first: &PolyMesh, second: &PolyMesh) f32 {
+  let ra = first.vertexCount() / 4usize;
+  var worst: f32 = 0.;
+  var j = 0usize;
+  while j < 4usize {
+    let t = turnDeg(pt(first, (ra - 2usize) * 4usize + j), pt(first, (ra - 1usize) * 4usize + j), pt(second, 4usize + j));
+    if t > worst { worst = t; }
+    j = j + 1usize;
+  }
+  worst
+}
+
+// The same measure inside the one continuous run, at ring 16 of 33
+fn wholeTurn(w: &PolyMesh) f32 {
+  var worst: f32 = 0.;
+  var j = 0usize;
+  while j < 4usize {
+    let t = turnDeg(pt(w, 15usize * 4usize + j), pt(w, 16usize * 4usize + j), pt(w, 17usize * 4usize + j));
+    if t > worst { worst = t; }
+    j = j + 1usize;
+  }
+  worst
+}
+
+// Whether the continuity row holds: the turn at the shared ring is the continuous run's, to 0.02 degrees
+fn continuous(first: &PolyMesh, second: &PolyMesh, w: &PolyMesh) bool {
+  let d = sharedTurn(first, second) - wholeTurn(w);
+  d < 0.02 && d > -0.02
+}
+
+fn sameTo(a: &PolyMesh, b: &PolyMesh, tol: f32) bool {
+  if a.vertexCount() != b.vertexCount() { return false; }
+  var v = 0usize;
+  while v < a.vertexCount() {
+    let p = pt(a, v);
+    let q = pt(b, v);
+    if (p.x - q.x).abs() > tol || (p.y - q.y).abs() > tol || (p.z - q.z).abs() > tol { return false; }
+    v = v + 1usize;
+  }
+  true
+}
+
+fn exactAt(a: &PolyMesh, ia: usize, b: &PolyMesh, ib: usize) bool {
+  let p = pt(a, ia);
+  let q = pt(b, ib);
+  p.x == q.x && p.y == q.y && p.z == q.z
+}
+
+// The two runs and the whole run of a case: sections ws (5), frames fs (5); the ghosts, or not
+struct Case {
+  whole: PolyMesh;
+  withA: PolyMesh;
+  withB: PolyMesh;
+  bareA: PolyMesh;
+  bareB: PolyMesh;
+}
+
+fn runCase(ws: &List[f32], fs: &List[Frame]) Case {
+  let secs = secsOf(ws, 0usize, 5usize);
+  let frs = framesOf(fs, 0usize, 5usize);
+  let none = noGhost();
+  let whole = build(&secs, &frs, &none, &none, "case: whole run: no problem line");
+  let a3 = secsOf(ws, 0usize, 3usize);
+  let b3 = secsOf(ws, 2usize, 5usize);
+  let fa = framesOf(fs, 0usize, 3usize);
+  let fb = framesOf(fs, 2usize, 5usize);
+  let gAfter = ghost(*ws[3usize], *fs[3usize]);
+  let gBefore = ghost(*ws[1usize], *fs[1usize]);
+  let withA = build(&a3, &fa, &none, &gAfter, "case: A with ghost: no problem line");
+  let withB = build(&b3, &fb, &gBefore, &none, "case: B with ghost: no problem line");
+  let bareA = build(&a3, &fa, &none, &none, "case: A bare: no problem line");
+  let bareB = build(&b3, &fb, &none, &none, "case: B bare: no problem line");
+  Case(whole, withA, withB, bareA, bareB)
+}
+
+fn checkCase(c: &Case, kinkWant: f32, wholeWant: f32, tag: &Array[u8]) {
+  expectInt(i64.from(c.whole.vertexCount()), 132, "case: the whole run has 33 rings of 4");
+  expectInt(i64.from(c.withA.vertexCount()), 68, "case: a run has 17 rings of 4");
+  expectFloat(wholeTurn(&c.whole), wholeWant, 0.01, tag);
+  // The shared ring is one point in both runs, bit for bit, with and without the ghost
+  var j = 0usize;
+  var shared = true;
+  while j < 4usize {
+    if !exactAt(&c.withA, 16usize * 4usize + j, &c.withB, j) { shared = false; }
+    if !exactAt(&c.bareA, 16usize * 4usize + j, &c.bareB, j) { shared = false; }
+    if !exactAt(&c.withA, 16usize * 4usize + j, &c.bareA, 16usize * 4usize + j) { shared = false; }
+    j = j + 1usize;
+  }
+  expect(shared, "shared ring: the same points in every build, bit for bit");
+  // Continuity with the ghosts
+  expectFloat(sharedTurn(&c.withA, &c.withB), wholeTurn(&c.whole), 0.02, tag);
+  expect(continuous(&c.withA, &c.withB, &c.whole), "ghosts: the slope across the shared ring is the continuous run's");
+  // The kink without
+  expectFloat(sharedTurn(&c.bareA, &c.bareB), kinkWant, 0.01, tag);
+  expect(!continuous(&c.bareA, &c.bareB, &c.whole), "no ghosts: the shared ring shows a kink");
+  // Mutant: a build that ignored its ghosts is the bare build (None where they go), and the continuity row fails on it
+  expect(sharedTurn(&c.bareA, &c.bareB) > wholeTurn(&c.whole) + 0.5, "mutant: ghost ignored: the continuity row fails");
+}
+
+fn straight() {
+  let ws = five(1., 1.25, 2., 3.25, 5.);
+  let fs = fiveFrames(zFrame(0.), zFrame(1.), zFrame(2.), zFrame(3.), zFrame(4.));
+  let c = runCase(&ws, &fs);
+  checkCase(&c, 12.2487, 1.6887, "straight: turn at the shared ring");
+  // Ring 15 of A (1/8 of the band from the shared ring) and ring 1 of B, column 0, by hand
+  let a15 = pt(&c.withA, 15usize * 4usize);
+  expectFloat(a15.x, 1.87890625, near, "straight: A ring 15 with the ghost: x");
+  expectFloat(a15.y, 1.87890625, near, "straight: A ring 15 with the ghost: y");
+  expectFloat(a15.z, 1.875, near, "straight: A ring 15 with the ghost: z");
+  let b1 = pt(&c.withB, 4usize);
+  expectFloat(b1.x, 2.12890625, near, "straight: B ring 1 with the ghost: x");
+  expectFloat(b1.z, 2.125, near, "straight: B ring 1 with the ghost: z");
+  let n15 = pt(&c.bareA, 15usize * 4usize);
+  expectFloat(n15.x, 1.90283203, near, "straight: A ring 15 without the ghost: x");
+  let nb1 = pt(&c.bareB, 4usize);
+  expectFloat(nb1.x, 2.15283203, near, "straight: B ring 1 without the ghost: x");
+  // The ghosted run is the continuous run on the band next the shared ring, to 1e-5
+  var v = 15usize * 4usize;
+  var same = true;
+  while v < 17usize * 4usize {
+    let p = pt(&c.withA, v);
+    let q = pt(&c.whole, v);
+    if (p.x - q.x).abs() > near || (p.y - q.y).abs() > near || (p.z - q.z).abs() > near { same = false; }
+    v = v + 1usize;
+  }
+  expect(same, "straight: A with the ghost has the continuous run's last band's rings 15 and 16");
+  // Mirror ghost: the end's own extrapolation
+  let none = noGhost();
+  let a3 = secsOf(&ws, 0usize, 3usize);
+  let fa = framesOf(&fs, 0usize, 3usize);
+  let gA = ghost(2.75, zFrame(3.));
+  let mirrored = build(&a3, &fa, &none, &gA, "mirror: no problem line");
+  expect(sameTo(&mirrored, &c.bareA, near), "mirror: a ghost that is the end's own extrapolation changes nothing");
+  // And at the start: the mirror of section 1 about section 0 of B (section 2 of W, w 2) is w 2 2 - 3.25 = 0.75 at z 1
+  let b3 = secsOf(&ws, 2usize, 5usize);
+  let fb = framesOf(&fs, 2usize, 5usize);
+  let gB = ghost(0.75, zFrame(1.));
+  let mirrorB = build(&b3, &fb, &gB, &none, "mirror: before: no problem line");
+  expect(sameTo(&mirrorB, &c.bareB, near), "mirror: before: a ghost that is the start's own extrapolation changes nothing");
+}
+
+fn curved() {
+  let ws = five(1., 1., 1., 1., 1.);
+  let fs = fiveFrames(arcFrame(0.), arcFrame(30.), arcFrame(60.), arcFrame(90.), arcFrame(120.));
+  let c = runCase(&ws, &fs);
+  checkCase(&c, 26.8902, 4.2242, "curved: turn at the shared ring");
+  let a15 = pt(&c.withA, 15usize * 4usize);
+  expectFloat(a15.x, 2.33874894, near, "curved: A ring 15 with the ghost: x");
+  expectFloat(a15.y, 1., near, "curved: A ring 15 with the ghost: y");
+  expectFloat(a15.z, 2.49687619, near, "curved: A ring 15 with the ghost: z");
+  let b1 = pt(&c.withB, 4usize);
+  expectFloat(b1.x, 2.66826732, near, "curved: B ring 1 with the ghost: x");
+  expectFloat(b1.z, 2.68712372, near, "curved: B ring 1 with the ghost: z");
+}
+
+// A SweepSpec of the square of half width w0 to w1 along z z0 to z1
+fn squareSpec(w0: f32, w1: f32, z0: f32, z1: f32, before: Option[GhostSection], after: Option[GhostSection]) SweepSpec {
+  var spine = RunCurves();
+  spine.push(c1(0.));
+  spine.push(c1(0.));
+  spine.push(c2(z0, z1));
+  var tracks = SweepTracks();
+  tracks.push(SweepTrack(c2(w0, w1), c2(w0, w1), c1(0.)));
+  tracks.push(SweepTrack(c2(-w0, -w1), c2(w0, w1), c1(0.)));
+  tracks.push(SweepTrack(c2(-w0, -w1), c2(-w0, -w1), c1(0.)));
+  tracks.push(SweepTrack(c2(w0, w1), c2(-w0, -w1), c1(0.)));
+  SweepSpec(spine, Vec3(0., 1., 0.), 0., tracks, RunCurves(), None[TaggedCurve], None[TaggedCurve], RunCurves(), before, after)
+}
+
+fn absX(m: &PolyMesh, v: usize) f32 { pt(m, v).x.abs() }
+
+fn sweepSpecs() {
+  var problems = List[String]();
+  let bareA = squareSpec(1., 2., 0., 2., noGhost(), noGhost());
+  let bareB = squareSpec(2., 5., 2., 4., noGhost(), noGhost());
+  // Each part names the other's section at t = 0.5 as its ghost
+  let gForA = bareB.ghostAt(0.5, &mut problems);
+  let gForB = bareA.ghostAt(0.5, &mut problems);
+  expectInt(i64.from(problems.len()), 0, "spec: ghostAt: no problem line");
+  let specA = squareSpec(1., 2., 0., 2., noGhost(), gForA);
+  let specB = squareSpec(2., 5., 2., 4., gForB, noGhost());
+  let a = specA.mesh(3u32, 7u32, false, false, &mut problems);
+  let b = specB.mesh(3u32, 7u32, false, false, &mut problems);
+  let a0 = bareA.mesh(3u32, 7u32, false, false, &mut problems);
+  let b0 = bareB.mesh(3u32, 7u32, false, false, &mut problems);
+  expectInt(i64.from(problems.len()), 0, "spec: meshes: no problem line");
+  expectInt(i64.from(a.vertexCount()), 68, "spec: A has 17 rings of 4");
+  var j = 0usize;
+  var shared = true;
+  while j < 4usize {
+    if !exactAt(&a, 16usize * 4usize + j, &b, j) { shared = false; }
+    j = j + 1usize;
+  }
+  expect(shared, "spec: the shared ring is the same 4 points, bit for bit");
+  expectFloat(absX(&a, 15usize * 4usize), 1.8896484, near, "spec: A ring 15 with the ghost: |x|");
+  expectFloat(absX(&a0, 15usize * 4usize), 1.9375, near, "spec: A ring 15 without the ghost: |x|");
+  expectFloat(absX(&b, 4usize), 2.1396484, near, "spec: B ring 1 with the ghost: |x|");
+  expectFloat(absX(&b0, 4usize), 2.1875, near, "spec: B ring 1 without the ghost: |x|");
+  expectFloat(sharedTurn(&a, &b), 6.3626, 0.02, "spec: the turn at the shared ring with ghosts");
+  expectFloat(sharedTurn(&a0, &b0), 29.4962, 0.02, "spec: the turn without ghosts");
+  // Mutant: dropping the ghosts gives the kinked build, so a spec that ignored its ghosts would fail the first row
+  expect(sharedTurn(&a0, &b0) > sharedTurn(&a, &b) + 20., "spec: mutant: ghosts ignored, the continuity row fails");
+}
+
+fn refusals() {
+  var ws = List[f32]();
+  ws.push(1.); ws.push(1.25); ws.push(2.);
+  var fs = List[Frame]();
+  fs.push(zFrame(0.)); fs.push(zFrame(1.)); fs.push(zFrame(2.));
+  let secs = secsOf(&ws, 0usize, 3usize);
+  let frs = framesOf(&fs, 0usize, 3usize);
+  let none = noGhost();
+  var problems = List[String]();
+  // A ghost of 3 tags
+  let three = List[u32](3) <- 0u32, 1u32, 2u32;
+  let tri = List[Vec2](3) <- Vec2(1., 1.), Vec2(-1., 1.), Vec2(0., -1.);
+  let p3 = Profile(tri, true);
+  let bad = Some[GhostSection](GhostSection(TaggedProfile.of(&p3, three.view()), zFrame(3.)));
+  let m1 = loftTaggedFramed(&secs, &frs, &None[TaggedCurve], &None[TaggedCurve], &none, &bad, 0u32, false, false,
+    &mut problems);
+  expectInt(i64.from(m1.vertexCount()), 0, "refusal: ghost tag count: empty");
+  expectInt(i64.from(problems.len()), 1, "refusal: ghost tag count: a line");
+  // An open ghost on closed sections
+  let opn = List[Vec2](4) <- Vec2(1., 1.), Vec2(-1., 1.), Vec2(-1., -1.), Vec2(1., -1.);
+  let op = Profile(opn, false);
+  let four = fourTags();
+  let openG = Some[GhostSection](GhostSection(TaggedProfile.of(&op, four.view()), zFrame(3.)));
+  let m2 = loftTaggedFramed(&secs, &frs, &None[TaggedCurve], &None[TaggedCurve], &openG, &none, 0u32, false, false,
+    &mut problems);
+  expectInt(i64.from(m2.vertexCount()), 0, "refusal: open ghost: empty");
+  expectInt(i64.from(problems.len()), 2, "refusal: open ghost: a line");
+  // A ghost at the last frame's origin
+  let atEnd = ghost(1., zFrame(2.));
+  let m3 = loftTaggedFramed(&secs, &frs, &None[TaggedCurve], &None[TaggedCurve], &none, &atEnd, 0u32,
+    false, false, &mut problems);
+  expectInt(i64.from(m3.vertexCount()), 0, "refusal: ghost at the end: empty");
+  expectInt(i64.from(problems.len()), 3, "refusal: ghost at the end: a line");
+  // ghostAt outside [0, 1]
+  let spec = squareSpec(1., 2., 0., 2., noGhost(), noGhost());
+  let g = spec.ghostAt(1.5, &mut problems);
+  expectInt(i64.from(problems.len()), 4, "refusal: ghostAt t outside: a line");
+  // A spec ghost with a part-way closing
+  var s2 = squareSpec(1., 2., 0., 2., noGhost(), noGhost());
+  s2.closedFrom = 0.5;
+  s2.afterEnd = ghost(1., zFrame(3.));
+  let m4 = s2.mesh(3u32, 0u32, false, false, &mut problems);
+  expectInt(i64.from(m4.vertexCount()), 0, "refusal: ghost with a part-way closing: empty");
+}
+
+fn main() i32 {
+  straight();
+  curved();
+  sweepSpecs();
+  refusals();
+  done()
+}

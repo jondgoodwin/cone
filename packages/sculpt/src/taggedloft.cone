@@ -42,6 +42,17 @@
 //   the cut stretches overlapping, gets one problem line naming the first 8 pairs; the mesh is still built.
 //   Refusals: a curve whose tag count differs from the sections', with creases not one per tag, with fewer points than
 //   tags, or tags not rising or out of range (open: not at both ends); frames and sections of different counts.
+// - Ghost sections ('beforeStart', 'afterEnd', a 'GhostSection': a section and its frame): a Catmull-Rom column's slope
+//   at an end ring comes from the ring beyond it, which at an end is only a mirror of the ring inside (the end has no
+//   neighbour). A ghost is that neighbour: the next section of the part that meets this one at the end, placed in its
+//   frame, its stretches cut by its tags and sampled at the columns' fractions like a curve end's. It is used for the
+//   slope of the first (last) band's columns and nothing else: no ring, no vertex, no face, no crease, no uv; it adds
+//   no column. Its knot is its frame's origin's distance beyond the end section's, as the sections' knots are. Two
+//   parts that meet on a shared curve, each holding the other's next section as its ghost, leave the curve with one
+//   slope: the Catmull-Rom tangent at the shared ring runs through the same three points (the ring and the two next
+//   sections; the knots' spacing is the one thing that can differ). Given neither, everything is as without the
+//   feature, bit for bit. Refusals: a ghost whose closedness, tag count, creases, tags or stretch lengths a section
+//   would be refused for; a ghost's origin at the end frame's origin.
 // - A mirrored half: an open half running from the top midline to the bottom, put through
 //   'mirrorWith(..., mirrorU true, uvOffset (-1, 0))', gives the copy u = -u (the copy's u is 1 - u, and the
 //   offset takes it to -u): u is continuous across the top midline, and the seam is under the part. No new code.
@@ -101,6 +112,67 @@ pub struct TaggedCurve {
     }
     TaggedCurve(p, t, c)
   }
+}
+
+// A section and its frame: the neighbouring part's next section, given to a loft for the slope at one end only (see
+// "Ghost sections" above). The section has the loft's tag count and closedness.
+pub struct GhostSection {
+  pub section: TaggedProfile;
+  pub frame: Frame;
+}
+
+// The ghosts as the core takes them: each placed in space as a curve (its profile's points in its frame, tags kept),
+// with its frame's origin, which gives its knot; 'why' is a refusal, or empty
+struct GhostRings {
+  hasBefore: bool;
+  before: TaggedCurve;
+  beforeAt: Vec3;
+  hasAfter: bool;
+  after: TaggedCurve;
+  afterAt: Vec3;
+  why: String;
+}
+
+fn noGhosts() GhostRings {
+  GhostRings(false, noCurve(), Vec3(0., 0., 0.), false, noCurve(), Vec3(0., 0., 0.), String.from(""))
+}
+
+// A ghost's profile placed in its frame, tags and creases kept
+fn placedGhost(g: &GhostSection) TaggedCurve {
+  var pts = List[Vec3].withCapacity(g.section.profile.points.len());
+  var i = 0usize;
+  while i < g.section.profile.points.len() {
+    pts.push(g.frame.place(*g.section.profile.points[i]));
+    i = i + 1usize;
+  }
+  TaggedCurve(pts, copyList(&g.section.tags), copyList(&g.section.creases))
+}
+
+fn ghostRingsOf(before: &Option[GhostSection], after: &Option[GhostSection], closedLoft: bool) GhostRings {
+  var gr = noGhosts();
+  match before.asRef() {
+    case let Some(g) {
+      gr.hasBefore = true;
+      gr.before = placedGhost(g);
+      gr.beforeAt = g.frame.origin;
+      if g.section.profile.closed != closedLoft {
+        gr.why = String.from("loftTaggedFramed: the ghost before the start is open where the sections are closed, or the reverse");
+      }
+    }
+    else { }
+  }
+  match after.asRef() {
+    case let Some(g) {
+      gr.hasAfter = true;
+      gr.after = placedGhost(g);
+      gr.afterAt = g.frame.origin;
+      if g.section.profile.closed != closedLoft && gr.why.len() == 0usize {
+        gr.why = String.from("loftTaggedFramed: the ghost after the end is open where the sections are closed, or the reverse");
+      }
+    }
+    else { }
+  }
+  gr
 }
 
 fn noCurve() TaggedCurve { TaggedCurve(List[Vec3](), List[u32](), List[f32]()) }
@@ -166,16 +238,19 @@ pub fn loftTagged(sections: &List[TaggedProfile], path: &Path, stations: &Array[
     caps: bool, problems: &mut List[String]) PolyMesh {
   let none = noCurve();
   let noFrames = List[Frame]();
-  loftTaggedCore(sections, path, stations, &noFrames, false, &none, false, &none, between, uvByLength, caps, false,
-    problems)
+  let noGhost = noGhosts();
+  loftTaggedCore(sections, path, stations, &noFrames, false, &none, false, &none, &noGhost, between, uvByLength, caps,
+    false, problems)
 }
 
 // The tagged loft with each section placed in a frame of its own (see the top of this file, "Frames and curve ends").
 // 'frames' one per section (profile x on the frame's normal, y on its binormal); 'startCurve' and 'endCurve', when
-// given, are the first and last rings in place of the first and last sections' placed points. Numbering as
-// 'loftTagged''s.
+// given, are the first and last rings in place of the first and last sections' placed points; 'beforeStart' and
+// 'afterEnd', when given, are ghost sections that give the slope at the first and last rings (see "Ghost sections"
+// at the top). Numbering as 'loftTagged''s.
 pub fn loftTaggedFramed(sections: &List[TaggedProfile], frames: &List[Frame], startCurve: &Option[TaggedCurve],
-    endCurve: &Option[TaggedCurve], between: u32, uvByLength: bool, caps: bool, problems: &mut List[String]) PolyMesh {
+    endCurve: &Option[TaggedCurve], beforeStart: &Option[GhostSection], afterEnd: &Option[GhostSection], between: u32,
+    uvByLength: bool, caps: bool, problems: &mut List[String]) PolyMesh {
   var hasStart = false;
   var hasEnd = false;
   var sc = noCurve();
@@ -192,8 +267,10 @@ pub fn loftTaggedFramed(sections: &List[TaggedProfile], frames: &List[Frame], st
   let noPts = List[Vec3]();
   let noPath = Path.fromPoints(noPts.view(), false);
   let noSt = List[f32]();
-  loftTaggedCore(sections, &noPath, noSt.view(), frames, hasStart, &sc, hasEnd, &ec, between, uvByLength, caps, false,
-    problems)
+  let closedLoft = sections.len() > 0usize && sections[0usize].profile.closed;
+  let ghosts = ghostRingsOf(beforeStart, afterEnd, closedLoft);
+  loftTaggedCore(sections, &noPath, noSt.view(), frames, hasStart, &sc, hasEnd, &ec, &ghosts, between, uvByLength,
+    caps, false, problems)
 }
 
 // 'loftTagged', with 'closingStart' allowing one thing it refuses: on a closed profile, the first section's closing
@@ -202,7 +279,7 @@ pub fn loftTaggedFramed(sections: &List[TaggedProfile], frames: &List[Frame], st
 // (one per section) each section is placed in its own frame and the columns between run on the Catmull-Rom spline
 // through the placed points; the start and end curves, when 'hasStart' and 'hasEnd', are the first and last rings.
 fn loftTaggedCore(sections: &List[TaggedProfile], path: &Path, stations: &Array[f32], frames: &List[Frame],
-    hasStart: bool, startC: &TaggedCurve, hasEnd: bool, endC: &TaggedCurve, between: u32,
+    hasStart: bool, startC: &TaggedCurve, hasEnd: bool, endC: &TaggedCurve, ghosts: &GhostRings, between: u32,
     uvByLength: bool, caps: bool, closingStart: bool, problems: &mut List[String]) PolyMesh {
   let ns = sections.len();
   let framed = frames.len() > 0usize;
@@ -256,15 +333,26 @@ fn loftTaggedCore(sections: &List[TaggedProfile], path: &Path, stations: &Array[
     let why = curveRefusal(endC, nt, closed, "end");
     if why.len() > 0usize { return taggedRefused(problems, why.view()); }
   }
-  if (hasStart || hasEnd) && !framed {
-    return taggedRefused(problems, "loftTagged: a curve end needs frames");
+  if ghosts.why.len() > 0usize { return taggedRefused(problems, ghosts.why.view()); }
+  if ghosts.hasBefore {
+    let why = curveRefusal(&ghosts.before, nt, closed, "ghost before the start");
+    if why.len() > 0usize { return taggedRefused(problems, why.view()); }
+  }
+  if ghosts.hasAfter {
+    let why = curveRefusal(&ghosts.after, nt, closed, "ghost after the end");
+    if why.len() > 0usize { return taggedRefused(problems, why.view()); }
+  }
+  if (hasStart || hasEnd || ghosts.hasBefore || ghosts.hasAfter) && !framed {
+    return taggedRefused(problems, "loftTagged: a curve end or a ghost needs frames");
   }
 
   // Each section's points as Vec3 (z 0), a closed one started at tag 0, and its tags from there. Then the start
   // curve's and the end curve's, as two more rows (they take part in no column, and get the columns' points)
   let startRow = ns;
   let endRow = if hasStart {ns + 1usize} else {ns};
-  let nsAll = ns + (if hasStart {1usize} else {0usize}) + (if hasEnd {1usize} else {0usize});
+  let beforeRow = endRow + (if hasEnd {1usize} else {0usize});
+  let afterRow = beforeRow + (if ghosts.hasBefore {1usize} else {0usize});
+  let nsAll = afterRow + (if ghosts.hasAfter {1usize} else {0usize});
   var pts = List[List[Vec3]].withCapacity(nsAll);
   var tg = List[List[usize]].withCapacity(nsAll);
   k = 0usize;
@@ -290,9 +378,10 @@ fn loftTaggedCore(sections: &List[TaggedProfile], path: &Path, stations: &Array[
     k = k + 1usize;
   }
   var ce = 0usize;
-  while ce < 2usize {
-    if (ce == 0usize && hasStart) || (ce == 1usize && hasEnd) {
-      let c = if ce == 0usize {startC} else {endC};
+  while ce < 4usize {
+    if (ce == 0usize && hasStart) || (ce == 1usize && hasEnd) || (ce == 2usize && ghosts.hasBefore)
+        || (ce == 3usize && ghosts.hasAfter) {
+      let c = if ce == 0usize {startC} else if ce == 1usize {endC} else if ce == 2usize {&ghosts.before} else {&ghosts.after};
       let shift = if closed {usize.from(*c.tags[0usize])} else {0usize};
       var p = copyList(&c.points);
       if shift != 0usize { p = rotated(&p, shift); }
@@ -454,6 +543,42 @@ fn loftTaggedCore(sections: &List[TaggedProfile], path: &Path, stations: &Array[
       else { knots.set(k, f32.from(k) / f32.from(ns - 1usize)); }
       k = k + 1usize;
     }
+    // The ghosts, if any, as rows before and after the sections for the splines' slopes (a knot a frame origin's
+    // distance beyond the end section's, in the knots' units); kOff is the sections' first row in them
+    let kOff = if ghosts.hasBefore {1usize} else {0usize};
+    let nsx = ns + kOff + (if ghosts.hasAfter {1usize} else {0usize});
+    var spx = List[Vec3].withCapacity(nsx * n);
+    var knx = List[f32].withCapacity(nsx);
+    if ghosts.hasBefore {
+      let d = ghosts.beforeAt.distance(frames[0usize].origin);
+      if !(d > 0.) { return taggedRefused(problems, "loftTaggedFramed: the ghost before the start has the first frame's origin"); }
+      j = 0usize;
+      while j < n {
+        spx.push(*rings[beforeRow * n + j]);
+        j = j + 1usize;
+      }
+      knx.push(*knots[0usize] - (if dsum > 0. {d / dsum} else {1. / f32.from(ns - 1usize)}));
+    }
+    j = 0usize;
+    while j < ns * n {
+      spx.push(*sp[j]);
+      j = j + 1usize;
+    }
+    k = 0usize;
+    while k < ns {
+      knx.push(*knots[k]);
+      k = k + 1usize;
+    }
+    if ghosts.hasAfter {
+      let d = ghosts.afterAt.distance(frames[ns - 1usize].origin);
+      if !(d > 0.) { return taggedRefused(problems, "loftTaggedFramed: the ghost after the end has the last frame's origin"); }
+      j = 0usize;
+      while j < n {
+        spx.push(*rings[afterRow * n + j]);
+        j = j + 1usize;
+      }
+      knx.push(*knots[ns - 1usize] + (if dsum > 0. {d / dsum} else {1. / f32.from(ns - 1usize)}));
+    }
     while r < nr {
       let kk = r / steps;
       let i = r % steps;
@@ -463,7 +588,7 @@ fn loftTaggedCore(sections: &List[TaggedProfile], path: &Path, stations: &Array[
       let ub = rowOf(k1, ns, hasStart, startRow, hasEnd, endRow) * (n + 1usize);
       j = 0usize;
       while j < n {
-        pos.push(if i == 0usize {*sp[kk * n + j]} else {columnPoint(&sp, &knots, ns, n, false, true, kk, j, f)});
+        pos.push(if i == 0usize {*sp[kk * n + j]} else {columnPoint(&spx, &knx, nsx, n, false, true, kk + kOff, j, f)});
         ringUs.push(if i == 0usize {*us[ua + j]} else {mixf(*us[ua + j], *us[ub + j], f)});
         j = j + 1usize;
       }
