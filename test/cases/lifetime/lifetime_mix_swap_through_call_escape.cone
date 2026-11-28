@@ -1,0 +1,43 @@
+// Row 965: a swap through a reference that is no place is judged as a store there, and
+// what it takes from there is carried by the other side.
+//
+// Verdict: refuse, ErrorEscape.
+// Basis: as lifetime_mix_swap_through_call_refused.
+// Master fcd4ef032: accepted every one.
+
+mod lifetime_mix_swap_through_call_escape;
+
+struct H {
+  pub items: Array[&usize, 2];
+}
+
+fn ident(x: &mut &usize) &mut &usize { x }
+
+// A borrow of this function's own 'b' goes where the caller's array is
+fn leftWithTheCaller(slot: &mut Array[&usize, 1]) {
+  var b = 2usize;
+  var h = &b;
+  *ident(&mut h) <-> (*slot)[0usize];   //~ ErrorEscape "borrow of 'b'"
+}
+
+// A reference of the caller's stored through a call's reference, where it names no
+// lifetime that 'v' has
+fn items(self: &mut H) &mut Array[&usize, 2] { &mut self.items }
+fn kept(self: &mut H, v: &'a usize) {
+  var t = v;
+  (*items(self))[0usize] <-> t;   //~ ErrorEscape "lent through 'v'"
+}
+
+// Through a raw pointer the walk tracks no place, and what a read there carries still
+// goes to the other side
+let glob = 1usize;
+fn throughRaw() &usize {
+  var b = 2usize;
+  var h = &b;
+  let p = &mut h as *&usize;
+  var t = &glob;
+  *p <-> t;
+  return t;   //~ ErrorEscape "borrow of 'b'"
+}
+
+fn main() {}
