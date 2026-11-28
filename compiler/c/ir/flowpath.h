@@ -147,7 +147,7 @@ typedef struct {
     VarDclNode *guardname; // a lock's hidden guard: the variable the writer named that held a borrow through it
     uint32_t narrow;    // a name narrowed by a test or a store: its stand-in's index (pwNarrowName), else 0
     uint8_t narrowed;   // it is such a stand-in, bearing the name it stands for
-    uint8_t compound;   // it is the stand-in for the place a compound assignment writes (pwCompoundPlace)
+    uint8_t compound;   // it is the stand-in for the place a compound assignment writes (pwCompoundPlace); 2: moves alone pend
     uint8_t indexed;    // it is the stand-in for the place an index picks from (pwIndexStandIn)
     uint8_t swapped;    // ... or for one side of a swap, while the other side is made (pwSwap)
     uint8_t yielded;    // a temporary's stand-in that goes on holding what it held when the statement ends (pwYieldStandIn)
@@ -175,6 +175,11 @@ void *pathGrow(void *buf, uint32_t *cap, size_t size);
 // 'await', so its operands are walked in the order a seam gives them
 // (awaitOrder)
 void flowPathWalk(FnDclNode *fndcl, int loans, int drops, int seams);
+
+// May 'call', of signature 'sig' (NULL for a function value's), store through
+// another of its arguments what the argument at 'i' reaches: is another one a
+// writable way to something that can hold a borrow? Asked by the types
+int flowCallMayStore(FnCallNode *call, FnSigNode *sig, uint32_t i);
 
 // Set while the walks that waited are made at the end of type check
 // (shapeWalkDeferred): nothing is checked later, so a verdict that leans on

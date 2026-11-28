@@ -2699,7 +2699,7 @@ static int pwStoredOnlyBy(INode *val, INode *recv) {
     }
 }
 
-static void pwPartsStore(INode *node, INode **parts, PathSet **argsets, uint32_t nargs, FnSigNode *sig,
+static PathSet *pwPartsStore(INode *node, INode **parts, PathSet **argsets, uint32_t nargs, FnSigNode *sig,
     FnDclNode *arenameth, int arenacall, Place *recvpl, int how);
 static PathSet *pwReachShared(FnCallNode *call, uint32_t argi, INode *parmtype, INode *wanted, PathSet *carried,
     int covered, uint32_t store, PathSet *result);
@@ -2759,9 +2759,11 @@ static PathSet *pwStoreReach(FnCallNode *call, uint32_t at, uint32_t i, FnSigNod
     return pwReachShared(call, i, iexpGetTypeDcl(nodesGet(callsig->parms, i)), wanted, into, 0, at + 1, reached);
 }
 
-static void pwCallStores(FnCallNode *call, PathSet **argsets, Place *recvpl) {
+// Returns every loan the call may have stored in a place, which it hands out
+// as it does what it returns (pwCall), or NULL
+static PathSet *pwCallStores(FnCallNode *call, PathSet **argsets, Place *recvpl) {
     if (call->args == NULL || call->args->used < 2)
-        return;
+        return NULL;
     FnSigNode *sig = pwNamedSig(call);
     // A method of an arena ('NoLoanMut'): what it is handed by value is stored
     // in the arena wherever the arena was reached; a free function handed a
@@ -2775,8 +2777,40 @@ static void pwCallStores(FnCallNode *call, PathSet **argsets, Place *recvpl) {
         arenacall = pwIsBorrowed(rt) && rt->tag == RefTag && (permGetFlags(((RefNode *)rt)->perm) & MayWrite)
             && pwIsNoLoanMut(((RefNode *)rt)->vtexp);
     }
-    pwPartsStore((INode *)call, &nodesGet(call->args, 0), argsets, call->args->used, sig, arenameth, arenacall,
-        recvpl, LoanEscapeCall);
+    return pwPartsStore((INode *)call, &nodesGet(call->args, 0), argsets, call->args->used, sig, arenameth,
+        arenacall, recvpl, LoanEscapeCall);
+}
+
+// How many borrows past the argument 'arg' the callee may store through it, from
+// what a writable borrow points at or from a value's own borrows: past three,
+// every place reached is as far as the walk tells apart. 'parmtype' is the
+// parameter it is handed to, or NULL
+static int pwStoreDepth(INode *arg, INode *parmtype) {
+    INode *argtype = iexpGetTypeDcl(arg);
+    int depth = itypeWritableBorrowDepth(argtype, 3);
+    // A closure's capture, the borrow the compiler made of a variable its
+    // body names, written as the argument: its own type is a plain
+    // read-only borrow, though the body writes through a '&mut' the
+    // variable holds (the field it lands in is marked, itype.c)
+    if (depth == 0 && pwIsBorrowed(argtype) && argtype->tag == RefTag && arg->tag == BorrowTag
+            && ((RefNode *)arg)->capture) {
+        int inner = itypeWritableBorrowDepth(((RefNode *)argtype)->vtexp, 2);
+        depth = inner ? 1 + inner : 0;
+    }
+    // A writable borrow handed to a parameter declared read-only is read
+    // only by the callee: it stores nothing through it (a '&mut' key
+    // given to an index's '&'-typed key). Only where nothing in the
+    // pointee can change through a shared view (a lock, an atomic, a
+    // writable reference inside: itypeMayMutateShared)
+    if (depth && parmtype && parmtype->tag == RefTag
+            && !(permGetFlags(((RefNode *)parmtype)->perm) & MayWrite)
+            && !permIsLock(((RefNode *)parmtype)->perm)
+            && !itypeMayMutateShared(((RefNode *)parmtype)->vtexp, 8)) {
+        int pdepth = itypeWritableBorrowDepth(parmtype, 3);
+        if (pdepth < depth)
+            depth = pdepth;
+    }
+    return depth;
 }
 
 // The question a call asks of its arguments (pwCallStores), asked of any parts
@@ -2788,8 +2822,9 @@ static void pwCallStores(FnCallNode *call, PathSet **argsets, Place *recvpl) {
 // one lifetime). 'how' is how the report is worded: LoanEscapeCall for a
 // call's arguments, LoanEscapeJoin for a literal or a field assigned on a
 // local aggregate (pwJoinStores); 'node' is where it lands.
-static void pwPartsStore(INode *node, INode **parts, PathSet **argsets, uint32_t nargs, FnSigNode *sig,
+static PathSet *pwPartsStore(INode *node, INode **parts, PathSet **argsets, uint32_t nargs, FnSigNode *sig,
         FnDclNode *arenameth, int arenacall, Place *recvpl, int how) {
+    PathSet *stored = NULL;
     for (uint32_t at = 0; at < nargs; ++at) {
         if (arenacall && at > 0)
             break;
@@ -2799,19 +2834,7 @@ static void pwPartsStore(INode *node, INode **parts, PathSet **argsets, uint32_t
         if (how == LoanEscapeJoin && (argsets[at] == NULL || argsets[at]->cnt == 0))
             continue;
         INode *argtype = iexpGetTypeDcl(arg);
-        // How many borrows past the argument the callee may store, from what
-        // a writable borrow points at or from a value's own borrows: past
-        // three, every place reached is as far as the walk tells apart
-        int depth = itypeWritableBorrowDepth(argtype, 3);
         int isref = pwIsBorrowed(argtype);
-        // A closure's capture, the borrow the compiler made of a variable its
-        // body names, written as the argument: its own type is a plain
-        // read-only borrow, though the body writes through a '&mut' the
-        // variable holds (the field it lands in is marked, itype.c)
-        if (depth == 0 && isref && argtype->tag == RefTag && arg->tag == BorrowTag && ((RefNode *)arg)->capture) {
-            int inner = itypeWritableBorrowDepth(((RefNode *)argtype)->vtexp, 2);
-            depth = inner ? 1 + inner : 0;
-        }
         INode *storedin = isref ? ((RefNode *)argtype)->vtexp : argtype;
         // An arena ('NoLoanMut') holds borrows through raw memory its type does
         // not show, so a writable borrow of one is a place a borrow is stored
@@ -2827,19 +2850,7 @@ static void pwPartsStore(INode *node, INode **parts, PathSet **argsets, uint32_t
         // call it is a store into the arena, so the arena's death is checked
         // against it
         INode *parmtype = sig && at < sig->parms->used ? ((IExpNode *)nodesGet(sig->parms, at))->vtype : NULL;
-        // A writable borrow handed to a parameter declared read-only is read
-        // only by the callee: it stores nothing through it (a '&mut' key
-        // given to an index's '&'-typed key). Only where nothing in the
-        // pointee can change through a shared view (a lock, an atomic, a
-        // writable reference inside: itypeMayMutateShared)
-        if (depth && parmtype && parmtype->tag == RefTag
-                && !(permGetFlags(((RefNode *)parmtype)->perm) & MayWrite)
-                && !permIsLock(((RefNode *)parmtype)->perm)
-                && !itypeMayMutateShared(((RefNode *)parmtype)->vtexp, 8)) {
-            int pdepth = itypeWritableBorrowDepth(parmtype, 3);
-            if (pdepth < depth)
-                depth = pdepth;
-        }
+        int depth = pwStoreDepth(arg, parmtype);
         int arenaparm = !arenameth && parmtype && parmtype->tag == RefTag && ((RefNode *)parmtype)->lifename != NULL
             && isref && argtype->tag == RefTag && (permGetFlags(((RefNode *)argtype)->perm) & MayWrite)
             && pwIsNoLoanMut(storedin) && !lifeSlotted(storedin);
@@ -2929,6 +2940,7 @@ static void pwPartsStore(INode *node, INode **parts, PathSet **argsets, uint32_t
         // near and far
         others = pathSetUntagged(pathSetUnsure(others));
         reached = pathSetUntagged(pathSetUnsure(reached));
+        stored = pathSetUnion(stored, others);
         uint32_t local = loanLocalIn(others);
         Place target;
         int found = 1;
@@ -3010,6 +3022,7 @@ static void pwPartsStore(INode *node, INode **parts, PathSet **argsets, uint32_t
         if (reached)
             pwStoreMarkAdd((PwStoreMark){ reached, NULL, 0, 1, target.var, from, to > 2 ? 2 : to });
     }
+    return stored;
 }
 
 // Borrows made one value, or one value given another part: a literal's
@@ -4701,6 +4714,63 @@ static PathSet *pwReachShared(FnCallNode *call, uint32_t argi, INode *parmtype, 
     return result;
 }
 
+// May the call store through another of its arguments a borrow into the storage
+// the reference at 'i' points at? Asked by the types: another argument is a way
+// to store a borrow that can end (pwStoreDepth) into a place that can hold one
+// into what that storage owns (itypeMayHoldBorrowOwned), or a writable borrow of
+// an arena. What the call does store, by its signature, is for pwCallStores to
+// say
+int flowCallMayStore(FnCallNode *call, FnSigNode *sig, uint32_t i) {
+    if (call->args == NULL || i >= call->args->used)
+        return 0;
+    INode *lent = iexpGetTypeDcl(nodesGet(call->args, i));
+    if (lent->tag != RefTag && lent->tag != VirtRefTag && lent->tag != ArrayRefTag)
+        return 0;
+    INode *from = ((RefNode *)lent)->vtexp;
+    // A '&' parameter lends for reading, whatever the reference passed to it may write
+    INode *fromparm = sig && i < sig->parms->used ? iexpGetTypeDcl(nodesGet(sig->parms, i)) : lent;
+    int readonly = fromparm->tag == RefTag && !(permGetFlags(((RefNode *)fromparm)->perm) & MayWrite);
+    for (uint32_t at = 0; at < call->args->used; ++at) {
+        if (at == i)
+            continue;
+        INode *arg = nodesGet(call->args, at);
+        INode *argtype = iexpGetTypeDcl(arg);
+        int isref = pwIsBorrowed(argtype);
+        INode *storedin = isref ? ((RefNode *)argtype)->vtexp : argtype;
+        if (isref && argtype->tag == RefTag && (permGetFlags(((RefNode *)argtype)->perm) & MayWrite)
+                && pwIsNoLoanMut(storedin))
+            return 1;
+        INode *parmtype = sig && at < sig->parms->used ? ((IExpNode *)nodesGet(sig->parms, at))->vtype : NULL;
+        int depth = pwStoreDepth(arg, parmtype);
+        if ((depth > 1 || (depth == 1 && (!isref || itypeCarriesEndingBorrow(storedin))))
+                && itypeMayHoldBorrowOwned(storedin, from, readonly))
+            return 1;
+    }
+    return 0;
+}
+
+// A method's receiver was lent to what the call handed out, returned or stored:
+// a borrow into a container that changes shape, whose storage a change may move
+static void pwRecvShapeLent(FnCallNode *call, Place *recvpl, uint32_t recvloan) {
+    INode *recvtype = iexpGetTypeDcl(nodesGet(call->args, 0));
+    INode *container = recvtype->tag == RefTag || recvtype->tag == VirtRefTag
+        ? itypeGetTypeDcl(((RefNode *)recvtype)->vtexp) : NULL;
+    // An arena's method lends what never moves
+    if (container == NULL || container->tag != StructTag || ((StructNode *)container)->lends == LendsNoLoanMut)
+        return;
+    if ((recvtype->tag == VirtRefTag
+                // an owner lent as the receiver is followed as an owner (pwOwnerLent)
+                && !(nodesGet(call->args, 0)->tag == CastTag && pwIsOwnedLent((CastNode *)nodesGet(call->args, 0))))
+            || shapeChanging((StructNode *)container)) {
+        pwShapeLent(recvpl, recvloan, container, 0);
+        int byvalue;
+        INode *vowner = pwViewOwner(nodesGet(call->args, 0), container, &byvalue);
+        loanShapeOwnerSet(recvloan, vowner, byvalue);
+        if (pwElemView(call, container, recvpl))
+            loanElemViewSet(recvloan);
+    }
+}
+
 static PathSet *pwCall(FnCallNode *call) {
     INode *objfn = call->objfn;
     // What a function value called holds, a closure's borrows, is reached by the call too
@@ -4736,6 +4806,9 @@ static PathSet *pwCall(FnCallNode *call) {
     StructNode *lentcnt[8];
     memset(lentloan, 0, sizeof(lentloan));
     memset(lentcnt, 0, sizeof(lentcnt));
+    // The arguments a borrow into which the call may store through another
+    // (flowCallMayStore), a bit each
+    uint32_t storing = 0;
     // In the order generation makes them: a receiver or a borrow of a plain
     // path before a seam another argument holds is made after it (awaitOrder)
     uint32_t localorder[8];
@@ -4751,6 +4824,12 @@ static PathSet *pwCall(FnCallNode *call) {
         uint32_t argi = order[k];
         INode **argsp = &nodesGet(call->args, argi);
         PathSet *carried;
+        // May the call hand out a borrow into what this argument points at: as its
+        // result, or stored through another argument?
+        int maystore = pathLoans && flowCallMayStore(call, sig, argi);
+        int handsout = carries || maystore;
+        if (argi < 8 && maystore)
+            storing |= 1u << argi;
         if (meth && argi == 0) {
             carried = pwReceiver(call, meth, &recvpl, &recvloan, &recvaccess);
             if (carries && pathLoans && recvloan && !sig) {
@@ -4765,10 +4844,10 @@ static PathSet *pwCall(FnCallNode *call) {
             continue;
         }
         INode *parmtype = NULL;
-        StructNode *lentcont = carries && !meth && pathLoans ? pwLentArg(call, argi, &parmtype) : NULL;
+        StructNode *lentcont = handsout && !meth && pathLoans ? pwLentArg(call, argi, &parmtype) : NULL;
         if (lentcont) {
-            // A reference to a collection that changes shape, which the result may
-            // hold a borrow into: lent as a method's receiver is
+            // A reference to a collection that changes shape, which what the call hands
+            // out may hold a borrow into: lent as a method's receiver is
             int access;
             carried = pwLendRef(argsp, parmtype, 0, 0, &lentpl[argi], &lentloan[argi], &access);
             lentcnt[argi] = lentcont;
@@ -4820,15 +4899,37 @@ static PathSet *pwCall(FnCallNode *call) {
     loanFlightPop(mark);
     if (twophase)
         pwAccess(&recvpl, recvaccess, nodesGet(call->args, 0));
+    // What the call stored through an argument
+    PathSet *stored = NULL;
     if (pathLoans) {
-        pwCallStores(call, argsets, recvloan ? &recvpl : NULL);
+        stored = pwCallStores(call, argsets, recvloan ? &recvpl : NULL);
         pwCallMoves(call, sig, recvloan ? &recvpl : NULL);
         if (loanShapeCount())
             pwShapeCall(call, meth, recvloan ? &recvpl : NULL, argsets, nargs, recvloan, fnholds);
         pwStoreMarksApply();
     }
-    if (!carries)
+    // What is stored is handed out as a result is (below), and so followed once
+    // the call itself has been asked what it may reshape: the receiver's loan
+    // and each lent argument's that is among it
+    int recvstored = meth && recvloan && (storing & 1) && pathSetHasLoan(stored, recvloan);
+    uint32_t lentstored = 0;
+    for (uint32_t i = 0; i < nargs && i < 8; ++i) {
+        if (lentloan[i] && lentcnt[i] && (storing & (1u << i)) && pathSetHasLoan(stored, lentloan[i])) {
+            lentstored |= 1u << i;
+            loanReturnedBy(lentloan[i], ((NameUseNode *)call->objfn)->namesym);
+        }
+    }
+    if (!carries) {
+        if (recvstored) {
+            loanReturnedBy(recvloan, ((NameUseNode *)call->objfn)->namesym);
+            pwRecvShapeLent(call, &recvpl, recvloan);
+        }
+        for (uint32_t i = 0; i < nargs && i < 8; ++i) {
+            if (lentstored & (1u << i))
+                pwShapeLent(&lentpl[i], lentloan[i], (INode *)lentcnt[i], 1);
+        }
         return NULL;
+    }
     uint32_t recvown = recvloan;
     if (recvloan) {
         INode *recvtype = iexpGetTypeDcl(nodesGet(call->args, 0));
@@ -4850,38 +4951,26 @@ static PathSet *pwCall(FnCallNode *call) {
         PathSet *fromrecv = pwArgCarriesTo(sig, 0, rettype, recvholds, globalonly);
         // A container that changes shape (a list, a string, a struct holding
         // one: shapeinfer.h) may move its elements when it changes. A borrow or
-        // cursor its method returns carries the receiver's loan, and that loan
-        // freezes the place the receiver was reached through while the result
-        // is used, as a local is frozen though the path is shared: the same
-        // path may not be changed. Another name for the same value changing
-        // it is asked of every call made while the borrow is held (pwShapeCall),
-        // where the place is reached through a path others may write by.
-        if (recvloan && pathSetHasLoan(fromrecv, recvloan)) {
-            INode *recvtype = iexpGetTypeDcl(nodesGet(call->args, 0));
-            INode *container = recvtype->tag == RefTag || recvtype->tag == VirtRefTag
-                ? itypeGetTypeDcl(((RefNode *)recvtype)->vtexp) : NULL;
-            if (container && container->tag == StructTag
-                    && ((recvtype->tag == VirtRefTag
-                            // an owner lent as the receiver is followed as an owner (pwOwnerLent)
-                            && !(nodesGet(call->args, 0)->tag == CastTag && pwIsOwnedLent((CastNode *)nodesGet(call->args, 0))))
-                        || shapeChanging((StructNode *)container))) {
-                pwShapeLent(&recvpl, recvloan, container, 0);
-                int byvalue;
-                INode *vowner = pwViewOwner(nodesGet(call->args, 0), container, &byvalue);
-                loanShapeOwnerSet(recvloan, vowner, byvalue);
-                if (pwElemView(call, container, &recvpl))
-                    loanElemViewSet(recvloan);
-            }
-        }
+        // cursor its method returns, or stores through an argument, carries the
+        // receiver's loan, and that loan freezes the place the receiver was
+        // reached through while it is used, as a local is frozen though the path
+        // is shared: the same path may not be changed. Another name for the same
+        // value changing it is asked of every call made while the borrow is held
+        // (pwShapeCall), where the place is reached through a path others may
+        // write by.
+        if (recvloan && (pathSetHasLoan(fromrecv, recvloan) || recvstored))
+            pwRecvShapeLent(call, &recvpl, recvloan);
         result = pathSetUnion(result, fromrecv);
     }
-    // The same for a reference a free function was handed, where its result may
-    // hold a borrow into what that reference points at (shapeinfer.h): the path
-    // it was reached through is frozen while the result is used, and a change
-    // through another name is asked of every call made meanwhile
+    // The same for a reference a free function was handed, where its result or
+    // what it stored may hold a borrow into what that reference points at
+    // (shapeinfer.h): the path it was reached through is frozen while that is
+    // used, and a change through another name is asked of every call made
+    // meanwhile
     for (uint32_t i = 0; i < nargs && i < 8; ++i) {
         if (lentloan[i] && lentcnt[i]
-                && pathSetHasLoan(pwArgCarriesTo(sig, i, rettype, argsets[i], globalonly), lentloan[i]))
+                && (pathSetHasLoan(pwArgCarriesTo(sig, i, rettype, argsets[i], globalonly), lentloan[i])
+                    || (lentstored & (1u << i))))
             pwShapeLent(&lentpl[i], lentloan[i], (INode *)lentcnt[i], 1);
     }
     // The loans this call made of its own receiver and lent arguments, for a read through its
@@ -5020,9 +5109,13 @@ static void pwStore(INode **lvalp, PathSet *holds, INode **rvalp, uint32_t fligh
 // place is part of. The temporary is no holder, so nothing would pend on it: where one of the
 // borrows it was made with is into a collection, an owner or a variant, a stand-in holds them
 // all (a 'mut' borrow the place was reached through, 'let r = &mut l; r[0] += ...', names what
-// a move takes away), from before the right side, and the write is its use. A place with no
-// such borrow ('x += {x = 5; 1}') is in the variable's own storage, which a move or a store
-// leaves in place. Returns it, or 0 for none
+// a move takes away), from before the right side, and the write is its use. A place reached
+// through any other borrow ('let r = &mut s; r.n += take(s)') stays where it is when what was
+// borrowed is replaced, but a move takes its value away: its stand-in pends on moves alone
+// (PathVar.compound 2). A place in a variable's own storage, named by the statement itself,
+// has none: a move there is the tree walk's (flowAssignValue), which accepts one that gives
+// the variable a new value before the write ('x += {x = 5; 1}' moves nothing). Returns the
+// stand-in, or 0 for none
 static uint32_t pwCompoundPlace(INode *lval) {
     if (!pathLoans || lval->tag != DerefTag)
         return 0;
@@ -5040,10 +5133,10 @@ static uint32_t pwCompoundPlace(INode *lval) {
         holds = pathSetAdd(holds, all->ids[i]);
         owned |= loanShapeMayMark(loanOf(all->ids[i]));
     }
-    if (!owned)
+    if (!owned && (holds == NULL || flowCompoundLocal(tmp)))
         return 0;
     uint32_t stand = pwStandIn(ref, holds);
-    pathVars[stand].compound = 1;
+    pathVars[stand].compound = owned ? 1 : 2;
     return stand;
 }
 
