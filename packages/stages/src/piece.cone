@@ -1,0 +1,162 @@
+// ======== The stream core: a piece is a call, and its answer is the back-channel ========
+//
+// A stream from a producer to a consumer is a run of calls of 'piece', each answered with a PieceAck, and one
+// 'end'. The answer carries what today's second trait carries (ChunkSource.giveBack and stop): "go on", "go
+// on and here is your buffer back", or "stop". Every name here is a placeholder.
+//
+//   PieceAck[T]     the answer to a piece: More, MoreWith(T), Stop(Ending)
+//   PieceSink[T]    an actor trait, what takes a stream of T: piece(tag, item) PieceAck[T], end(tag, how)
+//   StreamTo[T]     "deliver here", owned by the one producer of one stream. Dropped un-ended, it ends the
+//                   stream Failed
+//   PieceSource[T]  an actor trait, what has a stream of T to give: deliver(tag, to), decline(tag)
+//   StreamFrom[T]   "a stream on offer", owned by whoever may take it. Dropped untaken, it declines
+//
+// Stages' own producers also share a run-ahead window (piecewindow.cone), which is transitional and no part
+// of the package's API.
+//
+// The tag is a number the RECEIVER chooses and gets back with every call, so one actor takes many streams.
+//
+// A PRODUCER'S WHOLE JOB, inside a behaviour (only a behaviour may await):
+//
+//   match await to.sink.piece(to.tag, buf) {
+//     case is More {}                                // it kept the buffer: take a fresh one
+//     case let MoreWith(back) { spare = back; }      // refill this one
+//     case let Stop(why) { to.end(why); return; }    // send no more; the one end carries the reason
+//   }
+//   ...
+//   to.end(Ending.Finished);
+//
+// Awaiting each piece's answer before the next makes a chain of stages run one after another, not side by
+// side, so a producer runs ahead: it keeps unanswered answers as futures. Every answer is collected before
+// the one 'end'.
+//
+// THE RULES OF A RECEIVER (a behaviour of an actor that runs other messages while it awaits):
+//
+//   1. Across an await it carries ONLY THE TAG: no index, no reference into its stream table, no count read
+//      from it. (The compiler ends every borrow at an await; an index survives one, and is the hazard.)
+//   2. On resuming it looks the stream up AGAIN BY TAG. Gone: the work is dropped, nothing is credited, and
+//      the answer is Stop(Failed). Found: it credits that stream.
+//   3. A tag names one stream for ever: the receiver puts a GENERATION in it (generation << 32 | slot),
+//      bumped at each open of a slot, so a reused slot is a new tag and an old piece for the old tag finds
+//      nothing.
+//   4. A STALE 'end' (a tag that is not live) is dropped.
+//   5. 'piece' is SAFE TO ENTER TWICE (the producer runs ahead, so a second piece arrives while the first
+//      is parked), or it takes one input at a time, the next waiting its turn. Answering a queued piece at
+//      once loses the backpressure: don't. TransformPass takes its input one at a time; HashPass feeds and
+//      sends before it waits; FileTo reserves its offset before it waits.
+//
+// A receiver that has answered Stop answers Stop to every piece that still arrives, and still gets one end.
+//
+// HEARING A STOP. A producer hears an answer only when it collects it, and one that is waiting on I/O with
+// nothing to send stays waiting even where a second behaviour has collected the Stop (stages' own producers):
+// it acts on it when the wait is over. A receiver that wants those waits ended builds its StreamTo with a cancel
+// group of its own, a child of the group it works in, keeps a handle, and cancels it as it answers Stop (or
+// when it wants the stream no more and has no piece to answer):
+//
+//   let stop = actors.currentGroup().child();
+//   src.run(addr, StreamTo[IoBuf].at(selfactor, tag, 0usize, Some[CancelGroup](stop)));
+//   ...
+//   stop.cancel();                                 // in 'piece', beside: Stop[IoBuf](why)
+//
+// The producer runs its waits on I/O in that group ('to.group'), and ends the stream with the reason of the
+// Stop it then collects, or Failed("streams: cancelled") when there is none. The messages it sends stay in its
+// own group. The group is a CHILD of the group the stream runs in, so that a cancel of the whole still reaches
+// those waits: one that is not would hide it from them.
+//
+// IN A CHAIN OF STAGES the groups NEST FROM THE SINK END: the group of each feeding stream is a child of the
+// group of the stream after it, so that a Stop or a cancel anywhere downstream reaches the first read. A stage
+// is given the group of the stream feeding it, as an optional last argument 'group', and cancels it when it
+// stops (piecestages.cone, piecebridge.cone):
+//
+//   let intoFile = actors.currentGroup().child();            // the stream into the sink end
+//   let intoHash = intoFile.child();                         // into the hash
+//   let intoInf = intoHash.child();                          // into the inflate: the socket reads in it
+//   let sink = FileTo(file, done, Some[CancelGroup](intoFile));
+//   let hash = HashPass[cryptohash.Sha256](StreamTo[IoBuf].at(sink, 1u64, 0usize, Some[CancelGroup](intoFile)),
+//     cryptohash.Sha256.make(), who, Some[CancelGroup](intoHash));
+//   let inf = TransformPass[deflate.Inflater](StreamTo[IoBuf].at(hash, 1u64, 0usize, Some[CancelGroup](intoHash)),
+//     deflate.Inflater.make(deflate.Format.Gzip), Some[CancelGroup](intoInf));
+//   SocketFrom().run(addr, StreamTo[IoBuf].at(inf, 1u64, 0usize, Some[CancelGroup](intoInf)));
+//
+// A stage given no group cancels nothing: its Stop is then heard with the producer's next collected answer.
+
+// The answer to a piece
+pub use PieceAck;
+pub enum PieceAck[T] {
+  More;                 // go on; the piece is mine now
+  MoreWith(T);          // go on; here is the piece's storage back, to refill
+  Stop(Ending);         // send no more. Finished: I have what I need. Failed(e): I failed, and why
+}
+
+// Anything that takes a stream of T; 'tag' is the number the receiver chose, sent back with every call
+pub actor trait PieceSink[T] {
+  // A piece of the stream 'tag'. The answer comes when the piece is taken: it paces the producer
+  pub async fn piece(self, tag: u64, item: T) PieceAck[T];
+  // The stream 'tag' is over, one way or the other. Nothing is sent after
+  pub async fn end(self, tag: u64, how: Ending);
+}
+
+// "Deliver here": owned by the one producer of one stream. Dropped un-ended, it ends the stream Failed.
+// 'budget' is how far ahead the receiver will take it: 0 is the default of what flows (256 KiB of bytes,
+// two pieces of values). 'group', when the receiver gives one, is the cancel group the producer waits on I/O
+// in (HEARING A STOP, above)
+pub struct StreamTo[T] is Move {
+  pub sink: PieceSink[T];
+  pub tag: u64;
+  pub budget: usize;
+  pub group: Option[CancelGroup];
+  over: bool;
+
+  pub fn at(sink: PieceSink[T], tag: u64, budget: usize = 0usize,
+      group: Option[CancelGroup] = None[CancelGroup]) StreamTo[T] {
+    StreamTo[T](sink, tag, budget, group, false)
+  }
+
+  // The one end; nothing is to be sent after it. A second call does nothing
+  pub fn end(self: &mut, how: Ending) {
+    if over { return; }
+    over = true;
+    sink.end(tag, how);
+  }
+
+  // Whether the end has gone
+  pub fn ended(self: &) bool { over }
+
+  fn final(self: &uni) {
+    #if #defined("MUT_NO_FINAL_TO") {} #else {
+      if !over { sink.end(tag, Ending.Failed(AnyError.msg("streams: the producer dropped the stream"))); }
+    }
+  }
+}
+
+// Anything that has a stream of T to give
+pub actor trait PieceSource[T] {
+  // "Send it there"
+  pub async fn deliver(self, tag: u64, to: StreamTo[T]);
+  // "Nobody wants it"
+  pub async fn decline(self, tag: u64);
+}
+
+// "A stream on offer": taken ('to') or, dropped, declined
+pub struct StreamFrom[T] is Move {
+  source: PieceSource[T];
+  tag: u64;
+  taken: bool;
+
+  pub fn of(source: PieceSource[T], tag: u64) StreamFrom[T] {
+    StreamFrom[T](source, tag, false)
+  }
+
+  // Take the stream to 'target'. A second take does nothing (the target then ends Failed as it is dropped)
+  pub fn to(self: &mut, target: StreamTo[T]) {
+    if taken { return; }
+    taken = true;
+    source.deliver(tag, target);
+  }
+
+  fn final(self: &uni) {
+    #if #defined("MUT_NO_FINAL_FROM") {} #else {
+      if !taken { source.decline(tag); }
+    }
+  }
+}

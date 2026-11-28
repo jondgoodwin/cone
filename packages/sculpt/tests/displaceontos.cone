@@ -1,0 +1,428 @@
+// The sculpt package's displaceOnto and Footprint, checked with the testing package against values worked out by
+// hand; only a failure prints, so displaceontos.out holds the summary. Every result must pass validate().
+//
+// THE GRID. n x n quads over [-2, 2]^2 (a cell 4/n; every coordinate used below is a multiple of 1/16, exact in f32),
+// vertex (n + 1) j + i at (-2 + i 4/n, -2 + j 4/n); the base is n = 16 (cells of 0.25, 289 vertices, 256 faces) in the
+// plane z = 0, whose vertex normals are (0, 0, 1). A TARGET is a grid with its own z(x): 'flat 0.2' (z = 0.2), 'flat
+// 0.4', 'two sheets' (two stacked flat grids, z = 0.1 and 0.5) and 'the wall', z = 0.8 q(s) with q the smoothstep
+// 3 s^2 - 2 s^3 and s = (x + 0.5) / 0.5 clamped to 0..1 (0 left of x = -0.5, 0.8 right of x = 0, slope up to
+// 0.8 * 1.5 / 0.5 = 2.4), as a 64 x 64 grid (cells of 1/16) so that it is finer than the base.
+// FOOTPRINTS. 'everywhere': the closed square (-3, -3), (3, -3), (3, 3), (-3, 3) (counter-clockwise seen from +z, so
+// its inside is to the left of its travel, the side n x tangent points to), inward 0.5, outward 0: every grid vertex
+// is at least 1 inside it (the corners (2, 2) are at distance 1 from the square's sides), so its weight is 1.
+//
+// THE CIRCLE. A closed 256-gon of radius 1 about the origin (counter-clockwise), inward 0.4, outward 0.4, target flat
+// 0.2, maxEdge 0.1, 8 passes (the 0.25 cells refine in two passes). The weight at a point at distance r from the
+// centre is smoothstep((1 - r + 0.4) / 0.8) clamped, whose inside is where r < 1; the polygon's chord lies up to
+// 1 - cos(pi / 256) = 7.5e-5 inside the circle, which moves a weight by at most 1.5 / 0.8 * 7.5e-5 = 1.4e-4 of its
+// 1 (0.2 of height: 2.8e-5). So EVERY vertex of the result (refined ones included, at places no base vertex was) has
+// z = 0.2 * smoothstep(...) to 1e-4: a weight that is a function of place, with no staircase of base vertices. Outside
+// r = 1.4 the weight is 0: the input's vertices there are bit for bit; the result has more than 256 faces; no
+// problem line. At maxEdge 10 (nothing refines) the 289 input vertices are at the same values and the faces are the
+// input's 256 quads in order.
+//
+// ABUTTING. Footprint A the closed rectangle (-2.5, -2.5), (0, -2.5), (0, 2.5), (-2.5, 2.5) (counter-clockwise), B the
+// rectangle (0, -2.5), (2.5, -2.5), (2.5, 2.5), (0, 2.5); both inward 0, outward 0.5; targets flat 0.2 (A) and flat
+// 0.4 (B); maxEdge 10. They share the edge x = 0 (traversed in opposite directions). At a vertex at x = d > 0 the
+// distance to A's boundary is d (the nearest point is on the shared edge, outside A), so wA = smoothstep((0.5 - d)
+// / 0.5), and wB = 1 (inside B: s >= 0, the weight is 1 up to 0.5 outside); at x = -d the same with A and B swapped.
+// The vertices with x = -0.25, 0 and 0.25 (3 columns of 17) have weights summing over 1 and are normalised (the line
+// "displaceOnto: 51 vertices had weights over 1 and were normalised"); at x = -0.5 and +0.5 the outer weight is
+// smoothstep(0) = 0, so nothing else is. Results: x = 0: wA = wB = 1 -> 0.5 * 0.2 + 0.5 * 0.4 = 0.3. x = 0.25:
+// wA = smoothstep(0.5) = 0.5, wB = 1 -> (0.5 * 0.2 + 1 * 0.4) / 1.5 = 0.5 / 1.5 = 0.33333; x = -0.25: wA = 1, wB = 0.5
+// -> (0.2 + 0.5 * 0.4) / 1.5 = 0.26667. A partition of unity: the effective weights sum to 1 and the height runs
+// 0.2667, 0.3, 0.3333 across the edge, with no step. The mesh is valid, 256 faces. WITHOUT the normalisation (a
+// mutant) the x = 0 column is at 0.6 and the count line is missing.
+//
+// DISPLACEONTO, base n = 16, footprint 'everywhere' (weight 1 on all 289 vertices):
+// - Out of reach: target flat 0.2 with a reach of 0.1: every cast misses; z = 0 everywhere, the line is "displaceOnto: 289
+//   casts found no hit within reach". With reach 0.3 every vertex is at 0.2.
+// - Two sheets (0.1 and 0.5, 0.4 apart, within a reach of 1): every vertex sees two distinct hits; AmbiguousZero leaves
+//   it at 0, AmbiguousNearest puts it at 0.1 (the nearer); the line is "... 289 casts found more than one distinct
+//   hit" either way. Within a reach of 0.2 only the sheet at 0.1 is seen: z = 0.1, no line.
+// - The wall, reach 1, maxEdge 0.3, 10 passes: the target's nodes are multiples of 1/16, so a vertex of the result
+//   with x a multiple of 1/16 has z = 0.8 q((x + 0.5) / 0.5) to 1e-5 (a recast at a node reads the target there
+//   exactly; an INTERPOLATED height at a new vertex is the mean of its ends' and is off by up to f''h^2/8 = 19.2 *
+//   0.125^2 / 8 = 0.037 where the wall curves: the mutant fails this). No edge of the result is over 0.3 + 1e-5,
+//   measured on the displaced mesh (the unrefined displacement has an edge of sqrt(0.25^2 + 0.4^2) = 0.4717 across
+//   the wall: the wall rises 0.4 per cell at its middle; the quads have no diagonals until they are cut), and no cap
+//   line is written (the passes suffice).
+// - Determinism: the wall run twice gives the same positions and faces, bit for bit.
+// - Refusals (one problem line starting "displaceOnto: ", the mesh as it was): one target and no footprints; a footprint
+//   with 2 points when closed; a width below 0; a reach of 0; maxEdge 0; ambiguous 2. No targets is a silent copy. A
+//   footprint that covers nothing is a silent copy.
+//
+// MUTANTS (run by hand, the test fails as noted): recasting replaced by interpolating at new vertices fails the wall's
+// node check; the normalisation removed fails the abutting row.
+mod displaceontos;
+
+import testing use *;
+import stdio use *;
+import collections use *;
+import geomath use *;
+import mesh use *;
+import sculpt use *;
+
+fn clean(m: &PolyMesh, label: &Array[u8]) {
+  let problems = m.validate();
+  expectInt(i64.from(problems.len()), 0, label);
+}
+
+fn wallZ(x: f32) f32 {
+  var s = (x + 0.5) / 0.5;
+  if s < 0. { s = 0.; }
+  if s > 1. { s = 1.; }
+  0.8 * s * s * (3. - 2. * s)
+}
+
+// kind 0: z = 0, 1: 0.2, 2: 0.4, 3: two sheets (0.1 and 0.5), 4: the wall
+fn zOf(kind: u32, x: f32) f32 {
+  if kind == 1u32 { 0.2 } else if kind == 2u32 { 0.4 } else if kind == 4u32 { wallZ(x) } else { 0. }
+}
+
+fn grid(n: u32, kind: u32) PolyMesh {
+  let layers = if kind == 3u32 { 2u32 } else { 1u32 };
+  var pts = List[Vec3]();
+  var counts = List[u32]();
+  var idx = List[u32]();
+  var l = 0u32;
+  while l < layers {
+    var j = 0u32;
+    while j <= n {
+      var i = 0u32;
+      while i <= n {
+        let x = -2. + 4. * f32.from(i) / f32.from(n);
+        let z: f32 = if kind == 3u32 { if l == 0u32 { 0.1 } else { 0.5 } } else { zOf(kind, x) };
+        pts.push(Vec3(x, -2. + 4. * f32.from(j) / f32.from(n), z));
+        i = i + 1u32;
+      }
+      j = j + 1u32;
+    }
+    let off = l * (n + 1u32) * (n + 1u32);
+    j = 0u32;
+    while j < n {
+      var i = 0u32;
+      while i < n {
+        let a = off + (n + 1u32) * j + i;
+        counts.push(4u32);
+        idx.push(a); idx.push(a + 1u32); idx.push(a + n + 2u32); idx.push(a + n + 1u32);
+        i = i + 1u32;
+      }
+      j = j + 1u32;
+    }
+    l = l + 1u32;
+  }
+  var problems = List[String]();
+  PolyMesh.fromPolygons(pts.view(), counts.view(), idx.view(), &mut problems)
+}
+
+fn cells(lo: u32, hi: u32) List[u32] {
+  var out = List[u32]();
+  var j = lo;
+  while j <= hi {
+    var i = lo;
+    while i <= hi {
+      out.push(16u32 * j + i);
+      i = i + 1u32;
+    }
+    j = j + 1u32;
+  }
+  out
+}
+
+fn constant(n: usize, v: f32) List[f32] {
+  var w = List[f32]();
+  var i = 0usize;
+  while i < n {
+    w.push(v);
+    i = i + 1usize;
+  }
+  w
+}
+
+fn one(t: PolyMesh) List[PolyMesh] {
+  var ts = List[PolyMesh]();
+  ts.push(t);
+  ts
+}
+
+fn reachOf(r: f32) List[f32] {
+  var l = List[f32]();
+  l.push(r);
+  l
+}
+
+fn weightsOf(w: List[f32]) List[List[f32]] {
+  var l = List[List[f32]]();
+  l.push(w);
+  l
+}
+
+// The vertex of the 17 x 17 grid at (x, y): the row of the weights
+fn vAt(x: f32, y: f32) usize {
+  usize.from(u32.from((y + 2.) / 0.25 + 0.5)) * 17usize + usize.from(u32.from((x + 2.) / 0.25 + 0.5))
+}
+
+fn same(a: &PolyMesh, b: &PolyMesh) bool {
+  if a.vertexCount() != b.vertexCount() || a.faceCount() != b.faceCount() { return false; }
+  var i = 0usize;
+  while i < a.vertexCount() {
+    let p = *a.positions[i];
+    let q = *b.positions[i];
+    if p.x != q.x || p.y != q.y || p.z != q.z { return false; }
+    i = i + 1usize;
+  }
+  var f = 0u32;
+  while usize.from(f) < a.faceCount() {
+    let u = a.faceVertices(f);
+    let v = b.faceVertices(f);
+    if u.len() != v.len() { return false; }
+    var k = 0usize;
+    while k < u.len() {
+      if *u[k] != *v[k] { return false; }
+      k = k + 1usize;
+    }
+    f = f + 1u32;
+  }
+  true
+}
+
+fn maxEdge(m: &PolyMesh) f32 {
+  var best: f32 = 0.;
+  var e = 0usize;
+  while e < m.edgeCount() {
+    let a = *m.positions[usize.from(m.fromVertex(2u32 * u32.from(e)))];
+    let b = *m.positions[usize.from(m.toVertex(2u32 * u32.from(e)))];
+    let l = (a - b).length();
+    if l > best { best = l; }
+    e = e + 1usize;
+  }
+  best
+}
+
+fn main() i32 {
+  circle();
+  abutting();
+  reach();
+  sheets();
+  wall();
+  refusals();
+  done()
+}
+
+fn sstep(x: f32) f32 {
+  var y = x;
+  if y < 0. { y = 0.; }
+  if y > 1. { y = 1.; }
+  y * y * (3. - 2. * y)
+}
+
+fn rect(x0: f32, y0: f32, x1: f32, y1: f32, inward: f32, outward: f32) Footprint {
+  var b = List[Vec3]();
+  b.push(Vec3(x0, y0, 0.)); b.push(Vec3(x1, y0, 0.)); b.push(Vec3(x1, y1, 0.)); b.push(Vec3(x0, y1, 0.));
+  Footprint(b, true, inward, outward)
+}
+
+fn everywhere() List[Footprint] {
+  var l = List[Footprint]();
+  l.push(rect(-3., -3., 3., 3., 0.5, 0.));
+  l
+}
+
+fn circleFp() Footprint {
+  var b = List[Vec3]();
+  var k = 0u32;
+  while k < 256u32 {
+    let a = 2. * pi * f32.from(k) / 256.;
+    b.push(Vec3(a.cos(), a.sin(), 0.));
+    k = k + 1u32;
+  }
+  Footprint(b, true, 0.4, 0.4)
+}
+
+fn circle() {
+  let g = grid(16u32, 0u32);
+  var fps = List[Footprint]();
+  fps.push(circleFp());
+  let ts = one(grid(16u32, 1u32));
+  // nothing refines
+  var p0 = List[String]();
+  let r0 = displaceOnto(&g, &ts, &fps, &reachOf(1.), AmbiguousZero, 10., 8u32, &mut p0);
+  expectInt(i64.from(p0.len()), 0, "circle: no problem line");
+  clean(&r0, "circle: valid");
+  expectInt(i64.from(r0.faceCount()), 256, "circle: unrefined, the input's faces");
+  var bad = 0u32;
+  var zeros = 0u32;
+  var i = 0usize;
+  while i < 289usize {
+    let p = *g.positions[i];
+    let q = *r0.positions[i];
+    let w = sstep((1. - (p.x * p.x + p.y * p.y).sqrt() + 0.4) / 0.8);
+    if (q.z - 0.2 * w).abs() > 0.0001 || q.x != p.x || q.y != p.y { bad = bad + 1u32; }
+    if w == 0. { zeros = zeros + 1u32; if q.z != p.z { bad = bad + 1u32; } }
+    i = i + 1usize;
+  }
+  expectInt(i64.from(bad), 0, "circle: unrefined, z = 0.2 smoothstep of the true distance; weight 0 bit for bit");
+  expectBool(zeros > 100u32, true, "circle: many vertices are outside it");
+  // refined: the weight is evaluated at places no base vertex was
+  var p1 = List[String]();
+  let r = displaceOnto(&g, &ts, &fps, &reachOf(1.), AmbiguousZero, 0.1, 8u32, &mut p1);
+  expectInt(i64.from(p1.len()), 0, "circle: refined, no problem line");
+  clean(&r, "circle: refined, valid");
+  expectBool(r.faceCount() > 1000usize, true, "circle: refined, many more faces");
+  var badR = 0u32;
+  var between = 0u32;
+  i = 0usize;
+  while i < r.vertexCount() {
+    let q = *r.positions[i];
+    let w = sstep((1. - (q.x * q.x + q.y * q.y).sqrt() + 0.4) / 0.8);
+    if (q.z - 0.2 * w).abs() > 0.0001 { badR = badR + 1u32; }
+    if i >= 289usize && w > 0.05 && w < 0.95 { between = between + 1u32; }
+    i = i + 1usize;
+  }
+  expectInt(i64.from(badR), 0, "circle: refined, every vertex follows the smoothstep of true distance to 1e-4");
+  expectBool(between > 200u32, true, "circle: refined, many new vertices are in the fade");
+}
+
+fn abutting() {
+  let g = grid(16u32, 0u32);
+  var ts = one(grid(16u32, 1u32));
+  ts.push(grid(16u32, 2u32));
+  var fps = List[Footprint]();
+  fps.push(rect(-2.5, -2.5, 0., 2.5, 0., 0.5));
+  fps.push(rect(0., -2.5, 2.5, 2.5, 0., 0.5));
+  var rs = reachOf(1.);
+  rs.push(1.);
+  var problems = List[String]();
+  let r = displaceOnto(&g, &ts, &fps, &rs, AmbiguousZero, 10., 8u32, &mut problems);
+  expectInt(i64.from(problems.len()), 1, "abutting: one problem line");
+  expectStr(problems[0usize].view(), "displaceOnto: 51 vertices had weights over 1 and were normalised", "abutting: the count line");
+  clean(&r, "abutting: valid");
+  expectInt(i64.from(r.faceCount()), 256, "abutting: no face lost");
+  expectFloat(f64.from(r.positions[vAt(-0.25, 0.)].z), 0.266667, 0.00001, "abutting: 0.26667 left of the edge");
+  expectFloat(f64.from(r.positions[vAt(0., 0.)].z), 0.3, 0.00001, "abutting: the mean 0.3 on it");
+  expectFloat(f64.from(r.positions[vAt(0.25, 0.)].z), 0.333333, 0.00001, "abutting: 0.33333 right of it");
+  expectFloat(f64.from(r.positions[vAt(0., 1.75)].z), 0.3, 0.00001, "abutting: the whole column");
+  expectFloat(f64.from(r.positions[vAt(-0.5, 0.)].z), 0.2, 0.00001, "abutting: 0.2 beyond the fade");
+  expectFloat(f64.from(r.positions[vAt(0.5, 0.)].z), 0.4, 0.00001, "abutting: 0.4 beyond the fade");
+}
+
+fn reach() {
+  let g = grid(16u32, 0u32);
+  let ts = one(grid(16u32, 1u32));
+  let fps = everywhere();
+  var problems = List[String]();
+  let r = displaceOnto(&g, &ts, &fps, &reachOf(0.1), AmbiguousZero, 10., 8u32, &mut problems);
+  expectInt(i64.from(problems.len()), 1, "reach: one problem line");
+  expectStr(problems[0usize].view(), "displaceOnto: 289 casts found no hit within reach", "reach: the miss count");
+  expectBool(same(&r, &g), true, "reach: every miss is height 0, the mesh as it was");
+  var p2 = List[String]();
+  let r2 = displaceOnto(&g, &ts, &fps, &reachOf(0.3), AmbiguousZero, 10., 8u32, &mut p2);
+  expectInt(i64.from(p2.len()), 0, "reach: in reach, no line");
+  expectFloat(f64.from(r2.positions[vAt(0.5, 0.5)].z), 0.2, 0.000001, "reach: in reach it is 0.2");
+}
+
+fn sheets() {
+  let g = grid(16u32, 0u32);
+  let ts = one(grid(16u32, 3u32));
+  let fps = everywhere();
+  var problems = List[String]();
+  let r = displaceOnto(&g, &ts, &fps, &reachOf(1.), AmbiguousZero, 10., 8u32, &mut problems);
+  expectInt(i64.from(problems.len()), 1, "sheets: one problem line");
+  expectStr(problems[0usize].view(), "displaceOnto: 289 casts found more than one distinct hit", "sheets: the count line");
+  expectBool(same(&r, &g), true, "sheets: two hits is height 0");
+  var p2 = List[String]();
+  let r2 = displaceOnto(&g, &ts, &fps, &reachOf(0.2), AmbiguousZero, 10., 8u32, &mut p2);
+  expectInt(i64.from(p2.len()), 0, "sheets: reach 0.2 sees one sheet");
+  expectFloat(f64.from(r2.positions[vAt(0.5, 0.5)].z), 0.1, 0.000001, "sheets: it is the sheet at 0.1");
+  var p3 = List[String]();
+  let r3 = displaceOnto(&g, &ts, &fps, &reachOf(1.), AmbiguousNearest, 10., 8u32, &mut p3);
+  expectInt(i64.from(p3.len()), 1, "sheets, nearest: still counted");
+  expectStr(p3[0usize].view(), "displaceOnto: 289 casts found more than one distinct hit", "sheets, nearest: the count line");
+  expectFloat(f64.from(r3.positions[vAt(0.5, 0.5)].z), 0.1, 0.000001, "sheets, nearest: the nearer sheet, 0.1 not 0.5");
+}
+
+fn wallRun() PolyMesh {
+  let g = grid(16u32, 0u32);
+  let ts = one(grid(64u32, 4u32));
+  var problems = List[String]();
+  let r = displaceOnto(&g, &ts, &everywhere(), &reachOf(1.), AmbiguousZero, 0.3, 10u32, &mut problems);
+  expectInt(i64.from(problems.len()), 0, "wall: no problem line, the passes suffice");
+  r
+}
+
+fn wall() {
+  let g = grid(16u32, 0u32);
+  let ts = one(grid(64u32, 4u32));
+  var p0 = List[String]();
+  let raw = displaceOnto(&g, &ts, &everywhere(), &reachOf(1.), AmbiguousZero, 10., 10u32, &mut p0);
+  expectBool(maxEdge(&raw) > 0.47, true, "wall: unrefined, an edge across the wall is over 0.47");
+  let r = wallRun();
+  clean(&r, "wall: valid");
+  expectBool(maxEdge(&r) <= 0.30001, true, "wall: no edge over maxEdge after displacement");
+  var nodes = 0u32;
+  var bad = 0u32;
+  var i = 0usize;
+  while i < r.vertexCount() {
+    let q = *r.positions[i];
+    let k = q.x * 16. + 100.;
+    let fr = k - f32.from(u32.from(k));
+    if fr < 0.0001 || fr > 0.9999 {
+      nodes = nodes + 1u32;
+      if (q.z - wallZ(q.x)).abs() > 0.00001 { bad = bad + 1u32; }
+    }
+    i = i + 1usize;
+  }
+  expectBool(nodes > 400u32, true, "wall: many vertices at nodes");
+  expectInt(i64.from(bad), 0, "wall: a vertex at a node of the target reads the target there");
+  let again = wallRun();
+  expectBool(same(&r, &again), true, "wall: the same run twice, the same bits");
+}
+
+fn refusals() {
+  let g = grid(16u32, 0u32);
+  let ts = one(grid(16u32, 1u32));
+  var p1 = List[String]();
+  let none = List[Footprint]();
+  let r1 = displaceOnto(&g, &ts, &none, &reachOf(1.), AmbiguousZero, 10., 8u32, &mut p1);
+  expectInt(i64.from(p1.len()), 1, "refuse: footprints short of the targets");
+  expectBool(same(&r1, &g), true, "refuse: footprints short, unchanged");
+  var p2 = List[String]();
+  var two = List[Footprint]();
+  var b2 = List[Vec3]();
+  b2.push(Vec3(0., 0., 0.)); b2.push(Vec3(1., 0., 0.));
+  two.push(Footprint(b2, true, 0.1, 0.1));
+  let r2 = displaceOnto(&g, &ts, &two, &reachOf(1.), AmbiguousZero, 10., 8u32, &mut p2);
+  expectInt(i64.from(p2.len()), 1, "refuse: a closed footprint of 2 points");
+  expectBool(same(&r2, &g), true, "refuse: 2 points, unchanged");
+  var p3 = List[String]();
+  let r3 = displaceOnto(&g, &ts, &everywhere(), &reachOf(0.), AmbiguousZero, 10., 8u32, &mut p3);
+  expectInt(i64.from(p3.len()), 1, "refuse: reach 0");
+  expectBool(same(&r3, &g), true, "refuse: reach 0, unchanged");
+  var p4 = List[String]();
+  let r4 = displaceOnto(&g, &ts, &everywhere(), &reachOf(1.), AmbiguousZero, 0., 8u32, &mut p4);
+  expectInt(i64.from(p4.len()), 1, "refuse: maxEdge 0");
+  expectStr(p4[0usize].view(), "displaceOnto: maxEdge is not above 0", "refuse: the line");
+  expectBool(same(&r4, &g), true, "refuse: maxEdge 0, unchanged");
+  var p5 = List[String]();
+  let notargets = List[PolyMesh]();
+  let r5 = displaceOnto(&g, &notargets, &none, &List[f32](), AmbiguousZero, 0.1, 8u32, &mut p5);
+  expectInt(i64.from(p5.len()), 0, "no targets: silent");
+  expectBool(same(&r5, &g), true, "no targets: a copy");
+  var p6 = List[String]();
+  var far = List[Footprint]();
+  far.push(rect(10., 10., 11., 11., 0.1, 0.1));
+  let r6 = displaceOnto(&g, &ts, &far, &reachOf(1.), AmbiguousZero, 0.05, 8u32, &mut p6);
+  expectInt(i64.from(p6.len()), 0, "a footprint that covers nothing: silent");
+  expectBool(same(&r6, &g), true, "a footprint that covers nothing: a copy");
+  var p7 = List[String]();
+  let r7 = displaceOnto(&g, &ts, &everywhere(), &reachOf(1.), 2u32, 10., 8u32, &mut p7);
+  expectInt(i64.from(p7.len()), 1, "refuse: ambiguous 2");
+  expectBool(same(&r7, &g), true, "refuse: ambiguous 2, unchanged");
+  var p8 = List[String]();
+  var neg = List[Footprint]();
+  neg.push(rect(-3., -3., 3., 3., -0.5, 0.));
+  let r8 = displaceOnto(&g, &ts, &neg, &reachOf(1.), AmbiguousZero, 10., 8u32, &mut p8);
+  expectInt(i64.from(p8.len()), 1, "refuse: a negative width");
+  expectBool(same(&r8, &g), true, "refuse: negative width, unchanged");
+}

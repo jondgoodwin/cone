@@ -32,7 +32,6 @@ ModuleNode *newModuleNode() {
     mod->traitname = NULL;
     mod->trait = NULL;
     mod->ntaken = 0;
-    mod->setorder = NULL;
     mod->setups = NULL;
     mod->initfn = NULL;
     mod->finalfn = NULL;
@@ -1483,8 +1482,7 @@ void modTypeCheck(TypeCheckState *pstate, ModuleNode *mod) {
     // stead, which prints its error (propagate.h): added once the loop above is done
     propagateMainResult(pstate, mod);
 
-    // Last, once every global's type is settled: the module's 'init' and 'final',
-    // and the 'drop' that finalizes its globals
+    // Last, once every global's type is settled: the module's 'init' and 'final'
     modLifecycle(mod);
 }
 
@@ -1506,24 +1504,6 @@ ModuleNode *modInitOf(FnDclNode *fnnode) {
 
 // The module whose 'init' the flow pass is walking, or NULL
 static ModuleNode *modInitCur = NULL;
-
-// The flow pass met an assignment to this name: where it is a global of the
-// module whose 'init' is being walked and is not yet in the module's setup
-// order, it is next in it. Text order, so the first order written wins where
-// branches set the same globals in different orders
-void modInitNoteSet(VarDclNode *var) {
-    if (modInitCur == NULL || var->dclinfo.owner != (INode*)modInitCur)
-        return;
-    if (modInitCur->setorder == NULL)
-        modInitCur->setorder = newNodes(4);
-    INode **nodesp;
-    uint32_t cnt;
-    for (nodesFor(modInitCur->setorder, cnt, nodesp)) {
-        if (*nodesp == (INode*)var)
-            return;
-    }
-    nodesAdd(&modInitCur->setorder, (INode*)var);
-}
 
 // The 'init' function itself, so that only its own flow walk checks its calls
 static FnDclNode *modInitFnCur = NULL;
@@ -1659,7 +1639,6 @@ void modInitCall(FlowState *fstate, FnCallNode *call) {
 uint16_t *modInitFlowBegin(ModuleNode *mod, FnDclNode *initfn) {
     modInitCur = mod;
     modInitFnCur = initfn;
-    mod->setorder = NULL;
     uint16_t *saved = (uint16_t*)memAllocBlk(sizeof(uint16_t) * (mod->nodes->used + 1));
     INode **nodesp;
     uint32_t cnt;
@@ -1694,7 +1673,7 @@ void modInitFlowEnd(ModuleNode *mod, uint16_t *saved) {
     }
 }
 
-// A module's 'init', 'final' and 'drop' are Cone's, whatever the module's
+// A module's 'init' and 'final' are Cone's, whatever the module's
 // naming: a C-named module names the functions it owns by their bare names, so
 // a lifecycle function left C-named would be the symbol 'init' of every such
 // module in a program. The symbol is spelled after the module as any module's
@@ -1766,8 +1745,6 @@ static FnDclNode *modLifecycleFn(ModuleNode *mod, Name *name) {
 // module writes none) call it first. So every setup of a module has run before
 // its 'init' does, and the program's stitched init runs the modules in their
 // order. A setup that panics ends the program at start-up, as any panic does.
-// The module's finalizer takes the setups in this order (modGiveDrop), so the
-// reverse of it is the reverse of the order they ran.
 
 int modAddSetup(VarDclNode *var) {
     INode *owner = var->dclinfo.owner;
@@ -1895,7 +1872,7 @@ static Nodes *modSetupOrder(ModuleNode *mod) {
 }
 
 // Make the module's setups a function of its own, run first by its 'init'
-// (made where the module writes none). Pre-lowered as 'drop' is, its flow pass
+// (made where the module writes none). Built pre-lowered, its flow pass
 // run here so that what a value moves or copies is judged as it is for any
 // assignment: each setup global holds nothing until its assignment, as an
 // uninitialized local does, so a read of one before its setup is flow's own
@@ -1978,143 +1955,37 @@ static FnDclNode *modSetupBuild(ModuleNode *mod, FnDclNode *initfn) {
     return initfn;
 }
 
-// Whether the module's finalizer finalizes this global: its type has anything
-// to do as it dies (itypeNeedsFinal), and it is not C's storage. A thread-local
-// needing it is refused (modGiveDrop), and a '@workgroup' global may hold only
-// numbers (varDclWorkgroupCheck)
-int modGlobalFinalized(VarDclNode *var) {
-    return !(var->dclinfo.facts & (DclCName | DclThreadLocal | DclWorkgroup)) && itypeNeedsFinal(var->vtype);
-}
-
-// Give the module a 'drop' where any global it declares needs finalizing
-// (itypeNeedsFinal, the question a local's death asks): a function owned by the
-// module, so its symbol is spelled after it ('q.drop'), that calls the module's
-// own 'final' and then finalizes each such global, in the reverse of the order
-// the globals were set (the setup list) -- a type's 'drop' is its 'final' and then its
-// fields', and a module's globals are its fields, set in order, ended in reverse. It is the return's release list, as a
-// function's locals are released: a struct or an enum listed as its drop's
-// call, anything else -- an owning reference, a tuple or an array -- listed as
-// the global itself, which generation finalizes in place (genlDealiasNode).
-// Built pre-lowered, as a type's is, and never type checked or flow analyzed.
-// A C-named global is C's storage and not finalized. Where no global needs it,
-// the module's finalizer is its own 'final', or it has none.
-static FnDclNode *modGiveDrop(ModuleNode *mod, FnDclNode *final) {
-    BlockNode *block = NULL;
-    FnDclNode *dropfn = NULL;
-    Nodes *releases = NULL;
+// A thread-local is a copy per thread, and each copy would need finalizing as
+// its thread ends, which nothing does yet. So its type may need none
+// (itypeNeedsFinal, the question a local's death asks)
+static void modThreadLocalCheck(ModuleNode *mod) {
     INode **nodesp;
     uint32_t cnt;
-    // The order the globals are set (rule 6): first those with a constant value,
-    // in declaration order, then the setups in the order they run (modSetupBuild),
-    // then those 'init' assigns, in the order the flow pass first met an
-    // assignment to each
-    Nodes *setup = newNodes(8);
     for (nodesFor(mod->nodes, cnt, nodesp)) {
-        if ((*nodesp)->tag != VarDclTag || (((VarDclNode*)*nodesp)->dclinfo.facts & DclSetup))
+        if ((*nodesp)->tag != VarDclTag)
             continue;
-        int assigned = 0;
-        if (mod->setorder) {
-            INode **setp;
-            uint32_t setcnt;
-            for (nodesFor(mod->setorder, setcnt, setp))
-                assigned |= *setp == *nodesp;
-        }
-        if (!assigned)
-            nodesAdd(&setup, *nodesp);
-    }
-    if (mod->setups) {
-        INode **setp;
-        uint32_t setcnt;
-        for (nodesFor(mod->setups, setcnt, setp))
-            nodesAdd(&setup, (INode*)modSetupVar(*setp));
-    }
-    if (mod->setorder) {
-        INode **setp;
-        uint32_t setcnt;
-        for (nodesFor(mod->setorder, setcnt, setp))
-            nodesAdd(&setup, *setp);
-    }
-    for (nodesFor(setup, cnt, nodesp)) {
         VarDclNode *var = (VarDclNode*)*nodesp;
-        // A thread-local is a copy per thread, and each copy would need
-        // finalizing as its thread ends, which nothing does yet. So its type
-        // may need none: the module's 'drop' runs on one thread and could
-        // reach only that thread's copy
-        if (var->dclinfo.facts & DclThreadLocal) {
-            if (itypeNeedsFinal(var->vtype))
-                errorMsgNode((INode*)var, ErrorThreadLocalFinal,
-                    "Thread-local %s's type needs finalizing, and nothing yet finalizes a thread's copy as its thread ends: a thread-local's type may not need finalizing.",
-                    &var->namesym->namestr);
-            continue;
-        }
-        if (!modGlobalFinalized(var))
-            continue;
-
-        if (block == NULL) {
-            // The name is the module's finalizer's symbol: a 'drop' the module
-            // declares itself would be spelled the same
-            INode *prior = namespaceFind(&mod->namespace, dropName);
-            if (prior != NULL && prior->tag != AliasDclTag && prior->tag != ModuleTag) {
-                errorMsgNode(prior, ErrorModLifecycle,
-                    "A module whose globals need finalizing is given a finalizer named drop, so the module may not declare a drop of its own.");
-                return NULL;
-            }
-            FnSigNode *fnsig = newFnSigNode();
-            fnsig->rettype = (INode*)newVoidNode();
-            block = newBlockNode();
-            dropfn = newFnDclNode(dropName, 0, (INode*)fnsig, (INode*)block);
-            inodeLexCopy((INode*)dropfn, (INode*)mod);
-            dclInfoJoin((INode*)dropfn, (INode*)mod);
-            dropfn->dclinfo.facts |= DclLifecycle;
-            modLifecycleCone(dropfn);
-            dropfn->flags |= TypeChecked;
-            if (final) {
-                FnCallNode *finalcall = newFnCallLower((INode*)var, (INode*)final, 1);
-                nodesAdd(&block->stmts, (INode*)finalcall);
-            }
-            releases = newNodes(4);
-        }
-
-        INode *vardrop = itypeGetDropFnDcl(var->vtype);
-        if (vardrop == NULL) {
-            nodesAdd(&releases, (INode*)var);
-            continue;
-        }
-        FnCallNode *dropcall = newFnCallLower((INode*)var, vardrop, 1);
-        INode *varuse = newNameUseFromDclNode((INode*)var, (INode*)var);
-        nodesAdd(&dropcall->args, newBorrowMutRef(varuse, var->vtype, (INode*)uniPerm));
-        nodesAdd(&releases, (INode*)dropcall);
+        if ((var->dclinfo.facts & DclThreadLocal) && itypeNeedsFinal(var->vtype))
+            errorMsgNode((INode*)var, ErrorThreadLocalFinal,
+                "Thread-local %s's type needs finalizing, and nothing yet finalizes a thread's copy as its thread ends: a thread-local's type may not need finalizing.",
+                &var->namesym->namestr);
     }
-    if (block == NULL)
-        return final;
-
-    // The reverse of the order they were set (the setup list above)
-    for (uint32_t lo = 0, hi = releases->used; lo + 1 < hi; ++lo, --hi) {
-        INode *tmp = nodesGet(releases, lo);
-        nodesGet(releases, lo) = nodesGet(releases, hi - 1);
-        nodesGet(releases, hi - 1) = tmp;
-    }
-    BreakRetNode *retnode = newReturnNode();
-    retnode->exp = (INode*)newNilLitNode();
-    retnode->block = block;
-    retnode->dealias = releases;
-    nodesAdd(&block->stmts, (INode*)retnode);
-    // Among the module's nodes, so it is named and generated wherever the
-    // module is; the module trait's copies were counted from the end of 'nodes'
-    // before name resolution, and nothing reads that count after it
-    nodesAdd(&mod->nodes, (INode*)dropfn);
-    return dropfn;
 }
 
 // A module's lifecycle [Jon 23 Sep]: each module declares only its own portion
 // -- an 'init' for its own globals, a 'final' for its own state -- and the
 // program stitches every module's together (genlStitch). Here: find and check
-// the two, report each global without an initial value where there is no 'init'
-// to assign it (an 'init' checks its own, modInitFlowEnd), and give the module
-// the 'drop' that finalizes its globals after its 'final'.
+// the two, and report each global without an initial value where there is no
+// 'init' to assign it (an 'init' checks its own, modInitFlowEnd).
+//
+// The module's finalizer is its own 'final' and nothing more [Jon 27 Nov]: no
+// global is finalized as the program ends. An actor still running, a behaviour
+// still paused or a detached thread may use a global up to the end of the
+// process, so there is no point before it at which freeing what one holds is
+// safe. What must happen outside the process is the 'final''s to do
 static void modLifecycle(ModuleNode *mod) {
     mod->initfn = modLifecycleFn(mod, initName);
-    FnDclNode *final = modLifecycleFn(mod, finalName);
+    mod->finalfn = modLifecycleFn(mod, finalName);
     if (mod->setups)
         mod->initfn = modSetupBuild(mod, mod->initfn);
 
@@ -2132,5 +2003,5 @@ static void modLifecycle(ModuleNode *mod) {
         }
     }
 
-    mod->finalfn = modGiveDrop(mod, final);
+    modThreadLocalCheck(mod);
 }

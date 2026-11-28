@@ -187,10 +187,15 @@ void flowGateJoinAsk(FlowState *fstate, Nodes *elems);
 void flowGateShapeAsk(FlowState *fstate, INode *call);
 // A call with a writable argument
 void flowGateShapeWrite(FlowState *fstate, Nodes *args);
+// A call is lent what an owner a 'var' global may also hold points at
+void flowGateGlobalOwner(FlowState *fstate, Nodes *args);
 // A store, which may be the one that ends a compound assignment through a temporary
 void flowGateCompound(FlowState *fstate, INode *lval, INode *rval);
 // An index of a place, whose address is made before the index is
 void flowGateIndex(FlowState *fstate, INode *index);
+// Walk the indexes of a place read or borrowed, refusing one that moves the
+// variable holding what it indexes
+void flowIndexArgs(FlowState *fstate, struct FnCallNode *index);
 // A swap, whose left side's address is made before the right side is
 void flowGateSwap(FlowState *fstate, INode *lval, INode *rval);
 // Does making this value do no more than read?

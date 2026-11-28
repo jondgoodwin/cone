@@ -1,0 +1,56 @@
+// A 'mut1' reference may be copied, and a copy writes, so a borrow of an element taken
+// through one is held to what it is held to through a 'mut' reference
+// (collection_flow_store): a store through another copy that frees the list is refused
+// while the element is still to be used. Each of these read freed memory when 'mut1' was
+// taken to have no other writer.
+// enum_narrow_mut1_success holds what is accepted beside them.
+
+mod collection_flow_mut1_store;
+
+import collections use *;
+import stdio use *;
+import sync use Arc;
+
+struct Holder { pub rc: Rc[mut1, List[i32]]; }
+
+// One owner, copied
+fn owners(o: Rc[mut1, List[i32]]) {
+  let o2 = o;
+  let v = &(*o)[0usize];
+  *o2 = List[i32]();                    //~ ErrorShapeStore
+  printInt(i64.from(*v));
+}
+
+fn arcOwners(o: Arc[mut1, List[i32]]) {
+  let o2 = o;
+  let v = &(*o)[0usize];
+  *o2 = List[i32]();                    //~ ErrorShapeStore
+  printInt(i64.from(*v));
+}
+
+// The owner held in a field
+fn field(o: Rc[mut1, List[i32]]) {
+  let o2 = o;
+  let h = Holder(o);
+  let v = &(*h.rc)[0usize];
+  *o2 = List[i32]();                    //~ ErrorShapeStore
+  printInt(i64.from(*v));
+}
+
+// Two 'mut1' borrows, which may be of one list
+fn borrows(a: &mut1 List[i32], b: &mut1 List[i32]) {
+  let v = &(*a)[0usize];
+  *b = List[i32]();                     //~ ErrorShapeStore
+  printInt(i64.from(*v));
+}
+
+// A 'mut1' borrow of what a 'uni' reference points at, copied
+fn fromUni(u: &uni List[i32]) {
+  let r: &mut1 List[i32] = &mut1 *u;
+  let r2 = r;
+  let v = &(*r)[0usize];
+  *r2 = List[i32]();                    //~ ErrorShapeStore
+  printInt(i64.from(*v));
+}
+
+fn main() {}

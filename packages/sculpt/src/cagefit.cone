@@ -1,0 +1,953 @@
+// ======== Fitting a subdivision cage to a surface, and the height along its normals ========
+//
+// 'fitCage' moves the control points of a coarse cage so that its subdivided
+// surface (Catmull-Clark, subdivide.cone, 'levels' levels) lies on a target
+// surface, with no region joins: one coarse shared surface is the base, and
+// regions and features are applied to it afterwards. The cage keeps its faces,
+// vertex numbers and every channel, creases included: the crease weights are
+// carried through the subdivision as they stand and are not fitted.
+//
+// The subdivided surface is linear in the control points, so the fit is a
+// least squares in them. Where each subdivided vertex's weights come from: the
+// weights depend on the cage's faces and creases alone, not on where its
+// points are, so they are read off once, by subdividing the cage with a one-hot
+// position: control point i given the position (1, i, 0) and every other (0, 0,
+// 0), the subdivided vertex v lies at (w, w i, 0) when i is the only control
+// point with a weight at v, so w is its weight and i = y / x. Control points
+// whose weights could meet at one vertex share no pass: the cage's vertices are
+// coloured so that two of one colour are more than 4 edges apart (a control
+// point reaches the faces within one edge of its own corners, and a face spans
+// at most 2 edges), and one pass is made per colour, about 30 passes whatever
+// the size of the cage. A weight below 0.00001 is dropped and the rest scaled
+// to sum to 1 again.
+//
+// One round: the cage is subdivided (by the weights); each subdivided vertex
+// finds its nearest point on the target (target distance), and a fixed set of
+// samples of the target, spread evenly by area, each finds its nearest point
+// on the subdivided surface (surface distance), both by SurfaceIndex.nearest.
+// Each pair gives one row of a linear least squares in the control points'
+// moves d: the point-to-plane residual n . (p + move of p - q), n the unit
+// normal of the target's triangle at q (for a subdivided vertex) or of the
+// subdivided surface's triangle at the footprint (for a sample), p the point
+// on the subdivided surface (a vertex, or the footprint's barycentric blend of
+// its triangle's three vertices) and q the point on the target. A step that
+// drags a fold flat is not needed because the plane only constrains the
+// distance along the normal; sliding along the surface costs nothing. Both
+// directions keep the surface from collapsing onto part of the target or
+// leaving part of it bare. The equations carry one more term, smoothness times
+// the mean diagonal of the normal matrix times |d|^2: it keeps a control point
+// that no row reaches where it is (and a direction no row constrains), and
+// shortens the step so that the rms falls. Solved by conjugate gradients with
+// the Jacobi preconditioner, matrix-free.
+//
+// A step is kept only if the pooled rms falls: otherwise the damping is made
+// tenfold greater and the step solved again (up to 8 times, then the fit stops
+// with the cage it has), the Levenberg-Marquardt rule, since a coarse cage far
+// from the target makes a full Gauss-Newton step overshoot and the rms rise.
+// Rounds stop when 'rounds' have been kept, or when one gained under 0.05%.
+// The result reports the rms and greatest distance in each direction, and the
+// pooled rms before the first round and after each ('history'): it falls at
+// every entry, and its last is the cage returned's.
+//
+// DETERMINISTIC: the samples, the order of the rows and the solve are fixed, so
+// the same inputs give the same bits.
+//
+// 'heightsAlongNormals' is the diagnostic that tells whether a target is a
+// single-valued height over a base: from each base vertex a line along its
+// normal, both ways, within 'reach', against the target. The base vertex is
+// valid when exactly one distinct hit lies on the line (hits within 0.001 of
+// reach of each other are one: the line grazing a shared edge or running
+// through the base's own surface) and no incident triangle, displaced to its
+// vertices' heights, turns against the base's normal (a dot product below 0).
+// A vertex with several hits keeps the nearest as its height, one with none
+// has height 0.
+
+pub struct CageFit {
+  pub cage: PolyMesh;           // the start cage with the fitted control points
+  pub rms: f32;                 // pooled over both directions, of the cage returned
+  pub max: f32;                 // the greatest distance in either direction
+  pub rounds: u32;              // rounds kept
+  pub targetRms: f32;           // subdivided vertices to the target
+  pub targetMax: f32;
+  pub surfaceRms: f32;          // samples of the target to the subdivided surface
+  pub surfaceMax: f32;
+  pub history: List[f32];       // pooled rms before the first round and after each
+}
+
+// The default weight of the smoothness term (the sum of the squared
+// differences of the step across the cage's edges), relative to the mean
+// diagonal of the normal matrix. The fit's job is a clean base cage (one hit
+// along each normal, little fold, the target reached), not the least rms. On
+// the head patch from a manifold start cage (decimateWithBoundary 0, 27 Nov),
+// 311 points, 4 levels, 40 rounds, free steps: 0.2 gives multi-hit 2.55%,
+// reach 98.4%, patch rms 0.0533; 8 gives multi-hit 0.15%, reach 99.3%, patch
+// rms 0.0741 (Python's cage 0.11%, 99.6%, 0.0838). At 1,019 points, 3 levels,
+// 8 rounds, 8 gives multi-hit 0.08%, reach 99.5%. Earlier (the torn 307-point
+// cage, 3 levels) 0.2 gave the least rms to the target; that is no longer the
+// aim. Normal-only steps give much the same at 8 (lower fold, higher rms).
+pub const CageSmoothness = 8.0;
+
+// What 'fitCage' names, with the term's weight and the residual kind given:
+// 'planar' false makes the point-to-point residual (three rows to a pair, one
+// to each axis), the mutant that shows what the plane buys. 'normalOnly' true
+// restricts each control point's move to its own normal (the normal of the
+// subdivided surface at that point, found again after every kept step), as the
+// Python experiment's cages.py does (its step is 0.7 of the height along that
+// normal): the unknown of the least squares is one number a point, not three,
+// solved by the same conjugate gradients on the moves projected onto the
+// normals. The surface then cannot slide toward the target's crisp features
+// sideways, and a tight fit stays a single-valued height over its own normals.
+pub fn fitCageWith(target: &PolyMesh, start: &PolyMesh, levels: u32, rounds: u32, smoothness: f32,
+    planar: bool, normalOnly: bool, problems: &mut List[String]) CageFit {
+  let nc = start.vertexCount();
+  if nc == 0usize || start.faceCount() == 0usize {
+    problems.push(String.from("fitCage: the start cage is empty"));
+    return failedFit(start);
+  }
+  if target.faceCount() == 0usize {
+    problems.push(String.from("fitCage: the target has no faces"));
+    return failedFit(start);
+  }
+  if levels == 0u32 {
+    problems.push(String.from("fitCage: levels must be at least 1"));
+    return failedFit(start);
+  }
+  let tIndex = SurfaceIndex.of(target);
+  let shape = subdivide(start, levels);
+  let wt = subdivisionWeights(start, levels, problems);
+  let nS = shape.vertexCount();
+  if wt.start.len() != nS + 1usize {
+    problems.push(String.from("fitCage: the subdivision's weights do not match its vertices"));
+    return failedFit(start);
+  }
+  var count = nS;
+  if count < 4000usize { count = 4000usize; }
+  let samples = targetSamples(&tIndex, count);
+
+  var c = copyList[Vec3](&start.positions);
+  var dirs = List[Vec3]();     // each control point's normal when 'normalOnly', else empty
+  if normalOnly { dirs = controlNormals(&shape, &wt, &c, nc); }
+  var rows = newRows();
+  var st = Stats(0.0, 0usize, 0., 0.0, 0usize, 0.);
+  fitRows(&tIndex, &samples, &shape, &wt, &c, planar, &mut rows, &mut st);
+  var rms = pooledRms(&st);
+  var history = List[f32]();
+  history.push(f32.from(rms));
+  var edges = List[u32].withCapacity(2usize * start.edgeCount());
+  var e = 0u32;
+  while usize.from(e) < start.edgeCount() {
+    let h = start.edgeHalfedge(e, 0u32);
+    edges.push(start.fromVertex(h));
+    edges.push(start.toVertex(h));
+    e = e + 1u32;
+  }
+  let floorMu = 0.001;
+  var mu = floorMu;
+  var done = 0u32;
+  var stuck = false;
+  while done < rounds && !stuck {
+    // A step is kept only if the pooled rms falls; else the damping grows tenfold and the step is solved again
+    var accepted = false;
+    var tries = 0u32;
+    while !accepted && tries < 8u32 {
+      var delta = List[f64]();
+      solveStep(&rows, nc, &edges, &dirs, f64.from(smoothness), mu, &mut delta);
+      var c2 = copyList[Vec3](&c);
+      var i = 0usize;
+      while i < nc {
+        let p = *c2[i];
+        c2.set(i, Vec3(p.x + f32.from(*delta[3usize * i]), p.y + f32.from(*delta[3usize * i + 1usize]),
+          p.z + f32.from(*delta[3usize * i + 2usize])));
+        i = i + 1usize;
+      }
+      var rows2 = newRows();
+      var st2 = Stats(0.0, 0usize, 0., 0.0, 0usize, 0.);
+      fitRows(&tIndex, &samples, &shape, &wt, &c2, planar, &mut rows2, &mut st2);
+      let rms2 = pooledRms(&st2);
+      if rms2 < rms {
+        let gain = rms - rms2;
+        c = c2;
+        if normalOnly { dirs = controlNormals(&shape, &wt, &c, nc); }
+        rows = rows2;
+        st = st2;
+        rms = rms2;
+        history.push(f32.from(rms));
+        done = done + 1u32;
+        accepted = true;
+        mu = mu * 0.3;
+        if mu < floorMu { mu = floorMu; }
+        // Converged: the last step gained under 0.05%
+        if gain < 0.0005 * (rms + gain) { stuck = true; }
+      } else {
+        mu = mu * 10.0;
+        tries = tries + 1u32;
+      }
+    }
+    if !accepted { stuck = true; }
+  }
+  let cage = withPositions(start, c);
+  var worst = st.maxA;
+  if st.maxB > worst { worst = st.maxB; }
+  CageFit(cage, f32.from(rms), worst, done, f32.from(rmsOf(st.sumA, st.nA)), st.maxA,
+    f32.from(rmsOf(st.sumB, st.nB)), st.maxB, history)
+}
+
+// The cage's subdivided surface (at 'levels') fitted to the target, 'rounds'
+// rounds of point-to-plane least squares, smoothness 'CageSmoothness'. A start
+// with no faces, a target with none, or levels 0 is a line pushed on
+// 'problems' and the start returned as it was (rms -1).
+pub fn fitCage(target: &PolyMesh, start: &PolyMesh, levels: u32, rounds: u32, problems: &mut List[String]) CageFit {
+  fitCageWith(target, start, levels, rounds, f32.from(CageSmoothness), true, false, problems)
+}
+
+// The unit normal of the subdivided surface at each of the nc control points
+// (the subdivided mesh keeps the cage's vertex numbers), for control points c
+fn controlNormals(shape: &PolyMesh, wt: &CageWeights, c: &List[Vec3], nc: usize) List[Vec3] {
+  let surface = withPositions(shape, cageLimit(wt, c));
+  let all = surface.vertexNormals();
+  var out = List[Vec3].withCapacity(nc);
+  var i = 0usize;
+  while i < nc {
+    out.push(*all[i]);
+    i = i + 1usize;
+  }
+  out
+}
+
+// v (3 numbers a control point) with each point's part off its normal taken
+// away: a point whose normal has no length keeps nothing
+fn projectOnto(v: &mut List[f64], dirs: &List[Vec3]) {
+  var i = 0usize;
+  while i < dirs.len() {
+    let n = *dirs[i];
+    let nx = f64.from(n.x);
+    let ny = f64.from(n.y);
+    let nz = f64.from(n.z);
+    let s = *v[3usize * i] * nx + *v[3usize * i + 1usize] * ny + *v[3usize * i + 2usize] * nz;
+    v.set(3usize * i, s * nx);
+    v.set(3usize * i + 1usize, s * ny);
+    v.set(3usize * i + 2usize, s * nz);
+    i = i + 1usize;
+  }
+}
+
+fn failedFit(start: &PolyMesh) CageFit {
+  CageFit(start.clone(), -1., -1., 0u32, -1., -1., -1., -1., List[f32]())
+}
+
+// The sums of squares and the greatest distances of the two directions
+struct Stats {
+  sumA: f64;                    // subdivided vertex to target
+  nA: usize;
+  maxA: f32;
+  sumB: f64;                    // target sample to subdivided surface
+  nB: usize;
+  maxB: f32;
+}
+
+fn rmsOf(sum: f64, n: usize) f64 {
+  if n == 0usize { 0.0 } else { (sum / f64.from(n)).sqrt() }
+}
+
+fn pooledRms(s: &Stats) f64 { rmsOf(s.sumA + s.sumB, s.nA + s.nB) }
+
+// ---- the linear weights ----
+
+// Each subdivided vertex as a fixed combination of control points: vertex v's
+// entries are ctrl[start[v]] up to ctrl[start[v + 1]], with their weights
+struct CageWeights {
+  start: List[u32];
+  ctrl: List[u32];
+  w: List[f32];
+}
+
+// A colour for each vertex such that two of one colour are more than 4 edges
+// apart, greedily in vertex order
+fn colorControls(cage: &PolyMesh) List[u32] {
+  let nc = cage.vertexCount();
+  var color = List[u32].withCapacity(nc);
+  var seen = List[u32].withCapacity(nc);
+  var used = List[u32].withCapacity(nc + 1usize);
+  var i = 0usize;
+  while i < nc {
+    color.push(NoIndex);
+    seen.push(0u32);
+    used.push(0u32);
+    i = i + 1usize;
+  }
+  used.push(0u32);
+  var c = 0usize;
+  while c < nc {
+    let stamp = u32.from(c) + 1u32;
+    var frontier = List[u32]();
+    frontier.push(u32.from(c));
+    seen.set(c, stamp);
+    var depth = 0u32;
+    while depth < 4u32 && frontier.len() > 0usize {
+      var next = List[u32]();
+      var k = 0usize;
+      while k < frontier.len() {
+        let ns = cage.vertexNeighbors(*frontier[k]);
+        var j = 0usize;
+        while j < ns.len() {
+          let w = usize.from(*ns[j]);
+          if *seen[w] != stamp {
+            seen.set(w, stamp);
+            next.push(*ns[j]);
+            if *color[w] != NoIndex { used.set(usize.from(*color[w]), stamp); }
+          }
+          j = j + 1usize;
+        }
+        k = k + 1usize;
+      }
+      frontier = next;
+      depth = depth + 1u32;
+    }
+    var g = 0usize;
+    while *used[g] == stamp { g = g + 1usize; }
+    color.set(c, u32.from(g));
+    c = c + 1usize;
+  }
+  color
+}
+
+fn subdivisionWeights(cage: &PolyMesh, levels: u32, problems: &mut List[String]) CageWeights {
+  let nc = cage.vertexCount();
+  let color = colorControls(cage);
+  var ncol = 0u32;
+  var i = 0usize;
+  while i < nc {
+    if *color[i] + 1u32 > ncol { ncol = *color[i] + 1u32; }
+    i = i + 1usize;
+  }
+  var tv = List[u32]();
+  var tc = List[u32]();
+  var tw = List[f32]();
+  var nS = 0usize;
+  var bad = 0usize;
+  var g = 0u32;
+  while g < ncol {
+    var pos = List[Vec3].withCapacity(nc);
+    i = 0usize;
+    while i < nc {
+      if *color[i] == g {
+        pos.push(Vec3(1., f32.from(i), 0.));
+      } else {
+        pos.push(Vec3(0., 0., 0.));
+      }
+      i = i + 1usize;
+    }
+    let one = withPositions(cage, pos);
+    let s = subdivide(&one, levels);
+    nS = s.vertexCount();
+    i = 0usize;
+    while i < nS {
+      let p = *s.positions[i];
+      if p.x > 0.00001 {
+        let ratio = p.y / p.x;
+        let id = usize.from(libc.floorf(ratio + 0.5));
+        if (ratio - f32.from(id)).abs() > 0.02 || id >= nc {
+          bad = bad + 1usize;
+        } else {
+          tv.push(u32.from(i));
+          tc.push(u32.from(id));
+          tw.push(p.x);
+        }
+      }
+      i = i + 1usize;
+    }
+    g = g + 1u32;
+  }
+  if bad > 0usize {
+    problems.push(String.from("fitCage: some subdivision weights could not be told apart"));
+  }
+  // Group by vertex, in the order found
+  var count = List[u32].withCapacity(nS + 1usize);
+  i = 0usize;
+  while i <= nS {
+    count.push(0u32);
+    i = i + 1usize;
+  }
+  i = 0usize;
+  while i < tv.len() {
+    let v = usize.from(*tv[i]);
+    count.set(v + 1usize, *count[v + 1usize] + 1u32);
+    i = i + 1usize;
+  }
+  i = 0usize;
+  while i < nS {
+    count.set(i + 1usize, *count[i + 1usize] + *count[i]);
+    i = i + 1usize;
+  }
+  var fill = List[u32].withCapacity(nS);
+  i = 0usize;
+  while i < nS {
+    fill.push(*count[i]);
+    i = i + 1usize;
+  }
+  var ctrl = List[u32].withCapacity(tv.len());
+  var w = List[f32].withCapacity(tv.len());
+  i = 0usize;
+  while i < tv.len() {
+    ctrl.push(0u32);
+    w.push(0.);
+    i = i + 1usize;
+  }
+  i = 0usize;
+  while i < tv.len() {
+    let v = usize.from(*tv[i]);
+    let at = usize.from(*fill[v]);
+    ctrl.set(at, *tc[i]);
+    w.set(at, *tw[i]);
+    fill.set(v, *fill[v] + 1u32);
+    i = i + 1usize;
+  }
+  // Scale each vertex's weights to sum to 1
+  var v = 0usize;
+  while v < nS {
+    let lo = usize.from(*count[v]);
+    let hi = usize.from(*count[v + 1usize]);
+    var sum = 0.0;
+    var k = lo;
+    while k < hi {
+      sum = sum + f64.from(*w[k]);
+      k = k + 1usize;
+    }
+    if sum > 0.0 {
+      k = lo;
+      while k < hi {
+        w.set(k, f32.from(f64.from(*w[k]) / sum));
+        k = k + 1usize;
+      }
+    }
+    v = v + 1usize;
+  }
+  CageWeights(count, ctrl, w)
+}
+
+// The subdivided vertices for the control points c
+fn cageLimit(wt: &CageWeights, c: &List[Vec3]) List[Vec3] {
+  let n = wt.start.len() - 1usize;
+  var out = List[Vec3].withCapacity(n);
+  var v = 0usize;
+  while v < n {
+    var x = 0.0;
+    var y = 0.0;
+    var z = 0.0;
+    var k = usize.from(*wt.start[v]);
+    let end = usize.from(*wt.start[v + 1usize]);
+    while k < end {
+      let p = *c[usize.from(*wt.ctrl[k])];
+      let w = f64.from(*wt.w[k]);
+      x = x + w * f64.from(p.x);
+      y = y + w * f64.from(p.y);
+      z = z + w * f64.from(p.z);
+      k = k + 1usize;
+    }
+    out.push(Vec3(f32.from(x), f32.from(y), f32.from(z)));
+    v = v + 1usize;
+  }
+  out
+}
+
+// ---- the samples ----
+
+// 'count' points of the target spread evenly by area: the k-th at the fraction
+// (k + 0.5) / count of the area, along the triangles in order, its place in the
+// triangle the k-th point of the R2 sequence
+fn targetSamples(t: &SurfaceIndex, count: usize) List[Vec3] {
+  let nt = t.triangleCount();
+  var cum = List[f64].withCapacity(nt);
+  var total = 0.0;
+  var i = 0usize;
+  while i < nt {
+    var a = DVec3(0.0, 0.0, 0.0);
+    var b = a;
+    var c = a;
+    t.corners(i, &mut a, &mut b, &mut c);
+    total = total + crossD(b - a, c - a).length() * 0.5;
+    cum.push(total);
+    i = i + 1usize;
+  }
+  var out = List[Vec3].withCapacity(count);
+  var tri = 0usize;
+  var k = 0usize;
+  while k < count {
+    let u = (f64.from(k) + 0.5) / f64.from(count) * total;
+    while tri + 1usize < nt && *cum[tri] < u { tri = tri + 1usize; }
+    var a = DVec3(0.0, 0.0, 0.0);
+    var b = a;
+    var c = a;
+    t.corners(tri, &mut a, &mut b, &mut c);
+    let fk = f64.from(k);
+    var s = fk * 0.7548776662466927;
+    s = s - libc.floor(s);
+    var q = fk * 0.5698402909980532;
+    q = q - libc.floor(q);
+    if s + q > 1.0 {
+      s = 1.0 - s;
+      q = 1.0 - q;
+    }
+    out.push((a + (b - a) * s + (c - a) * q).toVec3());
+    k = k + 1usize;
+  }
+  out
+}
+
+// ---- the rows ----
+
+// The equations: row r holds entries ctrl[start[r]..start[r + 1]] with their
+// weights a, the unit normal n and the residual at the current points r
+struct Rows {
+  start: List[u32];
+  ctrl: List[u32];
+  a: List[f32];
+  n: List[Vec3];
+  r: List[f32];
+}
+
+fn newRows() Rows {
+  var s = List[u32]();
+  s.push(0u32);
+  Rows(s, List[u32](), List[f32](), List[Vec3](), List[f32]())
+}
+
+// Close the entries pushed since 'first' as a row: the plane's, or the three
+// axes' rows with the point difference d (surface point minus target point)
+fn closeRows(rows: &mut Rows, first: usize, d: Vec3, n: Vec3, planar: bool) {
+  let last = rows.ctrl.len();
+  if planar {
+    rows.n.push(n);
+    rows.r.push(n.dot(d));
+    rows.start.push(u32.from(last));
+    return;
+  }
+  rows.n.push(Vec3(1., 0., 0.));
+  rows.r.push(d.x);
+  rows.start.push(u32.from(last));
+  var axis = 1u32;
+  while axis < 3u32 {
+    var k = first;
+    while k < last {
+      rows.ctrl.push(*rows.ctrl[k]);
+      rows.a.push(*rows.a[k]);
+      k = k + 1usize;
+    }
+    if axis == 1u32 {
+      rows.n.push(Vec3(0., 1., 0.));
+      rows.r.push(d.y);
+    } else {
+      rows.n.push(Vec3(0., 0., 1.));
+      rows.r.push(d.z);
+    }
+    rows.start.push(u32.from(rows.ctrl.len()));
+    axis = axis + 1u32;
+  }
+}
+
+// The rows for the control points c: each subdivided vertex against the target,
+// each sample against the subdivided surface
+fn fitRows(tIndex: &SurfaceIndex, samples: &List[Vec3], shape: &PolyMesh, wt: &CageWeights, c: &List[Vec3],
+    planar: bool, rows: &mut Rows, st: &mut Stats) {
+  let pos = cageLimit(wt, c);
+  let surface = withPositions(shape, copyList[Vec3](&pos));
+  let sIndex = SurfaceIndex.of(&surface);
+  var stack = List[u32]();
+  let nS = pos.len();
+  var v = 0usize;
+  while v < nS {
+    let p = *pos[v];
+    let h = tIndex.nearestWith(p, 0., &mut stack);
+    if h.found() {
+      let d = h.distance;
+      st.sumA = st.sumA + f64.from(d) * f64.from(d);
+      st.nA = st.nA + 1usize;
+      if d > st.maxA { st.maxA = d; }
+      var n = h.normal;
+      if !planar { n = Vec3(1., 0., 0.); }
+      if n.length() > 0. {
+        let first = rows.ctrl.len();
+        var k = usize.from(*wt.start[v]);
+        let end = usize.from(*wt.start[v + 1usize]);
+        while k < end {
+          rows.ctrl.push(*wt.ctrl[k]);
+          rows.a.push(*wt.w[k]);
+          k = k + 1usize;
+        }
+        closeRows(rows, first, p - h.point, n, planar);
+      }
+    }
+    v = v + 1usize;
+  }
+  var s = 0usize;
+  while s < samples.len() {
+    let t = *samples[s];
+    let h = sIndex.nearestWith(t, 0., &mut stack);
+    if h.found() {
+      let d = h.distance;
+      st.sumB = st.sumB + f64.from(d) * f64.from(d);
+      st.nB = st.nB + 1usize;
+      if d > st.maxB { st.maxB = d; }
+      var n = h.normal;
+      if !planar { n = Vec3(1., 0., 0.); }
+      if n.length() > 0. {
+        let first = rows.ctrl.len();
+        var corner = 0usize;
+        while corner < 3usize {
+          let sv = usize.from(*sIndex.tv[3usize * usize.from(h.tri) + corner]);
+          let bw = if corner == 0usize {h.bary.x} else if corner == 1usize {h.bary.y} else {h.bary.z};
+          var k = usize.from(*wt.start[sv]);
+          let end = usize.from(*wt.start[sv + 1usize]);
+          while k < end {
+            rows.ctrl.push(*wt.ctrl[k]);
+            rows.a.push(f32.from(bw * f64.from(*wt.w[k])));
+            k = k + 1usize;
+          }
+          corner = corner + 1usize;
+        }
+        closeRows(rows, first, h.point - t, n, planar);
+      }
+    }
+    s = s + 1usize;
+  }
+}
+
+// The control points' move d (3 numbers each) minimising |A d + r|^2 plus
+// m x |d|^2 plus s x |d_i - d_j|^2 summed over the cage's edges (i, j), m = mu
+// and s = smoothness times the mean diagonal of A^T A, by conjugate gradients
+fn solveStep(rows: &Rows, nc: usize, edges: &List[u32], dirs: &List[Vec3], smoothness: f64, mu: f64, delta: &mut List[f64]) {
+  let nu = 3usize * nc;
+  var diag = List[f64].withCapacity(nu);
+  var b = List[f64].withCapacity(nu);
+  var i = 0usize;
+  while i < nu {
+    diag.push(0.0);
+    b.push(0.0);
+    delta.push(0.0);
+    i = i + 1usize;
+  }
+  let nr = rows.r.len();
+  var r = 0usize;
+  while r < nr {
+    let n = *rows.n[r];
+    let nx = f64.from(n.x);
+    let ny = f64.from(n.y);
+    let nz = f64.from(n.z);
+    let rr = f64.from(*rows.r[r]);
+    var e = usize.from(*rows.start[r]);
+    let end = usize.from(*rows.start[r + 1usize]);
+    while e < end {
+      let ci = 3usize * usize.from(*rows.ctrl[e]);
+      let a = f64.from(*rows.a[e]);
+      let aa = a * a;
+      diag.set(ci, *diag[ci] + aa * nx * nx);
+      diag.set(ci + 1usize, *diag[ci + 1usize] + aa * ny * ny);
+      diag.set(ci + 2usize, *diag[ci + 2usize] + aa * nz * nz);
+      b.set(ci, *b[ci] - rr * a * nx);
+      b.set(ci + 1usize, *b[ci + 1usize] - rr * a * ny);
+      b.set(ci + 2usize, *b[ci + 2usize] - rr * a * nz);
+      e = e + 1usize;
+    }
+    r = r + 1usize;
+  }
+  // With 'dirs' (one unit normal a control point), the move of each point is
+  // held on its normal: the operator is P K P, P the projection onto the
+  // normals, kept symmetric and positive on the normals' span
+  let held = dirs.len() == nc;
+  if held { projectOnto(&mut b, dirs); }
+  var sum = 0.0;
+  var cnt = 0usize;
+  i = 0usize;
+  while i < nu {
+    if *diag[i] > 0.0 {
+      sum = sum + *diag[i];
+      cnt = cnt + 1usize;
+    }
+    i = i + 1usize;
+  }
+  if cnt == 0usize { return; }
+  let mean = sum / f64.from(cnt);
+  let lam = mu * mean;
+  let lap = smoothness * mean;
+  var valence = List[f64].withCapacity(nc);
+  i = 0usize;
+  while i < nc {
+    valence.push(0.0);
+    i = i + 1usize;
+  }
+  i = 0usize;
+  while i + 1usize < edges.len() {
+    let a = usize.from(*edges[i]);
+    let b = usize.from(*edges[i + 1usize]);
+    valence.set(a, *valence[a] + 1.0);
+    valence.set(b, *valence[b] + 1.0);
+    i = i + 2usize;
+  }
+  var inv = List[f64].withCapacity(nu);
+  i = 0usize;
+  while i < nu {
+    var dd = *diag[i] + lam + lap * *valence[i / 3usize];
+    if held {
+      // the same number for the point's three axes: the diagonal along its normal
+      let p = i / 3usize;
+      let n = *dirs[p];
+      let q = 3usize * p;
+      let nx = f64.from(n.x);
+      let ny = f64.from(n.y);
+      let nz = f64.from(n.z);
+      dd = *diag[q] * nx * nx + *diag[q + 1usize] * ny * ny + *diag[q + 2usize] * nz * nz + lam + lap * *valence[p];
+    }
+    inv.push(if dd > 0.0 {1.0 / dd} else {0.0});
+    i = i + 1usize;
+  }
+  // x = 0; residual = b; z = inv * res
+  var res = copyList[f64](&b);
+  var z = List[f64].withCapacity(nu);
+  var d = List[f64].withCapacity(nu);
+  i = 0usize;
+  while i < nu {
+    z.push(*res[i] * *inv[i]);
+    d.push(*res[i] * *inv[i]);
+    i = i + 1usize;
+  }
+  if held {
+    projectOnto(&mut z, dirs);
+    projectOnto(&mut d, dirs);
+  }
+  var rz = dotList(&res, &z);
+  let bnorm = dotList(&b, &b).sqrt();
+  var it = 0u32;
+  var rnorm = bnorm;
+  while rnorm > 0.0000001 * bnorm && it < 300u32 {
+    var ad = List[f64].withCapacity(nu);
+    i = 0usize;
+    while i < nu {
+      ad.push(lam * *d[i]);
+      i = i + 1usize;
+    }
+    i = 0usize;
+    while i + 1usize < edges.len() {
+      let a = 3usize * usize.from(*edges[i]);
+      let b = 3usize * usize.from(*edges[i + 1usize]);
+      var k = 0usize;
+      while k < 3usize {
+        let diff = lap * (*d[a + k] - *d[b + k]);
+        ad.set(a + k, *ad[a + k] + diff);
+        ad.set(b + k, *ad[b + k] - diff);
+        k = k + 1usize;
+      }
+      i = i + 2usize;
+    }
+    r = 0usize;
+    while r < nr {
+      let n = *rows.n[r];
+      let nx = f64.from(n.x);
+      let ny = f64.from(n.y);
+      let nz = f64.from(n.z);
+      let lo = usize.from(*rows.start[r]);
+      let end = usize.from(*rows.start[r + 1usize]);
+      var acc = 0.0;
+      var e = lo;
+      while e < end {
+        let ci = 3usize * usize.from(*rows.ctrl[e]);
+        acc = acc + f64.from(*rows.a[e]) * (nx * *d[ci] + ny * *d[ci + 1usize] + nz * *d[ci + 2usize]);
+        e = e + 1usize;
+      }
+      e = lo;
+      while e < end {
+        let ci = 3usize * usize.from(*rows.ctrl[e]);
+        let f = f64.from(*rows.a[e]) * acc;
+        ad.set(ci, *ad[ci] + f * nx);
+        ad.set(ci + 1usize, *ad[ci + 1usize] + f * ny);
+        ad.set(ci + 2usize, *ad[ci + 2usize] + f * nz);
+        e = e + 1usize;
+      }
+      r = r + 1usize;
+    }
+    if held { projectOnto(&mut ad, dirs); }
+    let dad = dotList(&d, &ad);
+    if dad <= 0.0 { break; }
+    let alpha = rz / dad;
+    i = 0usize;
+    while i < nu {
+      delta.set(i, *delta[i] + *d[i] * alpha);
+      res.set(i, *res[i] - *ad[i] * alpha);
+      z.set(i, *res[i] * *inv[i]);
+      i = i + 1usize;
+    }
+    if held { projectOnto(&mut z, dirs); }
+    let rzNew = dotList(&res, &z);
+    let beta = if rz > 0.0 {rzNew / rz} else {0.0};
+    rz = rzNew;
+    i = 0usize;
+    while i < nu {
+      d.set(i, *z[i] + *d[i] * beta);
+      i = i + 1usize;
+    }
+    rnorm = dotList(&res, &res).sqrt();
+    it = it + 1u32;
+  }
+}
+
+fn dotList(a: &List[f64], b: &List[f64]) f64 {
+  var sum = 0.0;
+  var i = 0usize;
+  while i < a.len() {
+    sum = sum + *a[i] * *b[i];
+    i = i + 1usize;
+  }
+  sum
+}
+
+// ======== the height along the normals ========
+
+// What 'heightsAlongNormals' found, a value for each vertex of the base. The
+// areas are the vertices' areas (a third of each triangle round it, a face of
+// n corners cut into a fan), summed by class: valid, several hits, no hit, and
+// folded (one hit, but an incident triangle turned against its base's normal).
+pub struct NormalHeights {
+  pub heights: List[f32];       // the signed distance along the normal of the nearest hit, 0 for none
+  pub valid: List[bool];
+  pub validArea: f32;
+  pub multiHitArea: f32;
+  pub foldedArea: f32;
+  pub noHitArea: f32;
+  pub hits: List[u32];          // the distinct hits on each line (at most 8 counted)
+  pub folded: List[bool];       // one hit, but in a triangle that turns over
+  pub vertexArea: List[f32];
+}
+
+// From each base vertex a line along its normal, both ways, within 'reach',
+// against the target
+pub fn heightsAlongNormals(base: &PolyMesh, target: &PolyMesh, reach: f32, problems: &mut List[String]) NormalHeights {
+  let nv = base.vertexCount();
+  var heights = List[f32].withCapacity(nv);
+  var valid = List[bool].withCapacity(nv);
+  var hits = List[u32].withCapacity(nv);
+  var folded = List[bool].withCapacity(nv);
+  var area = List[f32].withCapacity(nv);
+  var i = 0usize;
+  while i < nv {
+    heights.push(0.);
+    valid.push(false);
+    hits.push(0u32);
+    folded.push(false);
+    area.push(0.);
+    i = i + 1usize;
+  }
+  if !(reach > 0.) {
+    problems.push(String.from("heightsAlongNormals: reach must be above 0"));
+    return NormalHeights(heights, valid, 0., 0., 0., 0., hits, folded, area);
+  }
+  if nv == 0usize || target.faceCount() == 0usize {
+    problems.push(String.from("heightsAlongNormals: the base or the target is empty"));
+    return NormalHeights(heights, valid, 0., 0., 0., 0., hits, folded, area);
+  }
+  let idx = SurfaceIndex.of(target);
+  let nrm = base.vertexNormals();
+  let tol = reach * 0.001;
+  var stack = List[u32]();
+  var v = 0usize;
+  while v < nv {
+    let p = *base.positions[v];
+    let n = *nrm[v];
+    var ts = List[f32]();
+    var dirSign = 0u32;
+    while dirSign < 2u32 {
+      let dir = if dirSign == 0u32 {n} else {Vec3(-n.x, -n.y, -n.z)};
+      var cur: f32 = 0.;
+      var guard = 0u32;
+      while guard < 8u32 && reach - cur > 0. {
+        let o = p + dir * cur;
+        let h = idx.rayWith(o, dir, reach - cur, CullNone, &mut stack);
+        if !h.found() { break; }
+        let t = cur + h.distance;
+        ts.push(if dirSign == 0u32 {t} else {-t});
+        cur = t + tol;
+        guard = guard + 1u32;
+      }
+      dirSign = dirSign + 1u32;
+    }
+    // Sort by signed distance, then count the clusters and keep the nearest hit
+    var a = 1usize;
+    while a < ts.len() {
+      let x = *ts[a];
+      var b = a;
+      while b > 0usize && *ts[b - 1usize] > x {
+        ts.set(b, *ts[b - 1usize]);
+        b = b - 1usize;
+      }
+      ts.set(b, x);
+      a = a + 1usize;
+    }
+    var clusters = 0u32;
+    var nearest: f32 = 0.;
+    var nearestAbs: f32 = 1000000000.;
+    a = 0usize;
+    while a < ts.len() {
+      if a == 0usize || *ts[a] - *ts[a - 1usize] > tol { clusters = clusters + 1u32; }
+      let m = (*ts[a]).abs();
+      if m < nearestAbs {
+        nearestAbs = m;
+        nearest = *ts[a];
+      }
+      a = a + 1usize;
+    }
+    hits.set(v, clusters);
+    if clusters > 0u32 { heights.set(v, nearest); }
+    v = v + 1usize;
+  }
+  // Areas and folds, by the fan of each face
+  var f = 0u32;
+  while usize.from(f) < base.faceCount() {
+    let vs = base.faceVertices(f);
+    var k = 1usize;
+    while k + 1usize < vs.len() {
+      let ia = usize.from(*vs[0usize]);
+      let ib = usize.from(*vs[k]);
+      let ic = usize.from(*vs[k + 1usize]);
+      let a0 = *base.positions[ia];
+      let b0 = *base.positions[ib];
+      let c0 = *base.positions[ic];
+      let a1 = a0 + *nrm[ia] * *heights[ia];
+      let b1 = b0 + *nrm[ib] * *heights[ib];
+      let c1 = c0 + *nrm[ic] * *heights[ic];
+      let n0 = (b0 - a0).cross(c0 - a0);
+      let n1 = (b1 - a1).cross(c1 - a1);
+      let share = n0.length() * 0.5 / 3.;
+      area.set(ia, *area[ia] + share);
+      area.set(ib, *area[ib] + share);
+      area.set(ic, *area[ic] + share);
+      if *hits[ia] >= 1u32 && *hits[ib] >= 1u32 && *hits[ic] >= 1u32 {
+        if n0.dot(n1) < 0. {
+          folded.set(ia, true);
+          folded.set(ib, true);
+          folded.set(ic, true);
+        }
+      }
+      k = k + 1usize;
+    }
+    f = f + 1u32;
+  }
+  var validArea = 0.0;
+  var multi = 0.0;
+  var fold = 0.0;
+  var none = 0.0;
+  v = 0usize;
+  while v < nv {
+    let a = f64.from(*area[v]);
+    if *hits[v] == 0u32 {
+      none = none + a;
+    } else if *hits[v] > 1u32 {
+      multi = multi + a;
+      folded.set(v, false);
+    } else if *folded[v] {
+      fold = fold + a;
+    } else {
+      valid.set(v, true);
+      validArea = validArea + a;
+    }
+    v = v + 1usize;
+  }
+  NormalHeights(heights, valid, f32.from(validArea), f32.from(multi), f32.from(fold), f32.from(none), hits, folded, area)
+}

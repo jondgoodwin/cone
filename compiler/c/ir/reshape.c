@@ -180,7 +180,7 @@ static void rcWalk(INode *type, int ind) {
             return;
         }
         // A 'mut' reference beneath a read-only view can be written through
-        uint16_t pflags = perm && perm->tag == PermTag ? ((PermNode *)perm)->permflags : 0;
+        uint16_t pflags = perm && perm->tag == PermTag ? permWriterFlags(perm) : 0;
         // An owning reference ('Uni', 'Rc', 'Arc', a user region) keeps what it points at alive:
         // the walk stays 'owned' through it (ReachOwned); a borrow does not
         int owning = ref->region && itypeGetTypeDcl(ref->region) != borrowRef;

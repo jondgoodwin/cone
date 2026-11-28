@@ -1,0 +1,336 @@
+// The receiver's rules of the stream core (piece.cone, rules 1 to 4), on many streams through one actor whose
+// 'piece' awaits a simulated write, so that its behaviours are parked while the actor handles the others.
+//
+//   A. 100 producers of 1 to 7 pieces each into one Many: streams end (and their table entries are swap-removed)
+//      while other streams' pieces are parked. Every stream must end with exactly the bytes its producer sent and
+//      got answered, and every piece must have been credited to its own stream.
+//   B. a stream's piece is parked on a long write; the receiver resets the stream (the peer left), its slot is
+//      opened again (a new tag, the next generation), and the new stream runs to its end while the old piece is
+//      still parked. The old piece resumes into a table that has moved and a slot that is someone else's: nothing
+//      is credited to the new stream, the old piece is answered Stop, and the old producer's end is dropped.
+//
+// Rules held here: 1 and 2 (carry the tag, look it up again: A and B), 3 (a generation in the tag: B), 4 (a stale
+// 'end' is dropped: B). Rule 5 is piecestages's TransformPass check.
+//
+// The stream table is a List with swap-remove, so an index cached over an await goes wrong at once.
+// Mutants, run as 'congo test --no-cache -D NAME':
+//   MUT_NO_RECHECK  a resumed piece credits the index it cached before parking: A and B fail
+//   MUT_NO_GEN      a tag has no generation: B fails (the old tag finds the new stream)
+
+mod pieceinterleave;
+
+import testing use *;
+import collections use *;
+import iobuf use IoBuf;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import time use Duration;
+import actors;
+import aio;
+import stages use *;
+
+pub struct ProdOut is Sendable {
+  pub sent: u64;
+  pub stopSeen: bool;
+}
+
+// A producer: a piece, its answer, and at the end the one 'end'
+pub actor Prod {
+  pub async fn run(self, to: StreamTo[IoBuf], pieces: u64, size: usize, report: OneshotSender[ProdOut]) {
+    var dest = to;
+    var i = 0u64;
+    var stop = None[Ending];
+    var seen = false;
+    while i < pieces && stop is None {
+      var b = IoBuf(size);
+      b.setLen(size);
+      let a = await dest.sink.piece(dest.tag, b);
+      i = i + 1u64;
+      match a {
+        case is More {}
+        case let MoreWith(back) {}
+        case let Stop(why) {
+          seen = true;
+          stop = Some[Ending](why);
+        }
+      }
+    }
+    match stop {
+      case let Some(why) { dest.end(why); }
+      case is None { dest.end(Ending.Finished); }
+    }
+    var r = report;
+    r.send(ProdOut(i, seen));
+  }
+}
+
+pub struct Gone is Sendable {
+  pub tag: u64;
+  pub written: u64;
+  pub pieces: u64;
+  pub finished: bool;
+}
+
+pub struct ManyOut is Sendable {
+  pub gone: List[Gone];
+  pub live: u64;
+  pub stale: u64;            // parked pieces that found their stream gone on resuming
+  pub staleEnds: u64;        // ends for a tag that was not live
+  pub refused: u64;          // pieces that arrived for a tag that was not live
+}
+
+struct Live {
+  pub tag: u64;
+  pub written: u64;
+  pub pieces: u64;
+}
+
+pub actor Many is PieceSink[IoBuf] {
+  table: List[Live];
+  gens: List[u64];           // the generation of each slot n, by n
+  gone: List[Gone];
+  stale: u64;
+  staleEnds: u64;
+  refused: u64;
+  writeMicros: u64;          // a piece's write takes this many microseconds per KiB
+
+  pub fn init(self: &new, writeMicros: u64) {
+    *self = Self(table: List[Live](), gens: List[u64](), gone: List[Gone](), stale: 0u64, staleEnds: 0u64,
+      refused: 0u64, writeMicros: writeMicros);
+  }
+
+  // A stream's tag: slot n and its generation
+  pub async fn open(self, n: u64) u64 {
+    while u64.from(gens.len()) <= n { gens.push(0u64); }
+    let g = gens[usize.from(n)] + 1u64;
+    gens[usize.from(n)] = g;
+    var tag = (g << 32u64) | n;
+    #if #defined("MUT_NO_GEN") { tag = n; }
+    table.push(Live(tag, 0u64, 0u64));
+    tag
+  }
+
+  fn find(self: &, tag: u64) Option[usize] {
+    var i = 0usize;
+    while i < table.len() {
+      if table[i].tag == tag { return Some[usize](i); }
+      i = i + 1usize;
+    }
+    None[usize]
+  }
+
+  pub async fn piece(self, tag: u64, c: IoBuf) PieceAck[IoBuf] {
+    var cached = 0usize;
+    match self.find(tag) {
+      case let Some(i) { cached = i; }
+      case is None {
+        refused = refused + 1u64;
+        return Stop[IoBuf](Ending.Failed(AnyError.msg("many: no such stream")));
+      }
+    }
+    let n = u64.from(c.len());
+    // the write: this behaviour parks here, and the actor runs its other messages
+    let w = await aio.sleep(Duration.fromNanos(i64.from(n * writeMicros / 1024u64 * 1000u64)));
+    #if #defined("MUT_NO_RECHECK") {
+      if cached < table.len() {
+        table[cached].written = table[cached].written + n;
+        table[cached].pieces = table[cached].pieces + 1u64;
+      }
+    } #else {
+      match self.find(tag) {
+        case let Some(j) {
+          table[j].written = table[j].written + n;
+          table[j].pieces = table[j].pieces + 1u64;
+        }
+        case is None {
+          stale = stale + 1u64;
+          return Stop[IoBuf](Ending.Failed(AnyError.msg("many: ended while parked")));
+        }
+      }
+    }
+    var b = c;
+    b.clear();
+    MoreWith[IoBuf](b)
+  }
+
+  fn close(self: &mut, tag: u64, finished: bool) bool {
+    match self.find(tag) {
+      case let Some(i) {
+        let l = table[i];
+        gone.push(Gone(l.tag, l.written, l.pieces, finished));
+        let last = table.len() - 1usize;
+        if i != last { table[i] = table[last]; }
+        table.truncate(last);
+        true
+      }
+      case is None { false }
+    }
+  }
+
+  pub async fn end(self, tag: u64, how: Ending) {
+    var finished = false;
+    match how {
+      case is Finished { finished = true; }
+      case is Failed {}
+    }
+    if !self.close(tag, finished) { staleEnds = staleEnds + 1u64; }
+  }
+
+  // The receiver's own end of a stream (the peer left): its slot is free at once, whatever is parked on it
+  pub async fn reset(self, tag: u64) {
+    _ = self.close(tag, false);
+  }
+
+  pub async fn report(self, to: OneshotSender[ManyOut]) {
+    var t = to;
+    var out = ManyOut(List[Gone](), u64.from(table.len()), stale, staleEnds, refused);
+    var i = 0usize;
+    while i < gone.len() {
+      out.gone.push(gone[i]);
+      i = i + 1usize;
+    }
+    t.send(out);
+  }
+}
+
+// Opens the streams, starts their producers, and waits for them
+actor Scene {
+  pub async fn a(self, many: Many, out: OneshotSender[u64]) {
+    var tags = List[u64]();
+    var n = 0u64;
+    while n < 100u64 {
+      tags.push(await many.open(n));
+      n = n + 1u64;
+    }
+    var results = List[OneshotReceiver[ProdOut]]();
+    n = 0u64;
+    while n < 100u64 {
+      var tx: OneshotSender[ProdOut];
+      var rx: OneshotReceiver[ProdOut];
+      tx, rx = Oneshot[ProdOut].make();
+      let p = Prod();
+      p.run(StreamTo[IoBuf].at(many, tags[usize.from(n)]), 1u64 + n % 7u64, 1024usize * (1usize + usize.from(n % 3u64)), tx);
+      results.push(rx);
+      n = n + 1u64;
+    }
+    _ = await aio.sleep(Duration.fromMillis(400i64));
+    var sent = 0u64;
+    var i = 0usize;
+    while i < results.len() {
+      let r = results[i].recv() || ProdOut(0u64, false);
+      sent = sent + r.sent;
+      i = i + 1usize;
+    }
+    var o = out;
+    o.send(sent);
+  }
+
+  pub async fn b(self, many: Many, out: OneshotSender[(u64, u64, bool)]) {
+    let tagX = await many.open(7u64);
+    var xtx: OneshotSender[ProdOut];
+    var xrx: OneshotReceiver[ProdOut];
+    xtx, xrx = Oneshot[ProdOut].make();
+    let px = Prod();
+    // at the Many's write time the old piece takes 200 ms
+    px.run(StreamTo[IoBuf].at(many, tagX), 3u64, 50usize * 1024usize, xtx);
+    _ = await aio.sleep(Duration.fromMillis(20i64));
+    many.reset(tagX);
+    let tagY = await many.open(7u64);
+    var ytx: OneshotSender[ProdOut];
+    var yrx: OneshotReceiver[ProdOut];
+    ytx, yrx = Oneshot[ProdOut].make();
+    let py = Prod();
+    // the new stream's pieces are slow too (160 ms each), so that it is still live when the old piece resumes
+    py.run(StreamTo[IoBuf].at(many, tagY), 3u64, 40usize * 1024usize, ytx);
+    _ = await aio.sleep(Duration.fromMillis(900i64));
+    let x = xrx.recv() || ProdOut(0u64, false);
+    let y = yrx.recv() || ProdOut(0u64, false);
+    var o = out;
+    o.send((x.sent, y.sent, x.stopSeen));
+  }
+}
+
+fn report(many: Many) ManyOut {
+  var tx: OneshotSender[ManyOut];
+  var rx: OneshotReceiver[ManyOut];
+  tx, rx = Oneshot[ManyOut].make();
+  many.report(tx);
+  match rx.recv() {
+    case let Some(o) { o }
+    case is None { ManyOut(List[Gone](), 0u64, 0u64, 0u64, 0u64) }
+  }
+}
+
+// n's streams: producer n sends 1 + n % 7 pieces of 1024 * (1 + n % 3) bytes
+fn bytesOf(n: u64) u64 {
+  (1u64 + n % 7u64) * 1024u64 * (1u64 + n % 3u64)
+}
+
+fn main() i32 {
+  initAll();
+
+  // A. one hundred streams, ends among parked pieces
+  {
+    let many = Many(5000u64);                // 1 KiB takes 5 ms: the 3 KiB pieces 15 ms, a stream of 7 of them 105 ms
+    var tx: OneshotSender[u64];
+    var rx: OneshotReceiver[u64];
+    tx, rx = Oneshot[u64].make();
+    let s = Scene();
+    s.a(many, tx);
+    let sent = rx.recv() || 0u64;
+    var want = 0u64;
+    var n = 0u64;
+    while n < 100u64 {
+      want = want + 1u64 + n % 7u64;
+      n = n + 1u64;
+    }
+    expectUInt(sent, want, "A: every producer had every piece answered");
+    let o = report(many);
+    expectUInt(u64.from(o.gone.len()), 100u64, "A: all one hundred streams ended");
+    expectUInt(o.live, 0u64, "A: none left live");
+    expectUInt(o.stale, 0u64, "A: no parked piece found its stream gone");
+    expectUInt(o.staleEnds, 0u64, "A: no end was dropped");
+    var wrong = 0u64;
+    var finished = 0u64;
+    var i = 0usize;
+    while i < o.gone.len() {
+      let g = o.gone[i];
+      let slot = g.tag & 4294967295u64;
+      if g.written != bytesOf(slot) || g.pieces != 1u64 + slot % 7u64 { wrong = wrong + 1u64; }
+      if g.finished { finished = finished + 1u64; }
+      i = i + 1usize;
+    }
+    expectUInt(wrong, 0u64, "A: each stream holds exactly the bytes and pieces its producer sent");
+    expectUInt(finished, 100u64, "A: each ended Finished");
+  }
+
+  // B. a tag reused while an old piece is parked
+  {
+    let many = Many(4000u64);                // 1 KiB takes 4 ms: the 50 KiB piece 200 ms, the 1 KiB ones 4 ms
+    var tx: OneshotSender[(u64, u64, bool)];
+    var rx: OneshotReceiver[(u64, u64, bool)];
+    tx, rx = Oneshot[(u64, u64, bool)].make();
+    let s = Scene();
+    s.b(many, tx);
+    let r = rx.recv() || (99u64, 99u64, false);
+    expectUInt(r.0, 1u64, "B: the old producer sent one piece, was answered Stop, and sent no more");
+    expectBool(r.2, true, "B: it saw the Stop");
+    expectUInt(r.1, 3u64, "B: the new stream's producer had its three pieces answered");
+    let o = report(many);
+    expectUInt(o.stale, 1u64, "B: the old piece found its stream gone on resuming");
+    expectUInt(o.staleEnds, 1u64, "B: the old producer's end was dropped");
+    var newWritten = 0u64;
+    var newEnded = 0u64;
+    var i = 0usize;
+    while i < o.gone.len() {
+      let g = o.gone[i];
+      if (g.tag & 4294967295u64) == 7u64 && g.finished { newWritten = g.written; newEnded = newEnded + 1u64; }
+      i = i + 1usize;
+    }
+    expectUInt(newEnded, 1u64, "B: the new stream ended once, Finished");
+    expectUInt(newWritten, 122880u64, "B: holding exactly its own 120 KiB, none of the old piece's 50 KiB");
+  }
+
+  finalAll();
+  expectUInt(iobuf.stats().lent, 0u64, "every buffer is back in its pool");
+  done()
+}
