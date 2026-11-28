@@ -1,0 +1,456 @@
+// The sculpt package's slot, foldSlot, checked with the testing package against values worked out by hand; only a
+// failure prints, so slots.out holds the summary. Every result must pass validate().
+//
+// THE PLATE. 16 x 16 quads of 0.25 over [-2, 2]^2 in the plane z = 0, normal +z (counterclockwise from above): the
+// grid of heightpatches.cone. A path along x (from (-1.5, 0, 0) to (1.5, 0, 0)) has the side n x T = z x x = +y, so
+// the ROOF is on y > 0 and the floor on y < 0. Into is -z.
+//
+// THE WEDGE (header of slot.cone). Depth d, angles r (roof) and q (floor): the apex is at (a = 0, z = -d), the roof wall's
+// foot at a = ar = d / tan r and the floor wall's at af = -d / tan q (a is the distance from the path along +y). The
+// roof wall is z = -d (1 - a / ar) for a from 0 to ar, the floor wall z = -d (1 - a / af) for a from af to 0 (for an
+// undercut wall, an angle over a right angle, the foot is on the other side of the path and the wall is z = -d (1 - a / foot)
+// from 0 to the foot all the same). A vertex of the result is CORRECT when it is on one of the two walls (to 5e-6) or is not
+// moved (z = 0, a at or beyond a foot on the outside of the opening: a <= af or a >= ar).
+// - Symmetric: d 0.2, r = q = 45 deg (feet +-0.2: the opening is centred on the path, so the fold only moves z), width
+//   0.5, maxEdge 0.1. Every vertex correct; the deepest is -0.2 and a vertex at y = 0 is -0.2 to 1e-6 (the apex: the
+//   path's line is the opening's middle); x and y never change (the move is along -z); the 289 input vertices with |y|
+//   at least 0.25 (the feet) are bit for bit; the first 64 faces (the rows with y below -1) are bit for bit, still quads;
+//   a vertex channel w = x is carried (to 1e-6); no face turned (the normal's z over 0.1: the walls tilt 45 deg).
+// - Asymmetric: r 45 deg, q 30 deg (feet 0.2 and -0.3464, the opening's middle at -0.0732, not on the path). Every vertex
+//   correct, the deepest below -0.19, vertices on both walls, no face turned. The roof wall holds the opening's roof
+//   half and the floor wall the other half, so the apex is at the opening's middle: assigning by the path's line (y > 0
+//   to the roof) would put vertices of a half-opening on the other wall, and the walls would not be continuous (a vertex
+//   of the result lies on a wall it was not assigned to: the "assignment" check below sees a wall point that cannot be
+//   reached from its own half).
+// - Undercut (the knight's slit): d 0.3, r 18 deg (foot 0.923), q 152 deg (foot +0.543: the floor wall leans back over
+//   the groove), width 1.2: every vertex correct, vertices on both walls, faces facing down (the floor wall: the
+//   normal's z under -0.1) and facing up, valid, and the opening is entirely on the roof's side of the path.
+// - Fading: the depth a uniform cubic B-spline with coefficients 0 0 0 0.2 0.2 0.2 0.2 0 0 0 (0 at both ends, as
+//   (c0 + 4 c1 + c2) / 6 = 0, and 0.2 over the middle), r = q = 45 deg. Every vertex correct for the depth at its own
+//   t = (x + 1.5) / 3; the ends (|x| 1.5 and beyond) have z = 0 (identity, no refusal and no problem).
+// - A circular arc, radius 1, from 0 to 270 degrees, 96 pieces, counterclockwise, so the side n x T is inward: depth
+//   0.1, both angles 45 deg, width 0.4, maxEdge 0.05. Every vertex in the arc's sector correct to 2e-3 (the polyline's
+//   own sagitta is 5e-4) for a = 1 - r, no face turned, no problem.
+// - A tight arc: radius 0.3, 40 pieces to 270 degrees, depth 0.1, roof 15 deg (a foot of 0.373, over what planes 0.0471
+//   apart allow: 0.3), floor 45 deg (foot -0.1), width 0.8. One problem line; every vertex with r from 0.05 to 0.2 in the
+//   sector is correct to 2e-3 with the roof foot 0.3 (the uncapped foot would put it 0.013 off at a = 0.2), no face turned.
+// - Refusals (one problem line, an unchanged copy): a path of one point; width 0; maxEdge 0; sections of 2 curves; a
+//   negative depth; two angles of 100 deg (the floor's foot +0.035 is beyond the roof's -0.035: the walls cross at positive
+//   depth); an angle of 190 deg; a path 5 away from the plate (no vertex within width); a bend whose planes meet within
+//   a quarter of an edge (radius 0.05 on the 0.25 plate, so the band is limited below one edge).
+// - Mutants this must kill (run by hand, not kept): the offset along +n instead of -n (every depth row fails); the
+//   walls assigned by the path's side instead of the opening's middle (the asymmetric and undercut rows fail).
+// - The same run twice: the same bits.
+
+mod slots;
+
+import testing use *;
+import stdio use *;
+import collections use *;
+import libc;
+import geomath use *;
+import mesh use *;
+import sculpt use *;
+
+fn clean(m: &PolyMesh, label: &Array[u8]) {
+  let problems = m.validate();
+  expectInt(i64.from(problems.len()), 0, label);
+}
+
+fn gridOf(n: u32) PolyMesh {
+  var pts = List[Vec3]();
+  var j = 0u32;
+  while j <= n {
+    var i = 0u32;
+    while i <= n {
+      pts.push(Vec3(-2. + 0.25 * f32.from(i), -2. + 0.25 * f32.from(j), 0.));
+      i = i + 1u32;
+    }
+    j = j + 1u32;
+  }
+  var counts = List[u32]();
+  var idx = List[u32]();
+  j = 0u32;
+  while j < n {
+    var i = 0u32;
+    while i < n {
+      let a = (n + 1u32) * j + i;
+      counts.push(4u32);
+      idx.push(a); idx.push(a + 1u32); idx.push(a + n + 2u32); idx.push(a + n + 1u32);
+      i = i + 1u32;
+    }
+    j = j + 1u32;
+  }
+  var problems = List[String]();
+  PolyMesh.fromPolygons(pts.view(), counts.view(), idx.view(), &mut problems)
+}
+
+fn samePos(a: Vec3, b: Vec3) bool { a.x == b.x && a.y == b.y && a.z == b.z }
+
+fn sameMesh(a: &PolyMesh, b: &PolyMesh) bool {
+  if a.vertexCount() != b.vertexCount() || a.faceCount() != b.faceCount() { return false; }
+  var i = 0usize;
+  while i < a.vertexCount() {
+    if !samePos(*a.positions[i], *b.positions[i]) { return false; }
+    i = i + 1usize;
+  }
+  var f = 0usize;
+  while f < a.faceCount() {
+    let va = a.faceVertices(u32.from(f));
+    let vb = b.faceVertices(u32.from(f));
+    if va.len() != vb.len() { return false; }
+    var k = 0usize;
+    while k < va.len() {
+      if *va[k] != *vb[k] { return false; }
+      k = k + 1usize;
+    }
+    f = f + 1usize;
+  }
+  true
+}
+
+fn one(v: f32) RunCurve {
+  var l = List[f32]();
+  l.push(v);
+  RunCurve(l)
+}
+
+fn three(d: RunCurve, r: RunCurve, q: RunCurve) List[RunCurve] {
+  var s = List[RunCurve]();
+  s.push(d);
+  s.push(r);
+  s.push(q);
+  s
+}
+
+fn fadeTo(h: f32) RunCurve {
+  var l = List[f32]();
+  l.push(0.); l.push(0.); l.push(0.);
+  l.push(h); l.push(h); l.push(h); l.push(h);
+  l.push(0.); l.push(0.); l.push(0.);
+  RunCurve(l)
+}
+
+fn fade() RunCurve { fadeTo(0.2) }
+
+// Whether the vertex (a, z) is correct for a wedge of depth d with feet ar (roof) and af (floor): on the roof wall (a from 0
+// to ar), on the floor wall (a from 0 to af), or not moved (z = 0 and a at or beyond a foot, on the outside)
+fn correct(a: f32, z: f32, d: f32, ar: f32, af: f32, tol: f32) bool {
+  if d <= 0. { return z.abs() <= tol; }
+  if z.abs() <= tol && (a >= ar - tol || a <= af + tol) { return true; }
+  let lo = if ar < 0. { ar } else { 0. };
+  let hi = if ar < 0. { 0. } else { ar };
+  if ar != 0. && a >= lo - tol && a <= hi + tol && (z + d * (1. - a / ar)).abs() <= tol { return true; }
+  let lo2 = if af < 0. { af } else { 0. };
+  let hi2 = if af < 0. { 0. } else { af };
+  if af != 0. && a >= lo2 - tol && a <= hi2 + tol && (z + d * (1. - a / af)).abs() <= tol { return true; }
+  false
+}
+
+fn feetR(d: f32, ang: f32) f32 { d * ang.cos() / ang.sin() }
+fn feetF(d: f32, ang: f32) f32 { -d * ang.cos() / ang.sin() }
+
+fn lineAlongX(n: u32) Path { Path.line(Vec3(-2., 0., 0.), Vec3(2., 0., 0.), n) }
+
+fn arc(radius: f32, pieces: u32) Path {
+  var pts = List[Vec3]();
+  var i = 0u32;
+  while i <= pieces {
+    let a = 4.712389 * f32.from(i) / f32.from(pieces);
+    pts.push(Vec3(radius * a.cos(), radius * a.sin(), 0.));
+    i = i + 1u32;
+  }
+  Path.fromPoints(pts.view(), false)
+}
+
+// How many faces have a normal with z at most 0.1
+fn turned(m: &PolyMesh) u32 {
+  var n = 0u32;
+  var f = 0usize;
+  while f < m.faceCount() {
+    if m.faceNormal(u32.from(f)).z <= 0.1 { n = n + 1u32; }
+    f = f + 1usize;
+  }
+  n
+}
+
+fn facesDown(m: &PolyMesh) u32 {
+  var n = 0u32;
+  var f = 0usize;
+  while f < m.faceCount() {
+    if m.faceNormal(u32.from(f)).z < -0.1 { n = n + 1u32; }
+    f = f + 1usize;
+  }
+  n
+}
+
+fn main() i32 {
+  symmetric();
+  asymmetric();
+  undercut();
+  fading();
+  circular();
+  tight();
+  refusals();
+  determinism();
+  done()
+}
+
+fn symmetric() {
+  var g = gridOf(16u32);
+  let w = g.addFloatChannel(VertexDomain, "w", 0.);
+  var v = 0usize;
+  while v < g.vertexCount() {
+    g.setFloat(w, u32.from(v), (*g.positions[v]).x);
+    v = v + 1usize;
+  }
+  let r45: f32 = 0.7853982;
+  let sec = three(one(0.2), one(r45), one(r45));
+  var problems = List[String]();
+  let r = foldSlot(&g, &lineAlongX(6u32), &sec, 0.5, 0.1, 8u32, &mut problems);
+  expectInt(i64.from(problems.len()), 0, "symmetric: no problem");
+  clean(&r, "symmetric: valid");
+  expectBool(r.faceCount() > g.faceCount(), true, "symmetric: refined");
+  let rw = r.findFloatChannel(VertexDomain, "w");
+  var bad = 0u32;
+  var deepest: f32 = 0.;
+  var apex = false;
+  var wBad = 0u32;
+  var moved = 0u32;
+  var i = 0usize;
+  while i < r.vertexCount() {
+    let p = *r.positions[i];
+    if p.x.abs() <= 1.4 {
+      if !correct(p.y, p.z, 0.2, feetR(0.2, r45), feetF(0.2, r45), 0.000005) { bad = bad + 1u32; }
+      if p.y == 0. && (p.z + 0.2).abs() < 0.000001 { apex = true; }
+    }
+    if p.z < deepest { deepest = p.z; }
+    if p.z != 0. { moved = moved + 1u32; }
+    if (r.float(rw, u32.from(i)) - p.x).abs() > 0.000001 { wBad = wBad + 1u32; }
+    i = i + 1usize;
+  }
+  expectInt(i64.from(bad), 0, "symmetric: every vertex on its wall");
+  expectFloat(f64.from(deepest), -0.2, 0.000001, "symmetric: the apex is at its depth");
+  expectBool(apex, true, "symmetric: a vertex on the path's line is the apex");
+  expectBool(moved > 30u32, true, "symmetric: the opening moved");
+  expectInt(i64.from(wBad), 0, "symmetric: the vertex channel is carried");
+  var kept = true;
+  i = 0usize;
+  while i < g.vertexCount() {
+    if (*g.positions[i]).y.abs() >= 0.25 && !samePos(*g.positions[i], *r.positions[i]) { kept = false; }
+    if (*g.positions[i]).x != (*r.positions[i]).x || (*g.positions[i]).y != (*r.positions[i]).y { kept = false; }
+    i = i + 1usize;
+  }
+  expectBool(kept, true, "symmetric: outside the opening bit for bit, x and y never moved");
+  var same = true;
+  var f = 0usize;
+  while f < 64usize {
+    let a = g.faceVertices(u32.from(f));
+    let b = r.faceVertices(u32.from(f));
+    if a.len() != 4usize || b.len() != 4usize { same = false; }
+    else {
+      var k = 0usize;
+      while k < 4usize {
+        if *a[k] != *b[k] { same = false; }
+        k = k + 1usize;
+      }
+    }
+    f = f + 1usize;
+  }
+  expectBool(same, true, "symmetric: the faces outside are as they were, quads");
+  expectInt(i64.from(turned(&r)), 0, "symmetric: no face turned");
+}
+
+fn asymmetric() {
+  let g = gridOf(16u32);
+  let r45: f32 = 0.7853982;
+  let r30: f32 = 0.5235988;
+  let sec = three(one(0.2), one(r45), one(r30));
+  var problems = List[String]();
+  let r = foldSlot(&g, &lineAlongX(6u32), &sec, 0.5, 0.1, 8u32, &mut problems);
+  expectInt(i64.from(problems.len()), 0, "asymmetric: no problem");
+  clean(&r, "asymmetric: valid");
+  var bad = 0u32;
+  var deepest: f32 = 0.;
+  var roofWall = 0u32;
+  var floorWall = 0u32;
+  var i = 0usize;
+  while i < r.vertexCount() {
+    let p = *r.positions[i];
+    if p.x.abs() <= 1.4 {
+      if !correct(p.y, p.z, 0.2, feetR(0.2, r45), feetF(0.2, r30), 0.000005) { bad = bad + 1u32; }
+      if p.z < -0.01 && p.y > 0.01 { roofWall = roofWall + 1u32; }
+      if p.z < -0.01 && p.y < -0.01 { floorWall = floorWall + 1u32; }
+    }
+    if p.z < deepest { deepest = p.z; }
+    i = i + 1usize;
+  }
+  expectInt(i64.from(bad), 0, "asymmetric: every vertex on its wall");
+  expectBool(deepest < -0.19, true, "asymmetric: the apex is deep");
+  expectBool(roofWall > 10u32 && floorWall > 10u32, true, "asymmetric: vertices on both walls");
+  expectInt(i64.from(turned(&r)), 0, "asymmetric: no face turned");
+  // the apex is where the opening's middle was: the vertices at y just either side of the apex line, both walls deep there
+  var nearApex = 0u32;
+  i = 0usize;
+  while i < r.vertexCount() {
+    let p = *r.positions[i];
+    if p.x.abs() <= 1.4 && p.z < -0.19 { nearApex = nearApex + 1u32; }
+    i = i + 1usize;
+  }
+  expectBool(nearApex >= 1u32, true, "asymmetric: a vertex at the apex (the opening's middle went there)");
+}
+
+fn undercut() {
+  let g = gridOf(16u32);
+  let r18: f32 = 0.3141593;
+  let r152: f32 = 2.6529005;
+  let sec = three(one(0.3), one(r18), one(r152));
+  var problems = List[String]();
+  let r = foldSlot(&g, &lineAlongX(6u32), &sec, 1.2, 0.1, 8u32, &mut problems);
+  expectInt(i64.from(problems.len()), 0, "undercut: no problem");
+  clean(&r, "undercut: valid");
+  var bad = 0u32;
+  var deep = 0u32;
+  var overlap = 0u32;
+  var i = 0usize;
+  while i < r.vertexCount() {
+    let p = *r.positions[i];
+    if p.x.abs() <= 1.4 {
+      if !correct(p.y, p.z, 0.3, feetR(0.3, r18), feetF(0.3, r152), 0.00001) { bad = bad + 1u32; }
+      if p.z < -0.25 { deep = deep + 1u32; }
+      if p.z < -0.01 && p.y > 0. && p.y < 0.5 { overlap = overlap + 1u32; }
+    }
+    i = i + 1usize;
+  }
+  expectInt(i64.from(bad), 0, "undercut: every vertex on its wall");
+  expectBool(deep > 5u32, true, "undercut: the apex is deep");
+  expectBool(overlap > 10u32, true, "undercut: the walls lie under the lip, on the roof's side of the path");
+  expectBool(facesDown(&r) > 10u32, true, "undercut: the floor wall faces down");
+}
+
+fn fading() {
+  let g = gridOf(16u32);
+  let r45: f32 = 0.7853982;
+  let d = fade();
+  let sec = three(fade(), one(r45), one(r45));
+  var problems = List[String]();
+  let r = foldSlot(&g, &lineAlongX(6u32), &sec, 0.5, 0.1, 8u32, &mut problems);
+  expectInt(i64.from(problems.len()), 0, "fading: no problem, no refusal");
+  clean(&r, "fading: valid");
+  var bad = 0u32;
+  var endMoved = false;
+  var middle: f32 = 0.;
+  var i = 0usize;
+  while i < r.vertexCount() {
+    let p = *r.positions[i];
+    var dd: f32 = 0.;
+    if p.x >= -2. && p.x <= 2. { dd = d.at((p.x + 2.) / 4.); }
+    if !correct(p.y, p.z, dd, feetR(dd, r45), feetF(dd, r45), 0.0003) { bad = bad + 1u32; }
+    if p.x.abs() >= 1.95 && p.z.abs() > 0.0001 { endMoved = true; }
+    if p.z < middle { middle = p.z; }
+    i = i + 1usize;
+  }
+  expectInt(i64.from(bad), 0, "fading: every vertex on its wall at its own depth");
+  expectBool(endMoved, false, "fading: the ends are the flat band itself");
+  expectFloat(f64.from(middle), -0.2, 0.001, "fading: the middle reaches its depth");
+  expectInt(i64.from(turned(&r)), 0, "fading: no face turned");
+}
+
+fn circular() {
+  let g = gridOf(16u32);
+  let r45: f32 = 0.7853982;
+  let dc = fadeTo(0.1);
+  let sec = three(fadeTo(0.1), one(r45), one(r45));
+  var problems = List[String]();
+  let r = foldSlot(&g, &arc(1., 96u32), &sec, 0.4, 0.05, 8u32, &mut problems);
+  expectInt(i64.from(problems.len()), 0, "arc: no problem (the planes stay apart)");
+  clean(&r, "arc: valid");
+  var bad = 0u32;
+  var inGroove = 0u32;
+  var i = 0usize;
+  while i < r.vertexCount() {
+    let p = *r.positions[i];
+    let rad = (p.x * p.x + p.y * p.y).sqrt();
+    // the path spans 0 to 270 degrees: leave out the open sector (y < 0, x > 0)
+    if !(p.y < 0. && p.x > 0.) && rad > 0.02 {
+      var ang = libc.atan2f(p.y, p.x);
+      if ang < 0. { ang = ang + 6.2831855; }
+      let dd = dc.at(ang / 4.712389);
+      if !correct(1. - rad, p.z, dd, dd, -dd, 0.002) { bad = bad + 1u32; }
+      if p.z < -0.05 { inGroove = inGroove + 1u32; }
+    }
+    i = i + 1usize;
+  }
+  expectInt(i64.from(bad), 0, "arc: every vertex on its wall");
+  expectBool(inGroove > 100u32, true, "arc: the groove is sampled");
+  expectInt(i64.from(turned(&r)), 0, "arc: no face turned");
+}
+
+fn tight() {
+  let g = gridOf(16u32);
+  let r15: f32 = 0.2617994;
+  let r45: f32 = 0.7853982;
+  let dc = fadeTo(0.1);
+  let sec = three(fadeTo(0.1), one(r15), one(r45));
+  var problems = List[String]();
+  let r = foldSlot(&g, &arc(0.3, 40u32), &sec, 0.8, 0.05, 8u32, &mut problems);
+  expectInt(i64.from(problems.len()), 1, "tight: one problem line");
+  clean(&r, "tight: valid");
+  var bad = 0u32;
+  var seen = 0u32;
+  var i = 0usize;
+  while i < r.vertexCount() {
+    let p = *r.positions[i];
+    let rad = (p.x * p.x + p.y * p.y).sqrt();
+    if rad >= 0.05 && rad <= 0.2 && !(p.y < 0. && p.x > 0.) {
+      seen = seen + 1u32;
+      var ang = libc.atan2f(p.y, p.x);
+      if ang < 0. { ang = ang + 6.2831855; }
+      let dd = dc.at(ang / 4.712389);
+      var foot = dd * 3.7320508;
+      if foot > 0.3 { foot = 0.3; }
+      if !correct(0.3 - rad, p.z, dd, foot, -dd, 0.004) { bad = bad + 1u32; }
+    }
+    i = i + 1usize;
+  }
+  expectBool(seen > 20u32, true, "tight: the inside is sampled");
+  expectInt(i64.from(bad), 0, "tight: the foot is held to where the planes stay apart");
+  expectInt(i64.from(turned(&r)), 0, "tight: no face turned");
+}
+
+fn refuse(label: &Array[u8], g: &PolyMesh, p: &Path, sec: &List[RunCurve], width: f32, maxEdge: f32) {
+  var problems = List[String]();
+  let r = foldSlot(g, p, sec, width, maxEdge, 8u32, &mut problems);
+  expectInt(i64.from(problems.len()), 1, label);
+  expectBool(sameMesh(g, &r), true, label);
+}
+
+fn refusals() {
+  let g = gridOf(16u32);
+  let ok = three(one(0.2), one(0.7853982), one(0.5235988));
+  var pts = List[Vec3]();
+  pts.push(Vec3(0., 0., 0.));
+  let onePt = Path.fromPoints(pts.view(), false);
+  refuse("refusal: one point", &g, &onePt, &ok, 0.5, 0.1);
+  refuse("refusal: width 0", &g, &lineAlongX(6u32), &ok, 0., 0.1);
+  refuse("refusal: maxEdge 0", &g, &lineAlongX(6u32), &ok, 0.5, 0.);
+  var two = List[RunCurve]();
+  two.push(one(0.2));
+  two.push(one(0.7853982));
+  refuse("refusal: two sections", &g, &lineAlongX(6u32), &two, 0.5, 0.1);
+  refuse("refusal: negative depth", &g, &lineAlongX(6u32), &three(one(-0.1), one(0.7853982), one(0.5235988)), 0.5, 0.1);
+  refuse("refusal: walls cross", &g, &lineAlongX(6u32), &three(one(0.2), one(1.7453293), one(1.7453293)), 0.5, 0.1);
+  refuse("refusal: an angle over two right angles", &g, &lineAlongX(6u32), &three(one(0.2), one(3.3161256), one(0.5235988)), 0.5, 0.1);
+  let far = Path.line(Vec3(-1.5, 0., 5.), Vec3(1.5, 0., 5.), 6u32);
+  refuse("refusal: no surface near the path", &g, &far, &ok, 0.5, 0.1);
+  refuse("refusal: the band limited below an edge", &g, &arc(0.05, 40u32), &ok, 0.5, 0.1);
+}
+
+fn determinism() {
+  let g = gridOf(16u32);
+  let sec = three(fade(), one(0.7853982), one(0.5235988));
+  var problems = List[String]();
+  let a = foldSlot(&g, &lineAlongX(6u32), &sec, 0.5, 0.1, 8u32, &mut problems);
+  let b = foldSlot(&g, &lineAlongX(6u32), &sec, 0.5, 0.1, 8u32, &mut problems);
+  expectBool(sameMesh(&a, &b), true, "determinism: the same bits");
+}

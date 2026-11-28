@@ -121,6 +121,7 @@ struct DsOnto {
   noHit: u32;
   many: u32;
   normalised: u32;
+  slot: List[SlotField];   // foldSlot's one fold (empty for the other two)
 
   fn targets(self: &) usize { idx.len() }
 }
@@ -206,7 +207,9 @@ fn dsOntoOff(w: &DsWork, on: &mut DsOnto, v: usize) Vec3 {
 
 // An input vertex of the region takes its offset
 fn dsInputOff(w: &mut DsWork, patch: &HeightPatch, on: &mut DsOnto, v: usize) {
-  if on.active {
+  if on.slot.len() > 0usize {
+    w.off.set(v, slotOffset(&on.slot[0usize], *w.pos[v]));
+  } else if on.active {
     let o = dsOntoOff(w, on, v);
     w.off.set(v, o);
   } else {
@@ -217,6 +220,11 @@ fn dsInputOff(w: &mut DsWork, patch: &HeightPatch, on: &mut DsOnto, v: usize) {
 // A vertex just made (its place is the last in w.pos) as the middle of a and b: its weights and normal from theirs,
 // its height from its own place
 fn dsNewOff(w: &mut DsWork, patch: &HeightPatch, on: &mut DsOnto, a: u32, b: u32) {
+  if on.slot.len() > 0usize {
+    let p = *w.pos[w.pos.len() - 1usize];
+    w.off.push(slotOffset(&on.slot[0usize], p));
+    return;
+  }
   if !on.active {
     let p = *w.pos[w.pos.len() - 1usize];
     w.off.push(patch.axis * patch.heightAt(p));
@@ -274,7 +282,7 @@ pub fn displaceOnto(base: &PolyMesh, targets: &List[PolyMesh], footprints: &List
     if !(*reaches[t] > 0.) { return dsRefused(base, problems, who, "a reach is not above 0"); }
     t = t + 1usize;
   }
-  var on = DsOnto(true, ambiguous == AmbiguousNearest, List[Footprint](), List[SurfaceIndex](), copyList(reaches), 0u32, 0u32, 0u32);
+  var on = DsOnto(true, ambiguous == AmbiguousNearest, List[Footprint](), List[SurfaceIndex](), copyList(reaches), 0u32, 0u32, 0u32, List[SlotField]());
   t = 0usize;
   while t < nT {
     on.fps.push(Footprint(copyList(&footprints[t].boundary), footprints[t].closed, footprints[t].inward, footprints[t].outward));

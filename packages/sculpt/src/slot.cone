@@ -1,0 +1,386 @@
+// ======== foldSlot: a band of the surface folded into a wedge along a path ========
+//
+// An undercut groove with a crisp opening (the knight's mouth slit, an eyelid slit) laid on a surface that is
+// otherwise a height field, as ONE surface: no boolean, no second mesh, no seam. The surface is built with the slot
+// CLOSED (each cut runs straight across the mouth, so the opening is a flat chord); foldSlot then moves the opening's
+// vertices into the wedge. This is how the 27 Nov 2026 front-strip experiment made the slit: the chord's vertices were
+// moved into the triangle given by three tracks (roof end, apex, floor start) in the slit's cross-section plane.
+//
+// foldSlot(m, path, sections, width, maxEdge, maxPasses, problems):
+//   - 'path' is the line of the wedge's APEX, as it falls on the surface: the apex lies under it. 'sections' are three
+//     RunCurves in the run fraction t of the path's own length (0 at its first point, 1 at its last): the apex DEPTH,
+//     the ROOF's angle and the FLOOR's angle, in radians, each wall's angle from the opening's plane at the opening
+//     (an angle over a right angle is an undercut wall: it leans back over the groove). 'width' is the farthest from
+//     the path, along the surface, that a wall's foot may be, and the band that is looked at; 'maxEdge' and
+//     'maxPasses' are displaceRegion's.
+//   - THE FRAME at a point of the path. 'n' is the base normal at the OPENING: the unit normals of the faces whose
+//     centres lie near the opening's middle (found in two rounds, from a first guess of the vertex normals within
+//     'width'), made square to the path's tangent T. INTO is -n, the direction of the depth. The SIDE is n x T. A
+//     vertex's offset 'a' is its distance from the path along the side (the roof is on the positive side), its
+//     place along the path the nearest point of the polyline; the frame between two points of the path is the blend of
+//     theirs.
+//   - THE WEDGE at run fraction t has its apex at 'depth' along INTO under the path (a = 0). The roof wall leaves the
+//     apex up to the opening's plane at the roof's angle and meets it at a = depth / tan(roof) (its foot, on the roof's
+//     side of the path; negative for an undercut wall); the floor wall at a = -depth / tan(floor). The OPENING is the
+//     stretch of the plane between the two feet, floor foot to roof foot. Feet farther than 'width' from the path are held
+//     to it, with a problem line.
+//   - ASSIGNMENT AT THE APEX. The band, the opening, is split at its own middle: a vertex on the roof's side of it goes
+//     to the roof wall, one on the other side to the floor wall, and each takes its place by arc length along its wall:
+//     a vertex at fraction f of the way from the opening's edge to the middle goes to fraction f of the way from the
+//     edge's foot to the apex. (Where the opening is centred on the path, as for a groove that is not undercut and is
+//     symmetric, this is the path's own line.) The surface keeps its own curve and detail: the vertex moves by the
+//     difference between where the wall puts it and where the plane had it, along the side and along INTO. A vertex at
+//     or beyond a foot is not moved, so there is no step, and everything outside the opening is bit for bit the input.
+//   - ENDS. A wedge of zero depth has its feet at the path, the opening is nothing and the fold is the identity, so
+//     it blends out smoothly wherever the depth falls toward 0. Make the depth 0 at the path's two ends: a vertex
+//     beyond an end of the path (its nearest point is the end, across the end's plane) is not moved, so a depth above
+//     0 at an end is a step.
+//   - BENDS. Where the path bends so sharply that neighbouring cross-section planes (square to the path at
+//     neighbouring points) meet within 'width' of the path, on the inside of the bend (the fanned muzzle cuts of the
+//     design review): two neighbouring points a distance ds apart whose tangents turn by theta have planes that meet at
+//     ds / theta from the path. On the inside the feet are held to that distance (the wall stays at its depth, so it is
+//     steeper), and one problem line names the stations (the path's points) and the narrowest width used. If that is
+//     below one edge length of the band's input (the mean of the edges that have an end in the opening) the call refuses.
+//   - REFINEMENT is displaceRegion's, one driver (dsRun in heightpatch.cone): the region is the faces with a vertex in
+//     the opening (not beyond the path's ends); every edge of it whose length AFTER the fold is over 'maxEdge' is split,
+//     up to 'maxPasses' passes, the ring of faces beside split edges split to match, and a new vertex takes the fold at
+//     its own place. Channels are carried as displaceRegion carries them.
+//   - A REFUSAL is a problem line and an unchanged copy: a path of fewer than 2 points; 'width' or 'maxEdge' at or
+//     below 0 (or not a number); sections not 3 curves; a depth below 0 or not a number; a wall's angle at or below 0
+//     or at or over two right angles where the depth is above 0; walls that cross at positive depth (the floor's foot
+//     beyond the roof's: the walls meet before the apex); a path point with no surface near it; a band limited below one
+//     edge. No face in the opening is a silent copy.
+
+struct SlotField {
+  pts: List[Vec3];       // the path
+  dist: List[f32];       // distance along the path to each point
+  total: f32;
+  tan: List[Vec3];       // per point: the unit tangent
+  nrm: List[Vec3];       // per point: the base normal at the opening, unit and square to the tangent
+  limPos: List[f32];     // per point: the farthest a foot on the positive side may be (width, or the bend's)
+  limNeg: List[f32];     // per point: the same on the negative side
+  tab: List[f32];        // depth, roof, floor, three to a sample, ts + 1 samples evenly in t
+  ts: usize;
+  width: f32;
+}
+
+struct SlotHit {
+  k: usize;
+  u: f32;
+  q: Vec3;
+  d2: f32;
+  beyond: bool;          // the nearest point is an end of the path and the place is past it
+}
+
+// Where a place is against the wedge at its own station
+struct SlotLocal {
+  ok: bool;
+  a: f32;                // its distance from the path along the side
+  ar: f32;               // the roof foot
+  af: f32;               // the floor foot
+  depth: f32;
+  down: Vec3;            // INTO, the direction of the depth
+  side: Vec3;
+}
+
+fn slotNearest(f: &SlotField, p: Vec3) SlotHit {
+  let n = f.pts.len();
+  var best = SlotHit(0usize, 0., *f.pts[0usize], 3.0e38, false);
+  var k = 0usize;
+  while k + 1usize < n {
+    let a = *f.pts[k];
+    let seg = *f.pts[k + 1usize] - a;
+    let l2 = seg.dot(seg);
+    var raw: f32 = 0.;
+    if l2 > 0. { raw = (p - a).dot(seg) / l2; }
+    var u = raw;
+    if u < 0. { u = 0.; }
+    if u > 1. { u = 1.; }
+    let q = a + seg * u;
+    let d = p - q;
+    let d2 = d.dot(d);
+    if d2 < best.d2 {
+      best = SlotHit(k, u, q, d2, (k == 0usize && raw < 0.) || (k + 2usize == n && raw > 1.));
+    }
+    k = k + 1usize;
+  }
+  best
+}
+
+fn slotTab(f: &SlotField, t: f32, c: usize) f32 {
+  var x = t * f32.from(f.ts);
+  if x < 0. { x = 0.; }
+  var i = usize.from(libc.floorf(x));
+  if i >= f.ts { i = f.ts - 1usize; }
+  var fx = x - f32.from(i);
+  if fx > 1. { fx = 1.; }
+  *f.tab[3usize * i + c] * (1. - fx) + *f.tab[3usize * (i + 1usize) + c] * fx
+}
+
+// The roof's and floor's feet for depth d and the two angles, held to the limits lp (positive side) and ln (negative)
+fn slotFoot(d: f32, ang: f32, sign: f32, lp: f32, ln: f32) f32 {
+  var e = sign * d * ang.cos() / ang.sin();
+  if e > lp { e = lp; }
+  if e < -ln { e = -ln; }
+  e
+}
+
+fn slotLocal(f: &SlotField, p: Vec3) SlotLocal {
+  let none = SlotLocal(false, 0., 0., 0., 0., Vec3(0., 0., 0.), Vec3(0., 0., 0.));
+  let h = slotNearest(f, p);
+  if h.beyond { return none; }
+  let k = h.k;
+  let u = h.u;
+  let tn = unit(*f.tan[k] * (1. - u) + *f.tan[k + 1usize] * u);
+  var nn = *f.nrm[k] * (1. - u) + *f.nrm[k + 1usize] * u;
+  nn = nn - tn * nn.dot(tn);
+  if !(nn.dot(nn) > 0.) { return none; }
+  nn = unit(nn);
+  let side = unit(nn.cross(tn));
+  let seg = (*f.pts[k + 1usize] - *f.pts[k]).length();
+  var t: f32 = 0.;
+  if f.total > 0. { t = (*f.dist[k] + u * seg) / f.total; }
+  let depth = slotTab(f, t, 0usize);
+  if !(depth > 0.) { return none; }
+  let lp = *f.limPos[k] * (1. - u) + *f.limPos[k + 1usize] * u;
+  let ln = *f.limNeg[k] * (1. - u) + *f.limNeg[k + 1usize] * u;
+  let ar = slotFoot(depth, slotTab(f, t, 1usize), 1., lp, ln);
+  let af = slotFoot(depth, slotTab(f, t, 2usize), -1., lp, ln);
+  if !(ar > af) { return none; }
+  SlotLocal(true, (p - h.q).dot(side), ar, af, depth, nn * (-1.), side)
+}
+
+// How far the fold moves the place p: the wall's place for the one the plane had, along the side and along INTO
+fn slotOffset(f: &SlotField, p: Vec3) Vec3 {
+  let zero = Vec3(0., 0., 0.);
+  let l = slotLocal(f, p);
+  if !l.ok { return zero; }
+  if !(l.a < l.ar && l.a > l.af) { return zero; }
+  let u = (l.ar - l.a) / (l.ar - l.af);
+  var a2: f32 = 0.;
+  var b2: f32 = 0.;
+  if u <= 0.5 {
+    let g = 2. * u;
+    a2 = l.ar * (1. - g);
+    b2 = l.depth * g;
+  } else {
+    let g = 2. * (1. - u);
+    a2 = l.af * (1. - g);
+    b2 = l.depth * g;
+  }
+  l.side * (a2 - l.a) + l.down * b2
+}
+
+// Whether the place is in the opening (a margin of 1e-4 of it) and not beyond the path's ends
+fn slotInBand(f: &SlotField, p: Vec3) bool {
+  let l = slotLocal(f, p);
+  if !l.ok { return false; }
+  let tol = 0.0001 * (l.ar - l.af) + 0.000001;
+  l.a >= l.af - tol && l.a <= l.ar + tol
+}
+
+fn slotRefused(m: &PolyMesh, problems: &mut List[String], why: &str) PolyMesh {
+  var s = String.from("foldSlot: ");
+  s.append(why);
+  problems.push(s);
+  m.clone()
+}
+
+pub fn foldSlot(m: &PolyMesh, path: &Path, sections: &List[RunCurve], width: f32, maxEdge: f32, maxPasses: u32,
+    problems: &mut List[String]) PolyMesh {
+  let np = path.points.len();
+  if np < 2usize { return slotRefused(m, problems, "the path has fewer than 2 points"); }
+  if !(width > 0.) { return slotRefused(m, problems, "width is not above 0"); }
+  if !(maxEdge > 0.) { return slotRefused(m, problems, "maxEdge is not above 0"); }
+  if sections.len() != 3usize { return slotRefused(m, problems, "sections are not 3 curves (depth, roof, floor)"); }
+  let dist = path.distances();
+  let total = *dist[np - 1usize];
+  if !(total > 0.) { return slotRefused(m, problems, "the path has no length"); }
+
+  // The sections, sampled: 16 to a path piece (at least 64), linear between samples
+  var ts = 16usize * (np - 1usize);
+  if ts < 64usize { ts = 64usize; }
+  var tab = List[f32].withCapacity(3usize * (ts + 1usize));
+  let twoRight: f32 = 3.1415927;
+  var footCapped = false;
+  var i = 0usize;
+  while i <= ts {
+    let t = f32.from(i) / f32.from(ts);
+    let d = sections[0usize].at(t);
+    let roofA = sections[1usize].at(t);
+    let floorA = sections[2usize].at(t);
+    if !(d >= 0.) { return slotRefused(m, problems, "a depth is below 0 (or not a number)"); }
+    if d > 0. {
+      if !(roofA > 0.) || !(floorA > 0.) || !(roofA < twoRight) || !(floorA < twoRight) {
+        return slotRefused(m, problems, "a wall's angle is not between 0 and two right angles");
+      }
+      let ar = d * roofA.cos() / roofA.sin();
+      let af = -d * floorA.cos() / floorA.sin();
+      if af > ar + 0.000001 { return slotRefused(m, problems, "the walls cross at positive depth (the floor's foot is beyond the roof's)"); }
+      if ar > width || ar < -width || af > width || af < -width { footCapped = true; }
+    }
+    tab.push(d);
+    tab.push(roofA);
+    tab.push(floorA);
+    i = i + 1usize;
+  }
+  if footCapped {
+    problems.push(String.from("foldSlot: a wall's foot is farther than width from the path; it is held to width (the wall is steeper)"));
+  }
+
+  // The frame at each path point: the tangent, and a first guess of the base normal from the vertices near it
+  let vn = m.vertexNormals();
+  let nv = m.vertexCount();
+  var tan = List[Vec3].withCapacity(np);
+  var nrm = List[Vec3].withCapacity(np);
+  i = 0usize;
+  while i < np {
+    let c = *path.points[i];
+    let tg = path.tangentAt(i);
+    var acc = Vec3(0., 0., 0.);
+    var v = 0usize;
+    while v < nv {
+      let d = *m.positions[v] - c;
+      if d.dot(d) <= width * width { acc = acc + *vn[v]; }
+      v = v + 1usize;
+    }
+    let sq = acc - tg * acc.dot(tg);
+    if !(sq.dot(sq) > 0.) { return slotRefused(m, problems, "a path point has no surface within width"); }
+    tan.push(tg);
+    nrm.push(unit(sq));
+    i = i + 1usize;
+  }
+  var lim = SlotField(path.points.clone(), dist, total, tan, nrm, List[f32].withCapacity(np), List[f32].withCapacity(np),
+    tab, ts, width);
+  i = 0usize;
+  while i < np {
+    lim.limPos.push(width);
+    lim.limNeg.push(width);
+    i = i + 1usize;
+  }
+
+  // The normal at the opening: the unit normals of the faces whose centres lie near the opening's middle, in two rounds
+  var round = 0u32;
+  while round < 2u32 {
+    i = 0usize;
+    while i < np {
+      let t = *lim.dist[i] / total;
+      let d = slotTab(&lim, t, 0usize);
+      if d > 0. {
+        let tg = *lim.tan[i];
+        let side = unit((*lim.nrm[i]).cross(tg));
+        let ar = slotFoot(d, slotTab(&lim, t, 1usize), 1., width, width);
+        let af = slotFoot(d, slotTab(&lim, t, 2usize), -1., width, width);
+        let mid = *lim.pts[i] + side * ((ar + af) * 0.5);
+        let rad = 0.75 * (ar - af) + 0.000001;
+        var slab: f32 = 0.;
+        if i > 0usize { slab = (*lim.pts[i] - *lim.pts[i - 1usize]).length(); }
+        if i + 1usize < np {
+          let s2 = (*lim.pts[i + 1usize] - *lim.pts[i]).length();
+          if s2 > slab { slab = s2; }
+        }
+        slab = slab * 0.6;
+        var acc = Vec3(0., 0., 0.);
+        var f = 0usize;
+        while f < m.faceCount() {
+          let c = m.faceCentroid(u32.from(f));
+          if (c - mid).length() <= rad && (c - *lim.pts[i]).dot(tg).abs() <= slab {
+            acc = acc + m.faceNormal(u32.from(f));
+          }
+          f = f + 1usize;
+        }
+        let sq = acc - tg * acc.dot(tg);
+        if sq.dot(sq) > 0.0001 { lim.nrm.set(i, unit(sq)); }
+      }
+      i = i + 1usize;
+    }
+    round = round + 1u32;
+  }
+
+  // The mean edge with an end in the opening
+  var sumEdge: f64 = 0.0;
+  var nEdge = 0usize;
+  var e = 0usize;
+  while e < m.edgeCount() {
+    let pa = *m.positions[usize.from(m.fromVertex(2u32 * u32.from(e)))];
+    let pb = *m.positions[usize.from(m.toVertex(2u32 * u32.from(e)))];
+    if slotInBand(&lim, pa) || slotInBand(&lim, pb) {
+      sumEdge = sumEdge + f64.from((pa - pb).length());
+      nEdge = nEdge + 1usize;
+    }
+    e = e + 1usize;
+  }
+  if nEdge == 0usize { return m.clone(); }
+  let edge = f32.from(sumEdge / f64.from(nEdge));
+
+  // Bends: the neighbouring planes meet at ds / theta from the path, on the inside
+  var bendLo = np;
+  var bendHi = 0usize;
+  var narrow = width;
+  var k = 0usize;
+  while k + 1usize < np {
+    let t0 = *lim.tan[k];
+    let t1 = *lim.tan[k + 1usize];
+    let ds = (*lim.pts[k + 1usize] - *lim.pts[k]).length();
+    let theta = libc.atan2f(t0.cross(t1).length(), t0.dot(t1));
+    if theta > 0.000001 && ds / theta < width {
+      let rho = ds / theta;
+      let nn = unit(*lim.nrm[k] + *lim.nrm[k + 1usize]);
+      let tm = unit(t0 + t1);
+      let side = unit(nn.cross(tm));
+      let inside = (t1 - t0).dot(side) > 0.;
+      var j = k;
+      while j <= k + 1usize {
+        if inside {
+          if rho < *lim.limPos[j] { lim.limPos.set(j, rho); }
+        } else {
+          if rho < *lim.limNeg[j] { lim.limNeg.set(j, rho); }
+        }
+        j = j + 1usize;
+      }
+      if k < bendLo { bendLo = k; }
+      if k + 1usize > bendHi { bendHi = k + 1usize; }
+      if rho < narrow { narrow = rho; }
+    }
+    k = k + 1usize;
+  }
+  if bendHi > 0usize {
+    if narrow < edge { return slotRefused(m, problems, "the bend limits the band below one edge of the input"); }
+    var s = String.from("foldSlot: the path bends so sharply that neighbouring planes meet within width, at stations ");
+    s.appendUInt(u64.from(bendLo));
+    s.append(" to ");
+    s.appendUInt(u64.from(bendHi));
+    s.append("; the band is limited there to ");
+    s.appendF32(narrow);
+    s.append(" (width ");
+    s.appendF32(width);
+    s.append(")");
+    problems.push(s);
+  }
+
+  // The region: the faces with a vertex in the opening
+  var inBand = List[bool].withCapacity(nv);
+  var v = 0usize;
+  while v < nv {
+    inBand.push(slotInBand(&lim, *m.positions[v]));
+    v = v + 1usize;
+  }
+  var region = List[u32]();
+  var f = 0usize;
+  while f < m.faceCount() {
+    let vs = m.faceVertices(u32.from(f));
+    var hit = false;
+    var j = 0usize;
+    while j < vs.len() {
+      if *inBand[usize.from(*vs[j])] { hit = true; }
+      j = j + 1usize;
+    }
+    if hit { region.push(u32.from(f)); }
+    f = f + 1usize;
+  }
+  if region.len() == 0usize { return m.clone(); }
+  var on = DsOnto(false, false, List[Footprint](), List[SurfaceIndex](), List[f32](), 0u32, 0u32, 0u32, List[SlotField]());
+  on.slot.push(lim);
+  let patch = HeightPatch(Vec3(0., 0., 0.), Vec3(0., 0., 0.), Vec3(0., 0., 0.), Vec3(0., 0., 1.), 0u32, 0u32, List[f32]());
+  dsRun(m, region.view(), &patch, &mut on, &List[Vec3](), &List[f32](), maxEdge, maxPasses, problems)
+}
