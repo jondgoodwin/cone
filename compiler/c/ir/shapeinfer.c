@@ -1391,6 +1391,26 @@ int shapeTypeWritesGlobal(FnDclNode *fn, INode *cont) {
 
 static int siIsRecorded(StructNode *st);
 
+// May a function of this signature store, through another parameter, a borrow of what its
+// parameter 'k' (a reference) lends? That hands it out as a result does, so such a function
+// lends from the type too: another parameter is a writable way to a place that can hold a
+// borrow into what 'k' points at owns (itypeMayHoldBorrowOwned). Asked by the types,
+// whatever lifetimes the signature names
+static int siStoresOut(FnSigNode *sig, uint32_t k) {
+    RefNode *from = (RefNode *)iexpGetTypeDcl(nodesGet(sig->parms, k));
+    int readonly = !(permGetFlags(from->perm) & MayWrite);
+    for (uint32_t j = 0; j < sig->parms->used; ++j) {
+        INode *pt = iexpGetTypeDcl(nodesGet(sig->parms, j));
+        if (j == k || pt == NULL || itypeWritableBorrowDepth(pt, 3) == 0)
+            continue;
+        INode *into = pt->tag == RefTag && itypeGetTypeDcl(((RefNode *)pt)->region) == borrowRef
+            ? ((RefNode *)pt)->vtexp : pt;
+        if (itypeCarriesEndingBorrow(into) && itypeMayHoldBorrowOwned(into, from->vtexp, readonly))
+            return 1;
+    }
+    return 0;
+}
+
 static void siMethod(FnDclNode *fn, int *lender, int *writer, int *sigpending, int *bodypending) {
     if (!(fn->flags & FlagMethFld) || fn->vtype == NULL || fn->vtype->tag != FnSigTag)
         return;
@@ -1405,7 +1425,7 @@ static void siMethod(FnDclNode *fn, int *lender, int *writer, int *sigpending, i
     INode *selft = iexpGetTypeDcl(nodesGet(sig->parms, 0));
     if (selft->tag != RefTag)
         return;
-    if (sig->rettype && itypeCarriesBorrow(sig->rettype))
+    if ((sig->rettype && itypeCarriesBorrow(sig->rettype)) || siStoresOut(sig, 0))
         *lender = 1;
     // A value's own death frees its storage, and no borrow of it outlives that
     if (!(permGetFlags(((RefNode *)selft)->perm) & MayWrite) || fnDclIsInit(fn)
@@ -1477,6 +1497,10 @@ static void siFreeFn(FnDclNode *fn, void *vc) {
     FnSigNode *sig = (FnSigNode *)fn->vtype;
     if (sig->rettype && itypeCarriesBorrow(sig->rettype))
         *c->lender = 1;
+    for (uint32_t k = 0; !*c->lender && k < sig->parms->used; ++k) {
+        if (siParmRefersTo((VarDclNode *)nodesGet(sig->parms, k), c->st) && siStoresOut(sig, k))
+            *c->lender = 1;
+    }
     if (!siVisible(fn))
         return;
     for (uint32_t k = 0; k < sig->parms->used; ++k) {
@@ -1620,8 +1644,9 @@ typedef struct {
     int nneed;
 } SiNeeds;
 
-// A call of a method that returns a borrow, on a type that declares nothing
-// about its shape: the loan walk asks (pwCall) whether it is shape-changing
+// A call of a method that returns a borrow, or may store one through an
+// argument, on a type that declares nothing about its shape: the loan walk asks
+// (pwCall) whether it is shape-changing
 static void siNeedAdd(SiNeeds *needs, INode *recvtype) {
     INode *container = recvtype->tag == RefTag ? itypeGetTypeDcl(((RefNode *)recvtype)->vtexp) : NULL;
     if (container == NULL || container->tag != StructTag || ((StructNode *)container)->lends != LendsLoaned)
@@ -1646,17 +1671,19 @@ static int siNeedNode(INode *node, void *vc) {
         || ((FnDclNode *)fn)->vtype->tag != FnSigTag)
         return 0;
     FnSigNode *sig = (FnSigNode *)((FnDclNode *)fn)->vtype;
-    if (sig->rettype == NULL || !itypeCarriesBorrow(sig->rettype))
-        return 0;
+    int returns = sig->rettype != NULL && itypeCarriesBorrow(sig->rettype);
     if (fn->flags & FlagMethFld) {
         if (sig->parms->used == 0 || ((VarDclNode *)nodesGet(sig->parms, 0))->namesym != selfName)
             return 0;
-        siNeedAdd(needs, iexpGetTypeDcl(nodesGet(call->args, 0)));
+        if (returns || flowCallMayStore(call, sig, 0))
+            siNeedAdd(needs, iexpGetTypeDcl(nodesGet(call->args, 0)));
         return 0;
     }
     // A free function lends from each reference it is handed (flowpath.c, pwLentArg)
-    for (uint32_t i = 0; i < call->args->used; ++i)
-        siNeedAdd(needs, iexpGetTypeDcl(nodesGet(call->args, i)));
+    for (uint32_t i = 0; i < call->args->used; ++i) {
+        if (returns || flowCallMayStore(call, sig, i))
+            siNeedAdd(needs, iexpGetTypeDcl(nodesGet(call->args, i)));
+    }
     return 0;
 }
 
