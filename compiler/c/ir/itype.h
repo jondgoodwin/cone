@@ -80,6 +80,10 @@ int itypeHoldsBorrowOf(INode *type, INode *want);
 // Conservative: yes for a type either side shows only in part.
 int itypeMayHoldBorrowInside(INode *holder, INode *x, int readonly);
 
+// The same for a borrow into 'x''s own storage: what a borrowed reference in
+// 'x' points at is not part of it
+int itypeMayHoldBorrowOwned(INode *holder, INode *x, int readonly);
+
 // Is it certain no value of this type holds a borrowed reference anywhere?
 // Unlike !itypeCarriesBorrow, a type not fully seen (open trait, opaque,
 // type parameter, closure, virtual reference) answers no.

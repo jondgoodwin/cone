@@ -1394,8 +1394,8 @@ static int siIsRecorded(StructNode *st);
 // May a function of this signature store, through another parameter, a borrow of what its
 // parameter 'k' (a reference) lends? That hands it out as a result does, so such a function
 // lends from the type too: another parameter is a writable way to a place that can hold a
-// borrow of something inside what 'k' points at (itypeMayHoldBorrowInside). Asked by the
-// types, whatever lifetimes the signature names
+// borrow into what 'k' points at owns (itypeMayHoldBorrowOwned). Asked by the types,
+// whatever lifetimes the signature names
 static int siStoresOut(FnSigNode *sig, uint32_t k) {
     RefNode *from = (RefNode *)iexpGetTypeDcl(nodesGet(sig->parms, k));
     int readonly = !(permGetFlags(from->perm) & MayWrite);
@@ -1405,7 +1405,7 @@ static int siStoresOut(FnSigNode *sig, uint32_t k) {
             continue;
         INode *into = pt->tag == RefTag && itypeGetTypeDcl(((RefNode *)pt)->region) == borrowRef
             ? ((RefNode *)pt)->vtexp : pt;
-        if (itypeCarriesEndingBorrow(into) && itypeMayHoldBorrowInside(into, from->vtexp, readonly))
+        if (itypeCarriesEndingBorrow(into) && itypeMayHoldBorrowOwned(into, from->vtexp, readonly))
             return 1;
     }
     return 0;

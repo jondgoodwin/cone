@@ -4456,13 +4456,22 @@ static PathSet *pwReachShared(FnCallNode *call, uint32_t argi, INode *parmtype, 
     return result;
 }
 
-// May the call store through another of its arguments what the argument at 'i'
-// reaches? Asked by the types: another argument is a way to store a borrow that
-// can end (pwStoreDepth), or a writable borrow of an arena. What the call does
-// store, by its signature, is for pwCallStores to say
+// May the call store through another of its arguments a borrow into the storage
+// the reference at 'i' points at? Asked by the types: another argument is a way
+// to store a borrow that can end (pwStoreDepth) into a place that can hold one
+// into what that storage owns (itypeMayHoldBorrowOwned), or a writable borrow of
+// an arena. What the call does store, by its signature, is for pwCallStores to
+// say
 int flowCallMayStore(FnCallNode *call, FnSigNode *sig, uint32_t i) {
-    if (call->args == NULL)
+    if (call->args == NULL || i >= call->args->used)
         return 0;
+    INode *lent = iexpGetTypeDcl(nodesGet(call->args, i));
+    if (lent->tag != RefTag && lent->tag != VirtRefTag && lent->tag != ArrayRefTag)
+        return 0;
+    INode *from = ((RefNode *)lent)->vtexp;
+    // A '&' parameter lends for reading, whatever the reference passed to it may write
+    INode *fromparm = sig && i < sig->parms->used ? iexpGetTypeDcl(nodesGet(sig->parms, i)) : lent;
+    int readonly = fromparm->tag == RefTag && !(permGetFlags(((RefNode *)fromparm)->perm) & MayWrite);
     for (uint32_t at = 0; at < call->args->used; ++at) {
         if (at == i)
             continue;
@@ -4475,7 +4484,8 @@ int flowCallMayStore(FnCallNode *call, FnSigNode *sig, uint32_t i) {
             return 1;
         INode *parmtype = sig && at < sig->parms->used ? ((IExpNode *)nodesGet(sig->parms, at))->vtype : NULL;
         int depth = pwStoreDepth(arg, parmtype);
-        if (depth > 1 || (depth == 1 && (!isref || itypeCarriesEndingBorrow(storedin))))
+        if ((depth > 1 || (depth == 1 && (!isref || itypeCarriesEndingBorrow(storedin))))
+                && itypeMayHoldBorrowOwned(storedin, from, readonly))
             return 1;
     }
     return 0;
@@ -4535,6 +4545,9 @@ static PathSet *pwCall(FnCallNode *call) {
     StructNode *lentcnt[8];
     memset(lentloan, 0, sizeof(lentloan));
     memset(lentcnt, 0, sizeof(lentcnt));
+    // The arguments a borrow into which the call may store through another
+    // (flowCallMayStore), a bit each
+    uint32_t storing = 0;
     // In the order generation makes them: a receiver or a borrow of a plain
     // path before a seam another argument holds is made after it (awaitOrder)
     uint32_t localorder[8];
@@ -4550,9 +4563,12 @@ static PathSet *pwCall(FnCallNode *call) {
         uint32_t argi = order[k];
         INode **argsp = &nodesGet(call->args, argi);
         PathSet *carried;
-        // May the call hand out what this argument reaches: as its result, or
-        // stored through another argument?
-        int handsout = carries || (pathLoans && flowCallMayStore(call, sig, argi));
+        // May the call hand out a borrow into what this argument points at: as its
+        // result, or stored through another argument?
+        int maystore = pathLoans && flowCallMayStore(call, sig, argi);
+        int handsout = carries || maystore;
+        if (argi < 8 && maystore)
+            storing |= 1u << argi;
         if (meth && argi == 0) {
             // A borrow this method hands out of a container that changes shape, the container
             // reached through a reference another call returned, is followed as if that reference
@@ -4586,7 +4602,7 @@ static PathSet *pwCall(FnCallNode *call) {
             carried = pwLendRef(argsp, parmtype, 0, 0, &lentpl[argi], &lentloan[argi], &access);
             lentcnt[argi] = lentcont;
         }
-        else if (handsout && pathLoans && pwLentByName(call, argi, &parmtype)) {
+        else if (carries && pathLoans && pwLentByName(call, argi, &parmtype)) {
             int access;
             carried = pwLendRef(argsp, parmtype, 0, 0, &lentpl[argi], &lentloan[argi], &access);
         }
@@ -4599,7 +4615,7 @@ static PathSet *pwCall(FnCallNode *call) {
             pwArenaValue = savedvalue;
         }
         loanFlightPushOf(carried, 0, *argsp);
-        if (handsout && pathLoans && !sig) {
+        if (carries && pathLoans && !sig) {
             FnDclNode *tiedfn = pwTiedCallee(call);
             if (tiedfn)
                 loanTiedAt(carried, *argsp, tiedfn);
@@ -4630,15 +4646,24 @@ static PathSet *pwCall(FnCallNode *call) {
             pwShapeCall(call, meth, recvloan ? &recvpl : NULL, argsets, nargs, recvloan, fnholds);
         pwStoreMarksApply();
     }
+    // What is stored is handed out as a result is (below), and so followed once
+    // the call itself has been asked what it may reshape: the receiver's loan
+    // and each lent argument's that is among it
+    int recvstored = meth && recvloan && (storing & 1) && pathSetHasLoan(stored, recvloan);
+    uint32_t lentstored = 0;
+    for (uint32_t i = 0; i < nargs && i < 8; ++i) {
+        if (lentloan[i] && lentcnt[i] && (storing & (1u << i)) && pathSetHasLoan(stored, lentloan[i])) {
+            lentstored |= 1u << i;
+            loanReturnedBy(lentloan[i], ((NameUseNode *)call->objfn)->namesym);
+        }
+    }
     if (!carries) {
-        // What is stored is handed out as a result is (below), and so followed
-        // once the call itself has been asked what it may reshape
-        if (meth && recvloan && pathSetHasLoan(stored, recvloan)) {
+        if (recvstored) {
             loanReturnedBy(recvloan, ((NameUseNode *)call->objfn)->namesym);
             pwRecvShapeLent(call, &recvpl, recvloan);
         }
         for (uint32_t i = 0; i < nargs && i < 8; ++i) {
-            if (lentloan[i] && lentcnt[i] && pathSetHasLoan(stored, lentloan[i]))
+            if (lentstored & (1u << i))
                 pwShapeLent(&lentpl[i], lentloan[i], (INode *)lentcnt[i], 1);
         }
         return NULL;
@@ -4671,7 +4696,7 @@ static PathSet *pwCall(FnCallNode *call) {
         // value changing it is asked of every call made while the borrow is held
         // (pwShapeCall), where the place is reached through a path others may
         // write by.
-        if (recvloan && (pathSetHasLoan(fromrecv, recvloan) || pathSetHasLoan(stored, recvloan)))
+        if (recvloan && (pathSetHasLoan(fromrecv, recvloan) || recvstored))
             pwRecvShapeLent(call, &recvpl, recvloan);
         result = pathSetUnion(result, fromrecv);
     }
@@ -4683,7 +4708,7 @@ static PathSet *pwCall(FnCallNode *call) {
     for (uint32_t i = 0; i < nargs && i < 8; ++i) {
         if (lentloan[i] && lentcnt[i]
                 && (pathSetHasLoan(pwArgCarriesTo(sig, i, rettype, argsets[i], globalonly), lentloan[i])
-                    || pathSetHasLoan(stored, lentloan[i])))
+                    || (lentstored & (1u << i))))
             pwShapeLent(&lentpl[i], lentloan[i], (INode *)lentcnt[i], 1);
     }
     // The loans this call made of its own receiver and lent arguments, for a read through its

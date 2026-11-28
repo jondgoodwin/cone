@@ -380,6 +380,7 @@ typedef struct InsideSet {
     int cnt;
     int unseen;
     int readonly;   // the loan is a read-only one
+    int owned;      // follow no borrowed reference in 'x' (itypeMayHoldBorrowOwned)
     INode *asking[HoldsBorrowMaxDepth];
     int askcnt;
 } InsideSet;
@@ -433,7 +434,8 @@ static void insideCollect(InsideSet *set, INode *type) {
         // ('&held' for a 'held: &Shape' is no borrow of the 'Shape'); only a way through a
         // writable one is a reborrow that lasts no longer than the borrow of the place
         if (itypeGetTypeDcl(((RefNode *)type)->region) == borrowRef
-                && !(permGetFlags(((RefNode *)type)->perm) & MayWrite) && !permIsLock(((RefNode *)type)->perm))
+                && (set->owned
+                    || (!(permGetFlags(((RefNode *)type)->perm) & MayWrite) && !permIsLock(((RefNode *)type)->perm))))
             return;
         insideCollect(set, ((RefNode *)type)->vtexp);
         return;
@@ -581,11 +583,12 @@ static int insideHolds(InsideSet *set, INode *type) {
     }
 }
 
-int itypeMayHoldBorrowInside(INode *holder, INode *x, int readonly) {
+static int insideAsk(INode *holder, INode *x, int readonly, int owned) {
     if (itypeHoldsNoBorrow(holder))
         return 0;
     InsideSet set;
     set.readonly = readonly;
+    set.owned = owned;
     set.cnt = 0;
     set.unseen = 0;
     set.askcnt = 0;
@@ -593,6 +596,14 @@ int itypeMayHoldBorrowInside(INode *holder, INode *x, int readonly) {
     if (set.unseen)
         return 1;
     return insideHolds(&set, holder);
+}
+
+int itypeMayHoldBorrowInside(INode *holder, INode *x, int readonly) {
+    return insideAsk(holder, x, readonly, 0);
+}
+
+int itypeMayHoldBorrowOwned(INode *holder, INode *x, int readonly) {
+    return insideAsk(holder, x, readonly, 1);
 }
 
 // How many writable borrows deep a store into a value of this type can reach,
