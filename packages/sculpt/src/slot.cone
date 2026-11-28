@@ -14,8 +14,10 @@
 //     the path, along the surface, that a wall's foot may be, and the band that is looked at; 'maxEdge' and
 //     'maxPasses' are displaceRegion's.
 //   - THE FRAME at a point of the path. 'n' is the base normal at the OPENING: the unit normals of the faces whose
-//     centres lie near the opening's middle (found in two rounds, from a first guess of the vertex normals within
-//     'width'), made square to the path's tangent T. INTO is -n, the direction of the depth. The SIDE is n x T. A
+//     centres lie near the opening's middle (found in two rounds, from a first guess, the vertex normals within
+//     'width'). A 'path.up' that is not (0, 0, 0) is the first guess itself, at every point (made square
+//     to T): give it where the opening is a small part of a curved band, where the vertex normals are not its own
+//     normal (the knight's slit does, and the rounds fail from a poor guess), made square to the path's tangent T. INTO is -n, the direction of the depth. The SIDE is n x T. A
 //     vertex's offset 'a' is its distance from the path along the side (the roof is on the positive side), its
 //     place along the path the nearest point of the polyline; the frame between two points of the path is the blend of
 //     theirs.
@@ -31,6 +33,8 @@
 //     symmetric, this is the path's own line.) The surface keeps its own curve and detail: the vertex moves by the
 //     difference between where the wall puts it and where the plane had it, along the side and along INTO. A vertex at
 //     or beyond a foot is not moved, so there is no step, and everything outside the opening is bit for bit the input.
+//     The opening is the surface within half its own width of the opening's plane, along the normal: a part of the
+//     surface that lies over or under it is not folded.
 //   - ENDS. A wedge of zero depth has its feet at the path, the opening is nothing and the fold is the identity, so
 //     it blends out smoothly wherever the depth falls toward 0. Make the depth 0 at the path's two ends: a vertex
 //     beyond an end of the path (its nearest point is the end, across the end's plane) is not moved, so a depth above
@@ -147,6 +151,9 @@ fn slotLocal(f: &SlotField, p: Vec3) SlotLocal {
   let ar = slotFoot(depth, slotTab(f, t, 1usize), 1., lp, ln);
   let af = slotFoot(depth, slotTab(f, t, 2usize), -1., lp, ln);
   if !(ar > af) { return none; }
+  // Only the surface that lies near the opening's plane is the opening: a place over or under it (another part of
+  // the surface, further along the normal than half the opening's width) is not folded
+  if ((p - h.q).dot(nn)).abs() > 0.5 * (ar - af) { return none; }
   SlotLocal(true, (p - h.q).dot(side), ar, af, depth, nn * (-1.), side)
 }
 
@@ -244,8 +251,12 @@ pub fn foldSlot(m: &PolyMesh, path: &Path, sections: &List[RunCurve], width: f32
       if d.dot(d) <= width * width { acc = acc + *vn[v]; }
       v = v + 1usize;
     }
-    let sq = acc - tg * acc.dot(tg);
+    var sq = acc - tg * acc.dot(tg);
     if !(sq.dot(sq) > 0.) { return slotRefused(m, problems, "a path point has no surface within width"); }
+    if path.up.dot(path.up) > 0. {
+      let hint = path.up - tg * path.up.dot(tg);
+      if hint.dot(hint) > 0. { sq = hint; }
+    }
     tan.push(tg);
     nrm.push(unit(sq));
     i = i + 1usize;
@@ -272,7 +283,7 @@ pub fn foldSlot(m: &PolyMesh, path: &Path, sections: &List[RunCurve], width: f32
         let ar = slotFoot(d, slotTab(&lim, t, 1usize), 1., width, width);
         let af = slotFoot(d, slotTab(&lim, t, 2usize), -1., width, width);
         let mid = *lim.pts[i] + side * ((ar + af) * 0.5);
-        let rad = 0.75 * (ar - af) + 0.000001;
+        let rad = 0.3 * (ar - af) + 0.000001;
         var slab: f32 = 0.;
         if i > 0usize { slab = (*lim.pts[i] - *lim.pts[i - 1usize]).length(); }
         if i + 1usize < np {
