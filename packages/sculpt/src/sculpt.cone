@@ -123,6 +123,12 @@
 //   region's edge and the ends and corners of its creases held, a crease kept
 //   and moved along only, every channel carried), whose free vertices are what
 //   'fairRegion' then fairs.
+// - Seam blend: 'blendSeam' (the band of faces within a width of a seam's edges
+//   remeshed on even triangles and faired at order 2 with its outermost ring of
+//   free vertices held, the seam's creases off: the edge round of an ear on a
+//   head, a post on a slab; a band under two input edges says so) and
+//   'booleanUnionBlended' (booleanWith's union, its seam found, then blended),
+//   each giving a BlendedSeam (the mesh, the band's faces and free vertices).
 // - Peel: 'facesInsideLoop' (the faces a closed loop of vertices encloses: gaps
 //   joined by shortest edge paths, the smaller side) and 'peelRegion' (faces cut
 //   out as their own piece, the hole filled, remeshed with rings of skin round
@@ -161,6 +167,16 @@
 //   to n, a level-of-detail chain. OpenSubdiv keeps subdivision apart from
 //   the mesh it refines, and so does this package: a PolyMesh in, a new one
 //   out.
+// - Fitting a cage: 'fitCage' and 'fitCageWith' (the control points of a
+//   coarse cage moved so that its Catmull-Clark surface, at a number of
+//   levels, lies on a target surface: rounds of point-to-plane least squares
+//   in both directions, subdivided vertices to the target and samples of the
+//   target to the surface, by the subdivision's own linear weights; the
+//   cage's faces, vertex numbers and channels, creases included, kept) with
+//   'CageFit' (the cage and its distances), and 'heightsAlongNormals' (from
+//   each base vertex a line along its normal against a target, with
+//   'NormalHeights': the height, whether it is single-valued, and the area
+//   that is valid, multi-hit, folded or missed).
 // - Fractal refinement of a 2-D outline: 'fractalRefine', each edge split
 //   level by level, its split point displaced inside a shrinking
 //   quadrilateral (midpoint displacement in Red Blob's noisy-edge form, so
@@ -250,6 +266,16 @@
 // bend a point still knows how far along the straight line it was. A closed
 // loop's seam vertex gets 0; the corner "uv" is the seam-correct form.
 //
+// Triangle meshes from files (a Mesh, not a PolyMesh, since a scan need not be
+// manifold): 'triangleShells' (each triangle's connected piece, joined by shared
+// edges, numbered by the lowest triangle), 'splitShells' (the pieces as a
+// list of meshes, 'Shells') and 'takeTriangles' (a mesh of the listed
+// triangles, every channel carried); and 'outerTriangles', the triangles that
+// can be seen from outside, those with at least one fixed ray from their
+// centre (the normal, and a number of directions on a Fibonacci spiral in the
+// hemisphere it faces) that leaves the mesh's bounding sphere without meeting
+// another triangle.
+//
 // The algorithms are from the literature; parameters follow Blender's manual,
 // never its source:
 // - rotation-minimizing frames: Wang, Juttler, Zheng and Liu, "Computation of
@@ -316,6 +342,7 @@
 //   loft.cone       loft, loftAlong, and the correspondence they and bridges
 //                   share (orientation, start, common columns, the spline)
 //   taggedloft.cone TaggedProfile, loftTagged: tags matched stretch to stretch, creases, uvs by length
+//   sweepspec.cone  RunCurve, SweepTrack, SweepSpec: a swept part stored by track (a path and curves along the run)
 //   bridge.cone     bridgeLoops, boundaryLoop
 //   deform.cone     bend, twist, taper, curveDeform, displaceAlongNormal, and the
 //                   function-fed deform and deformAlong (taper, twist and
@@ -332,6 +359,8 @@
 //                   rounding a rational once to f32
 //   earclip.cone    exact ear clipping, point in polygon, segments meeting
 //   bvh.cone        a tree of boxes over triangles, for the crossings
+//   shells.cone     triangleShells, splitShells, takeTriangles, Shells
+//   outerskin.cone  outerTriangles
 //   remesh.cone     voxelRemesh, voxelRemeshWith: the band of distances, the
 //                   rows' exact signs, the field surface nets meshes, the
 //                   nearest point and the channels carried from it
@@ -355,6 +384,9 @@
 //   fair.cone       fairRegion: the free and held vertices, the
 //                   two energies' matrices, the three solves
 //   subdivide.cone  subdivide, subdivideWith, subdivisionLevels, and the rules
+//   cagefit.cone    fitCage, fitCageWith, CageFit, heightsAlongNormals,
+//                   NormalHeights: the subdivision's weights read by colour,
+//                   the rows, the matrix-free solve, the rays along normals
 //   refine.cone     one level of subdivision's refinement
 //   fractal.cone    Fractal, fractalRefine, fractalRefineWithin
 //   ribs.cone       RibField, ribField and its terms; MarginRing, marginRing,
@@ -371,6 +403,8 @@
 //   fillhole.cone   fillHole, HoleFill, FillMaxLoop: the least-area
 //                   triangulation of a hole, Liepa's refinement and fairing
 //   remeshregion.cone remeshRegion, RegionRemesh: isotropic remesh of a region
+//   blendseam.cone  blendSeam, booleanUnionBlended, BlendedSeam: the round at a
+//                   seam, a narrow band remeshed and faired
 //   peel.cone       facesInsideLoop, peelRegion, PeeledRegion: the surgery that
 //                   cuts a closed detail out and heals the skin
 //   heightpatch.cone HeightPatch, displaceRegion: a region refined under its
