@@ -1,0 +1,269 @@
+// A copy of a '&mut' borrow is another name for what it borrows. A borrow of a local, or of
+// what a local owner holds, was taken as the only name for it until the source was used by
+// its own name, and a view through it froze that one name: a copy of the reference, made any
+// way, then replaced the list while the view was still to be used, and each of these was
+// accepted and read freed storage (collection_reshape_mut_copy_success holds what stays
+// accepted).
+
+mod collection_flow_reshape_mut_copy;
+
+import stdio use *;
+import collections use *;
+
+struct Hold {
+  pub p: &mut List[i32];
+}
+struct Two {
+  pub a: &mut List[i32];
+  pub b: &mut List[i32];
+}
+struct Box {
+  pub items: List[i32];
+}
+
+fn same(a: &mut List[i32]) &mut List[i32] { a }
+fn twice(a: &mut List[i32]) &mut List[i32], &mut List[i32] { a, a }
+fn pair(a: &mut List[i32]) Two { Two(a, a) }
+fn wipe(a: &mut List[i32]) { *a = List[i32](); }
+fn wipeFirst(a: &mut List[i32], v: &i32) { *a = List[i32](); printInt(i64.from(*v)); }
+fn wipeLast(v: &i32, a: &mut List[i32]) { *a = List[i32](); printInt(i64.from(*v)); }
+fn run[F](f: &mut F) { f(); }
+
+fn local() {
+  var l = List[i32]();
+  l.push(7i32);
+  let r = &mut l;
+  let r2 = r;
+  let v = &(*r)[0usize];
+  *r2 = List[i32]();                     //~ ErrorShapeStore:3 "while 'v' still holds a borrow into it"
+  printInt(i64.from(*v));
+}
+
+fn copiedAfterTheView() {
+  var l = List[i32]();
+  l.push(7i32);
+  let r = &mut l;
+  let v = &(*r)[0usize];
+  let r2 = r;
+  *r2 = List[i32]();                     //~ ErrorShapeStore:3
+  printInt(i64.from(*v));
+}
+
+fn viewThroughTheCopy() {
+  var l = List[i32]();
+  l.push(7i32);
+  let r = &mut l;
+  let r2 = r;
+  let v = &(*r2)[0usize];
+  *r = List[i32]();                      //~ ErrorShapeStore:3
+  printInt(i64.from(*v));
+}
+
+fn ofAnOwner() {
+  var l = List[i32]();
+  l.push(7i32);
+  let u = Uni[uni, List[i32]](l);
+  let r = &mut *u;
+  let r2 = r;
+  let v = &(*r)[0usize];
+  *r2 = List[i32]();                     //~ ErrorShapeStore:3
+  printInt(i64.from(*v));
+}
+
+fn reborrowKept() {
+  var l = List[i32]();
+  l.push(7i32);
+  let r = &mut l;
+  let r2 = &mut *r;
+  let v = &(*r)[0usize];
+  *r2 = List[i32]();                     //~ ErrorShapeStore:3
+  printInt(i64.from(*v));
+}
+
+fn borrowOfTheReference() {
+  var l = List[i32]();
+  l.push(7i32);
+  var r = &mut l;
+  let pp = &mut r;
+  let v = &(*r)[0usize];
+  **pp = List[i32]();                    //~ ErrorShapeStore:3
+  printInt(i64.from(*v));
+}
+
+fn readOut() {
+  var l = List[i32]();
+  l.push(7i32);
+  let r = &mut l;
+  let s = &r;
+  let r2 = *s;
+  let v = &(*r)[0usize];
+  *r2 = List[i32]();                     //~ ErrorShapeStore:3
+  printInt(i64.from(*v));
+}
+
+fn inAField() {
+  var l = List[i32]();
+  l.push(7i32);
+  let r = &mut l;
+  let h = Hold(r);
+  let v = &(*r)[0usize];
+  *h.p = List[i32]();                    //~ ErrorShapeStore:3
+  printInt(i64.from(*v));
+}
+
+fn inAnOption() {
+  var l = List[i32]();
+  l.push(7i32);
+  let r = &mut l;
+  let o: Option[&mut List[i32]] = Some(r);
+  let v = &(*r)[0usize];
+  if let Some(r2) = o { *r2 = List[i32](); } //~ ErrorShapeStore:25
+  printInt(i64.from(*v));
+}
+
+fn inAnArray() {
+  var l = List[i32]();
+  l.push(7i32);
+  let r = &mut l;
+  let a = [r];
+  let v = &(*r)[0usize];
+  *a[0usize] = List[i32]();              //~ ErrorShapeStore:3
+  printInt(i64.from(*v));
+}
+
+fn twoValues() {
+  var l = List[i32]();
+  l.push(7i32);
+  let a, b = twice(&mut l);
+  let v = &(*a)[0usize];
+  *b = List[i32]();                      //~ ErrorShapeStore:3
+  printInt(i64.from(*v));
+}
+
+fn twoFields() {
+  var l = List[i32]();
+  l.push(7i32);
+  let t = pair(&mut l);
+  let v = &(*t.a)[0usize];
+  *t.b = List[i32]();                    //~ ErrorShapeStore:3
+  printInt(i64.from(*v));
+}
+
+fn ofACallResult() {
+  var l = List[i32]();
+  l.push(7i32);
+  let r = same(&mut l);
+  let v = &(*r)[0usize];
+  let r2 = r;
+  *r2 = List[i32]();                     //~ ErrorShapeStore:3
+  printInt(i64.from(*v));
+}
+
+fn callResultToACallee() {
+  var l = List[i32]();
+  l.push(7i32);
+  let r = same(&mut l);
+  let v = &(*r)[0usize];
+  wipe(r);                               //~ ErrorShapeReshape
+  printInt(i64.from(*v));
+}
+
+fn ofAField() {
+  var s = Box(List[i32]());
+  s.items.push(7i32);
+  let r = &mut s;
+  let r2 = r;
+  let v = &r.items[0usize];
+  r2.items = List[i32]();                //~ ErrorShapeStore
+  printInt(i64.from(*v));
+}
+
+fn copyToACallee() {
+  var l = List[i32]();
+  l.push(7i32);
+  let r = &mut l;
+  let r2 = r;
+  let v = &(*r)[0usize];
+  wipe(r2);                              //~ ErrorShapeReshape
+  printInt(i64.from(*v));
+}
+
+fn theReferenceToACallee() {
+  var l = List[i32]();
+  l.push(7i32);
+  let r = &mut l;
+  let v = &(*r)[0usize];
+  wipe(r);                               //~ ErrorShapeReshape
+  printInt(i64.from(*v));
+}
+
+fn besideItsView() {
+  var l = List[i32]();
+  l.push(7i32);
+  let r = &mut l;
+  wipeFirst(r, &(*r)[0usize]);           //~ ErrorShapeReshape
+}
+
+fn afterItsView() {
+  var l = List[i32]();
+  l.push(7i32);
+  let r = &mut l;
+  wipeLast(&(*r)[0usize], r);            //~ ErrorShapeReshape
+}
+
+fn closureKept() {
+  var l = List[i32]();
+  l.push(7i32);
+  let r = &mut l;
+  var f = fn() { *r = List[i32](); };
+  let v = &(*r)[0usize];
+  f();                                   //~ ErrorShapeReshape
+  printInt(i64.from(*v));
+}
+
+fn closureHandedOn() {
+  var l = List[i32]();
+  l.push(7i32);
+  let r = &mut l;
+  let v = &(*r)[0usize];
+  run(fn() { *r = List[i32](); });       //~ ErrorShapeReshape
+  printInt(i64.from(*v));
+}
+
+fn nextTimeRound() {
+  var l = List[i32]();
+  l.push(7i32);
+  var x = List[i32]();
+  var r2 = &mut x;
+  let r = &mut l;
+  var i = 0i32;
+  while i < 2i32 {
+    let v = &(*r)[0usize];
+    *r2 = List[i32]();                   //~ ErrorShapeStore:5
+    printInt(i64.from(*v));
+    r2 = r;
+    i = i + 1i32;
+  }
+}
+
+// 'c' is a borrow of one list inside another, reached through 'r'
+fn ofAnInnerList(inner: List[i32]) {
+  var ls = List[List[i32]]();
+  ls.push(inner);
+  let r = &mut ls;
+  let c = &mut (*r)[0usize];
+  let c2 = c;
+  let v = &(*c)[0usize];
+  *c2 = List[i32]();                     //~ ErrorShapeStore:3
+  printInt(i64.from(*v));
+}
+
+fn innerListToACallee(inner: List[i32]) {
+  var ls = List[List[i32]]();
+  ls.push(inner);
+  let r = &mut ls;
+  let c = &mut (*r)[0usize];
+  let v = &(*c)[0usize];
+  wipe(c);                               //~ ErrorShapeReshape
+  printInt(i64.from(*v));
+}

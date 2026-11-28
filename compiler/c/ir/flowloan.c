@@ -48,6 +48,9 @@ typedef struct {
                         // name, another such borrow) may reach it too
     uint8_t aliased;    // then, another name for the source has been met while the loan was held (loanAliasMet):
                         // until then the loan is exclusive as an 'uni' source's always was
+    uint8_t frozen;     // a borrow that writes, frozen as an exclusive one (loanFreezeWritable)
+    uint8_t copied;     // such a borrow, or one of a 'uni' source ('uniq'), has a second name: a copy of
+                        // it, or of a value holding it, has been made (loanCopied)
     INode *lazycont;    // a borrow into a collection or enum that changes shape through a source no other name
                         // reaches yet: the container it is marked for if one does (loanShapePromote)
     INode *refcont;     // a view through a reference ('*r', '**m') not marked as it was made: the container
@@ -125,6 +128,8 @@ static uint32_t *lazyloans = NULL;
 static uint32_t nlazyloans = 0;
 static uint32_t lazyloancap = 0;
 static void loanShapePromote();
+static int loanHeldNow(uint32_t id);
+static int loanIsView(Loan *loan);
 static void loanRootsNote(uint32_t id);
 
 // The loans into a shape-changing value through a shared path (loanShapeMark),
@@ -320,6 +325,8 @@ static uint32_t loanMakeKeyed(INode *site, Place *pl, INode *perm, uint32_t key)
     loan->uniq = loan->kind == LoanAlias && !pl->shared;
     // Another name for the source met by the access that made this borrow: it is one of several
     loan->aliased = loan->uniq && lastEventVar == pl->var;
+    loan->copied = 0;
+    loan->frozen = 0;
     loan->lazycont = NULL;
     loan->refcont = NULL;
     loan->refway = 0;
@@ -398,6 +405,8 @@ uint32_t loanMakeReach(INode *site, uint32_t n, uint32_t base) {
     loan->source = 0;
     loan->uniq = 0;
     loan->aliased = 0;
+    loan->copied = 0;
+    loan->frozen = 0;
     loan->aliasby = 0;
     loan->lazycont = NULL;
     loan->refcont = NULL;
@@ -457,6 +466,8 @@ uint32_t loanCaller(uint32_t var, uint32_t part) {
     loan->aliasby = 0;
     loan->uniq = 0;
     loan->aliased = 0;
+    loan->copied = 0;
+    loan->frozen = 0;
     loan->lazycont = NULL;
     loan->refcont = NULL;
     loan->refway = 0;
@@ -1063,6 +1074,77 @@ void loanHeldBy(uint32_t var, PathSet *holds) {
             nmaypool += cap;
         }
         maypool[loan->mayhold + loan->nmay++] = var;
+        // A writing reborrow through a reference, kept by another variable ('let b = &mut *r'),
+        // is another name for what that reference borrows, as a copy of it is. A variable the
+        // compiler made to keep one is not
+        if (loan->writes && loan->place.deref && loan->place.shared && loan->place.var != var
+                && !loanIsView(loan) && !loanVarIsMade(pathVars[var].var))
+            loanCopied(pathVars[loan->place.var].holds);
+    }
+}
+
+// Is it a borrow into a collection or enum that changes shape, of the contents and not the
+// whole ('&mut (*r)[0]')?
+static int loanIsView(Loan *loan) {
+    return loan->lazycont != NULL || loan->shapecont != NULL;
+}
+
+int loanVarIsMade(VarDclNode *var) {
+    return var->namesym == tempName || var->namesym == anonName;
+}
+
+static int loanSetNames(PathSet *set, uint32_t id) {
+    for (uint32_t i = 0; set && i < set->cnt; ++i) {
+        if (loanOf(set->ids[i]) == id)
+            return 1;
+    }
+    return 0;
+}
+
+// Is the loan carried beneath a view among these: held by the reference the view is through?
+// A copy of the view then gives that reference's borrow no second name
+static int loanBeneathView(PathSet *holds, uint32_t id) {
+    for (uint32_t i = 0; i < holds->cnt; ++i) {
+        Loan *view = &loans[loanOf(holds->ids[i])];
+        if (loanOf(holds->ids[i]) != id && loanIsView(view) && view->place.deref
+                && loanSetNames(pathVars[view->place.var].holds, id))
+            return 1;
+    }
+    return 0;
+}
+
+// A '&mut' borrow of a place reached as 'uni' is the only name for what it borrows, besides
+// the source's own, until a second is made: a copy of the reference, or of a value holding
+// it, or a reborrow through it that is kept. Then it excludes nothing through itself: each
+// view held through a reference holding it, frozen against that one name, is marked for the
+// shape check, and so is each made later. The borrow's own source is no more aliased than
+// it was (loanAliasMet), a copy reaching only what the borrow does. So too of one a call
+// returned, frozen since against the source's name (loanFreezeWritable), which stays frozen
+void loanCopied(PathSet *holds) {
+    if (holds == NULL)
+        return;
+    int met = 0;
+    for (uint32_t i = 0; i < holds->cnt; ++i) {
+        uint32_t id = loanOf(holds->ids[i]);
+        if ((loans[id].uniq || loans[id].frozen) && !loans[id].copied && !loanBeneathView(holds, id)) {
+            loans[id].copied = 1;
+            met = 1;
+        }
+    }
+    if (!met)
+        return;
+    for (uint32_t id = 1; id < nloans; ++id) {
+        Loan *view = &loans[id];
+        INode *cont = view->lazycont ? view->lazycont : view->refcont;
+        if (view->shapecont || cont == NULL || !view->place.deref || !loanHeldNow(id))
+            continue;
+        PathSet *way = pathVars[view->place.var].holds;
+        for (uint32_t i = 0; way && i < way->cnt; ++i) {
+            if (loans[loanOf(way->ids[i])].copied) {
+                loanShapeMark(id, cont);
+                break;
+            }
+        }
     }
 }
 
@@ -1951,8 +2033,10 @@ void loanFreezeShared(uint32_t loan) {
 // The loan that writes, which the shape check does not follow: the place is
 // frozen against everything, as a local's exclusive loan froze it
 void loanFreezeWritable(uint32_t loan) {
-    if (loans[loan].kind == LoanAlias && loans[loan].writes)
+    if (loans[loan].kind == LoanAlias && loans[loan].writes) {
         loans[loan].kind = LoanExcl;
+        loans[loan].frozen = 1;
+    }
 }
 
 // *********************
@@ -2541,7 +2625,7 @@ void loanShapeRefView(uint32_t loan, INode *container) {
     Loan *l = &loans[loan];
     if (!l->place.deref)
         return;
-    if (!l->place.shared && l->place.far && loanHoldsUniqAlias(pathVars[l->place.var].holds)) {
+    if (!l->place.shared && l->place.far && loanHoldsUniqMut(pathVars[l->place.var].holds)) {
         l->refway = 1;
         loanShapeMark(loan, container);
     }
@@ -2581,12 +2665,13 @@ int loanIsAliased(uint32_t loan) {
     return loans[loan].uniq && loans[loan].aliased;
 }
 
-// Does a holder holding this set hold a 'mut' borrow of a 'uni' source?
-int loanHoldsUniqAlias(PathSet *holds) {
+// Does a holder holding this set hold a 'mut' borrow of a 'uni' source, or one frozen as
+// exclusive (loanFreezeWritable)?
+int loanHoldsUniqMut(PathSet *holds) {
     if (holds == NULL)
         return 0;
     for (uint32_t i = 0; i < holds->cnt; ++i) {
-        if (loanUniqAlias(loanOf(holds->ids[i])))
+        if (loans[loanOf(holds->ids[i])].uniq || loans[loanOf(holds->ids[i])].frozen)
             return 1;
     }
     return 0;
@@ -3249,8 +3334,13 @@ int loanShapeSamePlace(uint32_t loan, Place *pl) {
 // local, or what 'uni' references reach)? Whoever holds it holds the only path
 int loanIsExclusive(uint32_t entry) {
     Loan *loan = &loans[entry & LoanIdMask];
-    // A 'mut' borrow of a 'uni' source is exclusive until another name for the source is met
-    return loan->kind == LoanExcl || (loan->uniq && loan->kind == LoanAlias && !loan->aliased);
+    // A 'mut' borrow of a 'uni' source is exclusive until another name for the source is met,
+    // frozen or not (loanFreezeWritable). A borrow with a second name (loanCopied) is not
+    if (loan->copied)
+        return 0;
+    if (loan->uniq)
+        return !loan->aliased && (loan->kind == LoanExcl || loan->kind == LoanAlias);
+    return loan->kind == LoanExcl;
 }
 
 // Is the place 'pl' a different part of the very root the loan borrows from (another

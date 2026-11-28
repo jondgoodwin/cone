@@ -354,7 +354,12 @@ void loanFreezeWritable(uint32_t loan);
 int loanAliasedAt(Place *pl);
 int loanUniqAlias(uint32_t loan);
 int loanIsAliased(uint32_t loan);
-int loanHoldsUniqAlias(PathSet *holds);
+int loanHoldsUniqMut(PathSet *holds);
+// Is this a variable the compiler made, not one the program names?
+int loanVarIsMade(VarDclNode *var);
+// A value holding these loans was copied: each 'mut' borrow among them of a place reached as
+// 'uni' now has another name for that place
+void loanCopied(PathSet *holds);
 // A borrow into a shape-changing container through a source no other name reaches yet:
 // marked (loanShapeMark) when one does
 void loanShapeLazy(uint32_t loan, INode *container);

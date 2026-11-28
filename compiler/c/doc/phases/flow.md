@@ -99,9 +99,10 @@ Put these first, because every one of them is load-bearing.
    value holding a borrow keeps its source frozen until the value's last use,
    or until it dies where its finalizer may read the borrow; and a value
    returned, or stored where it may outlive the function, may hold no loan of
-   the function's own storage, whatever its type. An element borrow through a
-   shared path is not refused, and two copies of one `&mut` may reach one
-   place two ways. `borrowFlow`, in the
+   the function's own storage, whatever its type. Two copies of one `&mut`
+   reach one place by two names, which is refused only where one changes the
+   shape of what a borrow taken through the other is into (`loanCopied`).
+   `borrowFlow`, in the
    main walk, still asks only that what is borrowed was not moved out, as a read
    does; it deactivates nothing, and records only, on the variable whose own
    storage holds the place, that it is borrowed and whether to write
@@ -1039,6 +1040,24 @@ making a `mut` borrow of the same local (`step(&w, &mut w.entities[0])`, `p.m(&p
 made an alias loan (`loanFlightOwnRo`), the callee taking it as a view others may change.
 A free function's borrowed argument that its result carries (`pwLentArg`) keeps the
 exclusive freeze: a generator over a `&mut List` reshapes its own list.
+
+**A second name for the borrow is an event of its own** (`loanCopied`, `Loan.copied`, on
+the loans the value carries). One `mut` borrow held in one place is the exclusive loan of
+the walk's freezing; once copied, two variables, or a variable and a callee, reach one
+place, so the borrow excludes nothing through itself (`loanIsExclusive`), whether it is
+an alias loan or one a call returned and froze (`loanFreezeWritable`): each view held
+through a reference holding it is marked for the shape check, and so is each made later.
+The borrow's source is no more aliased than it was, so an element borrowed from a local
+list and handed on is still a name for the element alone, and a copy of a view marks
+nothing beneath it (`loanBeneathView`: `&mut (*r)[0]` is not another `r`). A second name
+is made by: a copy of a value that carries a borrow it may write through (`pwPlaceValue`:
+a local, a field, an element, an argument); any borrow of a variable that holds such a
+value, which reads it out (`pwLend`: `&r`, `&mut r`, a closure's capture), kept or handed
+to a call; several values given from one expression (`pwAssign`: `a, b = f(&mut l)`);
+and a writing reborrow of the whole or a field through the reference, which another
+variable keeps (`loanHeldBy`: `let b = &mut *r`). A value read out of a variable the
+compiler made, as a match binds from the one holding what it matches, copies nothing
+(`loanVarIsMade`).
 
 **A borrow through a reference keeps where it points.** A view taken through a reference
 variable (`&(*r)[0]`) points where `r` pointed as the borrow was made, whatever happens to
