@@ -148,6 +148,10 @@ typedef struct {
     FnDclNode *callee;      // the function called, when known
 } ReshapeVerdict;
 
+// A call no borrow is asked of: an intrinsic, an init, or one through a virtual
+// reference marked '+ ShapeKeeping'
+int reshapeCallExempt(FnCallNode *call);
+
 // Could this call reshape a value of the struct 'cont'? 'meth' is the method it
 // calls when its first argument is the receiver (else NULL); 'recvunique' says
 // the receiver's place is reached by no shared path, so no other name for it
