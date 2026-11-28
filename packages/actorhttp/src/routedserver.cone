@@ -579,9 +579,44 @@ pub actor ConnActor is ExchangeHost {
       self.finishEnd();
       return;
     }
-    let isDone = sc.done(now);
+    // whether the layer's failure was known before this turn's output was asked for ('events' feeds, and feed asks)
+    let known = layerLost(sc.failureOf());
+    var isDone = sc.done(now);
     if !writing {
-      let n = sc.fill(now);
+      var n = sc.fill(now);
+      // 'fill' can itself end the protocol (HTTP/2, refused a buffer for a frame, says Failed and Closed then): what it
+      // says is read now, since no byte need ever come to bring another turn. A lost layer's connection ends below with
+      // nothing more taken from it, so no waiting write is answered as sent
+      var again = n == 0usize;
+      while again && !layerLost(sc.failureOf()) {
+        let said = hx.events(&mut sc, selfactor, now);
+        if hx.cut {
+          self.finishEnd();
+          return;
+        }
+        if said {isDone = sc.done(now);}
+        n = sc.fill(now);
+        again = said && n == 0usize;
+      }
+      // A layer that failed in 'done' or 'fill' (the pool refused its wire buffer), or that failed before and now has
+      // nothing to write and the connection is not done: no read or deadline would end it, since the peer waits for
+      // what will not come. It goes now, as a cut one does. A connection that is done closes as ever
+      var lost = false;
+      var refused = false;
+      if !isDone {
+        match sc.failureOf() {
+          case let &Some(f) {
+            lost = f.stage == httpconn.Stage.Tls && (n == 0usize || !known);
+            refused = f.error.kind == ErrorKind.Overloaded;
+          }
+          else {}
+        }
+      }
+      if lost {
+        if refused {srv.bufferRefused();}
+        self.finishEnd();
+        return;
+      }
       if n > 0usize {
         writing = true;
         writeBy = now + args.cfg.conn.protocol.bodyTimeout;
@@ -726,6 +761,14 @@ pub actor ConnActor is ExchangeHost {
     if ended {return;}
     sc.abort();
     self.turn();
+  }
+}
+
+// Whether a connection's failure is its layer's (TLS's): the connection then ends
+fn layerLost(f: &Option[httpconn.Failure]) bool {
+  match f {
+    case let &Some(x) {x.stage == httpconn.Stage.Tls}
+    else {false}
   }
 }
 

@@ -1,0 +1,297 @@
+// The collector (piecestages.cone, THE COLLECTOR): a producer's two behaviours, the one that sends and the one
+// that collects, entered while the other is parked, and the receiver's rules holding for what they share.
+//
+//   A. one SocketFrom reading three streams at once ('run' entered three times), one of them through a
+//      TransformPass. Each server sends a burst, which fills the window, so the sender waits for its collector,
+//      then little pieces apart, so that the collector takes answers while the read is parked. The receiver
+//      answers slowly, some pieces slower than others. Every stream gets its bytes in order, never more than the
+//      budget unanswered, and one end, Finished
+//   B. the same SocketFrom reads a fourth stream afterwards, in a slot an ended one held (a new generation)
+//   C. a Stop with no group, answered while the sender is parked in its read: the collector hears it, what the
+//      read then gives is not sent, and the stream ends with the receiver's reason
+//   every buffer is back in its pool
+//
+// Mutant, run as 'congo test --no-cache -D NAME':
+//   MUT_IGNORE_STOP   the sender takes no notice of a Stop before the end: C fails (the second piece arrives)
+
+mod piececollector;
+
+import testing use *;
+import collections use *;
+import iobuf use IoBuf;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import time use Instant, Duration;
+import thread;
+import actors;
+import aio use Socket, IoLimits;
+import iocore use SocketAddr, IoError;
+import streams use *;
+import stages use *;
+
+const burst = 2000000u64;       // bytes sent at once
+const little = 12u64;           // then this many pieces apart
+const littleBytes = 1000u64;
+
+struct Flags {
+  pub ends: Atomic[u64];        // streams the receivers have seen end
+  pub first: Atomic[u64];       // C: the receiver has had its first piece
+}
+
+let flags: Flags;
+
+fn @initpure init() {
+  flags = Flags(Atomic[u64].of(0u64), Atomic[u64].of(0u64));
+}
+
+fn socketOf(r: Result[Socket, IoError]) Socket {
+  var res = r;
+  var s = Socket.none();
+  match &mut res {
+    case var &mut Ok(ok) {s <-> *ok;}
+    case let &mut Err(e) { panic("socketOf: the operation failed"); }
+  }
+  s
+}
+
+// 'n' bytes of the pattern from 'from'
+fn pattern(from: u64, n: u64) IoBuf {
+  var bytes = List[u8]();
+  var i = 0u64;
+  while i < n {
+    bytes.push(u8.from((from + i) % 251u64));
+    i = i + 1u64;
+  }
+  var b = IoBuf(usize.from(n));
+  b.append(bytes.view());
+  b
+}
+
+actor Server {
+  // A burst, a pause, little pieces apart, then the close
+  pub async fn serve(self, port: OneshotSender[u16]) {
+    let listener = socketOf(await aio.listen(SocketAddr.localhost(0u16)));
+    let addr = await listener.localAddr();
+    var p = port;
+    match addr {
+      case let Ok(a) { p.send(a.port()); }
+      case is Err { p.send(0u16); return; }
+    }
+    let conn = socketOf(await listener.accept());
+    var at = 0u64;
+    while at < burst {
+      let n = if burst - at < 40000u64 {burst - at} else {40000u64};
+      _ = await conn.write(pattern(at, n));
+      at = at + n;
+    }
+    var k = 0u64;
+    while k < little {
+      _ = await aio.sleep(Duration.fromMillis(40i64));
+      _ = await conn.write(pattern(at, littleBytes));
+      at = at + littleBytes;
+      k = k + 1u64;
+    }
+  }
+
+  // C: a piece, and once the receiver has had it, a while later, another; then a wait for the other side to go
+  pub async fn two(self, port: OneshotSender[u16]) {
+    let listener = socketOf(await aio.listen(SocketAddr.localhost(0u16)));
+    let addr = await listener.localAddr();
+    var p = port;
+    match addr {
+      case let Ok(a) { p.send(a.port()); }
+      case is Err { p.send(0u16); return; }
+    }
+    let conn = socketOf(await listener.accept());
+    _ = await conn.write(pattern(0u64, 100u64));
+    while flags.first.load() == 0u64 { _ = await aio.sleep(Duration.fromMillis(10i64)); }
+    _ = await aio.sleep(Duration.fromMillis(300i64));
+    _ = await conn.write(pattern(100u64, 100u64));
+    _ = await conn.readIn(IoLimits.until(Instant.now() + Duration.fromMillis(20000i64)));
+  }
+}
+
+pub struct Stream {
+  pub bytes: u64;
+  pub pieces: u64;
+  pub wrong: u64;               // bytes out of the pattern
+  pub now: u64;                 // pieces unanswered
+  pub peak: u64;
+  pub finished: u64;
+  pub failed: u64;
+  pub reason: u64;              // C: the failure carried the receiver's own words
+}
+
+// Streams by tag 0 to 4; each piece answered after a while, which differs from one to the next
+pub actor Slow is PieceSink[IoBuf] {
+  all: List[Stream];
+
+  pub fn init(self: &new) {
+    var all = List[Stream]();
+    var i = 0u32;
+    while i < 5u32 {
+      all.push(Stream(0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64));
+      i = i + 1u32;
+    }
+    *self = Self(all: all);
+  }
+
+  pub async fn piece(self, tag: u64, c: IoBuf) PieceAck[IoBuf] {
+    let t = usize.from(tag);
+    let from = all[t].bytes;
+    let v = c.view();
+    var i = 0usize;
+    while i < v.len() {
+      if v[i] != u8.from((from + u64.from(i)) % 251u64) { all[t].wrong = all[t].wrong + 1u64; }
+      i = i + 1usize;
+    }
+    all[t].bytes = from + u64.from(v.len());
+    all[t].pieces = all[t].pieces + 1u64;
+    all[t].now = all[t].now + 1u64;
+    if all[t].now > all[t].peak { all[t].peak = all[t].now; }
+    if tag == 4u64 {
+      flags.first.store(1u64);
+      all[t].now = all[t].now - 1u64;
+      return Stop[IoBuf](Ending.Failed(AnyError.msg("slow: enough")));
+    }
+    let wait = 2i64 + i64.from((all[t].pieces % 3u64) * 4u64);
+    _ = await aio.sleep(Duration.fromMillis(wait));
+    all[usize.from(tag)].now = all[usize.from(tag)].now - 1u64;
+    var b = c;
+    b.clear();
+    MoreWith[IoBuf](b)
+  }
+
+  pub async fn end(self, tag: u64, how: Ending) {
+    let t = usize.from(tag);
+    match how {
+      case is Finished { all[t].finished = all[t].finished + 1u64; }
+      case let Failed(e) {
+        all[t].failed = all[t].failed + 1u64;
+        var text = String();
+        {
+          var w = text.textOut();
+          e.report(&uni w);
+        }
+        if text == "slow: enough" { all[t].reason = 1u64; }
+      }
+    }
+    flags.ends.add(1u64);
+  }
+
+  pub async fn report(self, tag: u64, to: OneshotSender[Stream]) {
+    var t = to;
+    t.send(all[usize.from(tag)]);
+  }
+}
+
+fn portOf(two: bool) u16 {
+  var tx: OneshotSender[u16];
+  var rx: OneshotReceiver[u16];
+  tx, rx = Oneshot[u16].make();
+  if two { Server().two(tx); } else { Server().serve(tx); }
+  rx.recv() || 0u16
+}
+
+fn ask(sink: Slow, tag: u64) Stream {
+  var tx: OneshotSender[Stream];
+  var rx: OneshotReceiver[Stream];
+  tx, rx = Oneshot[Stream].make();
+  sink.report(tag, tx);
+  rx.recv() || Stream(0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64)
+}
+
+fn waitEnds(n: u64) {
+  var tries = 0u32;
+  while flags.ends.load() < n && tries < 4000u32 {
+    thread.sleep(Duration.fromMillis(5i64));
+    tries = tries + 1u32;
+  }
+}
+
+fn whole(s: Stream, label: &str) {
+  expectUInt(s.bytes, burst + little * littleBytes, label);
+  expectUInt(s.wrong, 0u64, label);
+  expectUInt(s.finished, 1u64, label);
+  expectUInt(s.failed, 0u64, label);
+}
+
+fn main() i32 {
+  initAll();
+  {
+    let pool = ChunkPool.make(67108864usize);
+    let sink = Slow();
+    let source = SocketFrom(pool.clone());
+
+    // A
+    source.run(SocketAddr.localhost(portOf(false)), StreamTo[IoBuf].at(sink, 0u64));
+    source.run(SocketAddr.localhost(portOf(false)), StreamTo[IoBuf].at(sink, 1u64));
+    let stage = TransformPass[Echo](StreamTo[IoBuf].at(sink, 2u64), Echo.make(), pool.clone());
+    source.run(SocketAddr.localhost(portOf(false)), StreamTo[IoBuf].at(stage, 2u64));
+    waitEnds(3u64);
+    let a = ask(sink, 0u64);
+    let b = ask(sink, 1u64);
+    let c = ask(sink, 2u64);
+    whole(a, "A: the first stream has its bytes in order, and one end");
+    whole(b, "A: the second");
+    whole(c, "A: the third, through a transform");
+    expectUInt(a.peak, 4u64, "A: the window filled, and no more than the budget was unanswered (first)");
+    expectUInt(b.peak, 4u64, "A: and the second's");
+    expectUInt(c.peak, 4u64, "A: and the transform's");
+
+    // B
+    source.run(SocketAddr.localhost(portOf(false)), StreamTo[IoBuf].at(sink, 3u64));
+    waitEnds(4u64);
+    whole(ask(sink, 3u64), "B: a stream read afterwards by the same actor");
+
+    // C
+    source.run(SocketAddr.localhost(portOf(true)), StreamTo[IoBuf].at(sink, 4u64));
+    waitEnds(5u64);
+    let d = ask(sink, 4u64);
+    expectUInt(d.pieces, 1u64, "C: nothing was sent after the Stop");
+    expectUInt(d.failed, 1u64, "C: one end, Failed");
+    expectUInt(d.reason, 1u64, "C: with the receiver's reason");
+
+    var tries = 0u32;
+    while pool.lent() != 0usize && tries < 2000u32 {
+      thread.sleep(Duration.fromMillis(5i64));
+      tries = tries + 1u32;
+    }
+    actors.waitQuiet();
+    expectUInt(u64.from(pool.lent()), 0u64, "all come home to the pool");
+  }
+  finalAll();
+  expectUInt(iobuf.stats().lent, 0u64, "every buffer is back in its pool");
+  done()
+}
+
+// A transform that gives its input back as it is
+pub struct Echo is Transform, Sendable, Move {
+  held: List[u8];
+  at: usize;
+  over: bool;
+
+  pub fn make() Echo { Echo(List[u8](), 0usize, false) }
+
+  pub fn feed(self: &mut, input: &Array[u8]) {
+    if at >= held.len() {
+      held.truncate(0usize);
+      at = 0usize;
+    }
+    held.appendSlice(input);
+  }
+
+  pub fn pull(self: &mut, out: &mut IoBuf) Status {
+    if at >= held.len() {
+      return if over {Status.Done} else {Status.NeedInput};
+    }
+    let room = out.capacity() - out.len();
+    let n = if held.len() - at < room {held.len() - at} else {room};
+    out.append(&held.view()[at ..< at + n]);
+    at = at + n;
+    Status.MoreOutput
+  }
+
+  pub fn finish(self: &mut) { over = true; }
+
+  pub fn failure(self: &) Option[AnyError] { None[AnyError] }
+}

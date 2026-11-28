@@ -1,0 +1,140 @@
+// The mirror plane, checked with the testing package against planes worked out
+// by hand; only a failure prints, so symmetryplanes.out holds the summary alone.
+//
+// - The box: its surface sampled on a grid (x from -2 to 2 by 0.5, y from -1
+//   to 1 by 0.25, z from -0.5 to 0.5 by 0.125, 9 per axis, so 6 faces of 81
+//   points, shared edges' points repeated), rotated 20 degrees about z, moved
+//   by (3, -2, 1). A box has three mirror planes through its centre, with
+//   normals the rotated axes: (cos 20, sin 20, 0) = (0.939693, 0.342020, 0), (-sin 20, cos
+//   20, 0) = (-0.342020, 0.939693, 0) and (0, 0, 1). The grid is mirrored by each, so
+//   the cost at any of them is 0 (to f64 rounding of the rotation): the plane found
+//   is one of the three, its normal within 1e-3 rad of one (|n . axis| >=
+//   cos 1e-3 = 0.9999995), the centre (3, -2, 1) within 1e-3 of the plane, and
+//   the cost under 0.002 (an angle 1e-3 off moves a point at most 2 x 2 x 1e-3 =
+//   0.004 and the mean is less).
+// - The coordinate starts alone find the plane of the same box before it is turned
+//   (axes at 0, 90 and 90 degrees: one start is exact); the principal starts alone
+//   find the turned box's (its three axes are the covariance's eigenvectors, the
+//   box's three sizes being unequal).
+// - The same box without its top (5 faces, 405 points) has only the two upright planes, so
+//   the z plane is not an answer; the coordinate starts alone, 20 and 70 degrees from them,
+//   have to travel to one: its normal is within 1e-3 rad of (0.939693, 0.342020, 0) or
+//   (-0.342020, 0.939693, 0), the centre within 1e-3 of the plane (recorded: the normal
+//   off by under 1e-6, the cost 1.2e-6).
+// - A cloud with no symmetry, 300 points of a fixed quasi-random sequence in the
+//   unit cube (x = fract(0.618034 i), y = fract(0.754878 i), z = fract(0.569840
+//   i)): its nearest-neighbour distance is about 0.55 / 300^(1/3) = 0.08, and a
+//   reflected point lands about as far from the cloud, so the rms is far above the
+//   box's: above 0.03 here (measured: rms 0.0665 and error 0.0588, about 0.04 of the cube's
+//   diagonal 1.73).
+// - The same run twice gives the same bits.
+
+mod symmetryplanes;
+
+import testing use *;
+import libc;
+import collections use *;
+import geomath use *;
+import mesh use *;
+import shapefit use *;
+
+fn boxPoints(turn: f32, shift: Vec3) List[Vec3] { boxFaces(turn, shift, 6usize) }
+
+// The box's first 'faces' faces, in the order -x, +x, -y, +y, -z, +z
+fn boxFaces(turn: f32, shift: Vec3, faces: usize) List[Vec3] {
+  var out = List[Vec3]();
+  let c = libc.cos(f64.from(turn));
+  let s = libc.sin(f64.from(turn));
+  var face = 0usize;
+  while face < faces {
+    var i = 0usize;
+    while i < 9usize {
+      var j = 0usize;
+      while j < 9usize {
+        let a = f64.from(i) * 0.5 - 2.0;       // along x: -2 to 2
+        let b = f64.from(i) * 0.25 - 1.0;      // along y: -1 to 1
+        let d = f64.from(i) * 0.125 - 0.5;     // along z: -0.5 to 0.5
+        let b2 = f64.from(j) * 0.25 - 1.0;
+        let d2 = f64.from(j) * 0.125 - 0.5;
+        var x = 0.0; var y = 0.0; var z = 0.0;
+        if face == 0usize { x = -2.0; y = b; z = d2; }
+        else if face == 1usize { x = 2.0; y = b; z = d2; }
+        else if face == 2usize { x = a; y = -1.0; z = d2; }
+        else if face == 3usize { x = a; y = 1.0; z = d2; }
+        else if face == 4usize { x = a; y = b2; z = -0.5; }
+        else { x = a; y = b2; z = 0.5; }
+        out.push(Vec3(f32.from(x * c - y * s), f32.from(x * s + y * c), f32.from(z)) + shift);
+        j = j + 1usize;
+      }
+      i = i + 1usize;
+    }
+    face = face + 1usize;
+  }
+  out
+}
+
+fn aligned(n: Vec3, ax: Vec3) bool {
+  let d = f64.from(n.x * ax.x + n.y * ax.y + n.z * ax.z);
+  d.abs() >= 0.9999995
+}
+
+fn onePlane(pl: &SymmetryPlane, c: Vec3, label: &Array[u8]) {
+  let a = Vec3(f32.from(libc.cos(20.0 * 3.14159265358979 / 180.0)), f32.from(libc.sin(20.0 * 3.14159265358979 / 180.0)), 0.);
+  let b = Vec3(-a.y, a.x, 0.);
+  let z = Vec3(0., 0., 1.);
+  expect(aligned(pl.normal, a) || aligned(pl.normal, b) || aligned(pl.normal, z), label);
+  let off = f64.from((c - pl.origin).dot(pl.normal));
+  expectFloat(off, 0.0, 0.001, label);
+  expect(pl.error < 0.002, label);
+}
+
+fn box() {
+  let shift = Vec3(3., -2., 1.);
+  let pts = boxPoints(20. * 3.14159265 / 180., shift);
+  expectInt(i64.from(pts.len()), 486, "box: 6 faces of 81 points");
+  let pl = symmetryPlane(pts.view());
+  onePlane(&pl, shift, "box: a mirror plane of the turned box through its centre");
+  let again = symmetryPlane(pts.view());
+  expectUInt(u64.from(pl.normal.x.bits()), u64.from(again.normal.x.bits()), "box: deterministic normal x");
+  expectUInt(u64.from(pl.normal.y.bits()), u64.from(again.normal.y.bits()), "box: deterministic normal y");
+  expectUInt(u64.from(pl.origin.z.bits()), u64.from(again.origin.z.bits()), "box: deterministic origin z");
+  expectUInt(pl.error.bits(), again.error.bits(), "box: deterministic error");
+  let pc = symmetryPlaneFrom(pts.view(), 4000u32, StartsPrincipal);
+  onePlane(&pc, shift, "box: the principal starts alone");
+  // The box unturned: the coordinate starts alone
+  // The box without its top (5 faces, 405 points) has only the two upright planes, with normals
+  // (0.939693, 0.342020, 0) and (-0.342020, 0.939693, 0): the coordinate starts are 20 degrees and
+  // 70 degrees from them, so the search has to travel to find one (it is not the z plane: the top is gone)
+  let open = boxFaces(20. * 3.14159265 / 180., shift, 5usize);
+  expectInt(i64.from(open.len()), 405, "open box: 5 faces of 81 points");
+  let travelled = symmetryPlaneFrom(open.view(), 4000u32, StartsCoordinate);
+  let aa = Vec3(f32.from(libc.cos(20.0 * 3.14159265358979 / 180.0)), f32.from(libc.sin(20.0 * 3.14159265358979 / 180.0)), 0.);
+  expect(aligned(travelled.normal, aa) || aligned(travelled.normal, Vec3(-aa.y, aa.x, 0.)), "open box: the coordinate starts travel to an upright plane");
+  expectFloat(f64.from((shift - travelled.origin).dot(travelled.normal)), 0.0, 0.001, "open box: through its centre");
+  let flat = boxPoints(0., shift);
+  let co = symmetryPlaneFrom(flat.view(), 4000u32, StartsCoordinate);
+  let ok = aligned(co.normal, Vec3(1., 0., 0.)) || aligned(co.normal, Vec3(0., 1., 0.)) || aligned(co.normal, Vec3(0., 0., 1.));
+  expect(ok, "box: the coordinate starts alone find an axis plane of the unturned box");
+  expectFloat(f64.from((shift - co.origin).dot(co.normal)), 0.0, 0.001, "box: through its centre");
+}
+
+fn cloud() {
+  var pts = List[Vec3]();
+  var i = 0usize;
+  while i < 300usize {
+    let t = f64.from(i);
+    pts.push(Vec3(f32.from(fract(0.618034 * t)), f32.from(fract(0.754878 * t)), f32.from(fract(0.569840 * t))));
+    i = i + 1usize;
+  }
+  let pl = symmetryPlane(pts.view());
+  expect(pl.rms > 0.03, "cloud: a cloud with no symmetry has a large rms");
+  expect(pl.error > 0.02, "cloud: and a large error");
+}
+
+fn fract(x: f64) f64 { x - libc.floor(x) }
+
+fn main() i32 {
+  box();
+  cloud();
+  done()
+}

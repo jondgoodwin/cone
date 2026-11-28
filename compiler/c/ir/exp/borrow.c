@@ -851,13 +851,8 @@ static void borrowFlowPlace(FlowState *fstate, INode **placep) {
         }
         else
             borrowFlowPlace(fstate, &access->objfn);
-        if (place->tag == ArrIndexTag) {
-            flowGateIndex(fstate, place);
-            INode **argsp;
-            uint32_t cnt;
-            for (nodesFor(access->args, cnt, argsp))
-                flowLoadValue(fstate, argsp);
-        }
+        if (place->tag == ArrIndexTag)
+            flowIndexArgs(fstate, access);
         break;
     }
     case CastTag:

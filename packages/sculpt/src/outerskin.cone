@@ -1,0 +1,130 @@
+// ======== The outer skin: the triangles seen from outside ========
+//
+// A scan or a CAD export holds more than the surface you can see: inner
+// sheets, faces glued inside a part, the hidden half of a buckle through a
+// strap. 'outerTriangles' keeps a Mesh's triangles that can be seen from
+// outside, and says which they are; 'takeTriangles' (shells.cone) makes them a mesh.
+//
+// A triangle is KEPT when at least one ray from its centre escapes: it meets
+// no triangle of the mesh (other than the triangle itself) within the mesh's
+// bounding sphere, a sphere about the middle of the vertices' box that holds
+// every vertex, and a ray from inside it that has met nothing within its
+// diameter has left. The rays are fixed, so the answer is the same on every run:
+// the triangle's normal, then 'rays' directions in the hemisphere the normal
+// faces, on a Fibonacci spiral about it: direction i (0 to rays - 1) has
+// height z = (i + 0.5) / rays along the normal and turns by i golden angles
+// (2.39996...) about it, starting from a tangent worked out from the normal
+// alone. A triangle of no area is not kept; one that faces away from
+// everything is judged on its own side (a mesh wound inward keeps its inner
+// face).
+//
+// Costs about triangles x rays x the walk of a tree of boxes (bvh.cone), and a
+// kept triangle stops at its first ray out, so most of a surface takes one or
+// two. 'rays' 0 uses the normal alone, which drops a triangle only when
+// something stands straight in front of it: a wall seen edge on is kept, and
+// so is a sheet inside a cavity that has a clear straight line to the outside.
+// 64 is the usual number.
+
+// The numbers (ascending) of the triangles that can be seen from outside, by
+// 'rays' hemisphere rays beside the normal
+pub fn outerTriangles(m: &Mesh, rays: u32) List[u32] {
+  let nt = m.indices.len() / 3usize;
+  var out = List[u32]();
+  if nt == 0usize { return out; }
+  var ta = List[DVec3].withCapacity(nt);
+  var tb = List[DVec3].withCapacity(nt);
+  var tc = List[DVec3].withCapacity(nt);
+  var lo = List[Vec3].withCapacity(nt);
+  var hi = List[Vec3].withCapacity(nt);
+  var t = 0usize;
+  while t < nt {
+    let a = *m.positions[usize.from(*m.indices[3usize * t])];
+    let b = *m.positions[usize.from(*m.indices[3usize * t + 1usize])];
+    let c = *m.positions[usize.from(*m.indices[3usize * t + 2usize])];
+    ta.push(DVec3.from(a));
+    tb.push(DVec3.from(b));
+    tc.push(DVec3.from(c));
+    lo.push(minVec(a, minVec(b, c)));
+    hi.push(maxVec(a, maxVec(b, c)));
+    t = t + 1usize;
+  }
+  let tree = Bvh.build(&lo, &hi);
+  // The bounding sphere: the middle of the box of every vertex, the farthest vertex from it
+  let box = m.bounds();
+  let mid = DVec3.from((box.min + box.max) * 0.5);
+  var radius = 0.0;
+  var v = 0usize;
+  while v < m.positions.len() {
+    let d = (DVec3.from(*m.positions[v]) - mid).length();
+    if d > radius { radius = d; }
+    v = v + 1usize;
+  }
+  let reach = 2.0 * radius * 1.000001 + 1.0e-6;
+  var stack = List[u32]();
+  let golden = 2.399963229728653;
+  t = 0usize;
+  while t < nt {
+    let a = *ta[t];
+    let b = *tb[t];
+    let c = *tc[t];
+    let cr = crossD(b - a, c - a);
+    let len = cr.length();
+    if len > 0.0 {
+      let n = cr * (1.0 / len);
+      let o = (a + b + c) * (1.0 / 3.0);
+      var escaped = rayEscapes(&tree, &ta, &tb, &tc, o, n, reach, u32.from(t), &mut stack);
+      if !escaped && rays > 0u32 {
+        // A tangent from the normal alone: the axis the normal is least along
+        let ax = n.x.abs();
+        let ay = n.y.abs();
+        let az = n.z.abs();
+        let axis = if ax <= ay && ax <= az { DVec3(1.0, 0.0, 0.0) } else if ay <= az { DVec3(0.0, 1.0, 0.0) } else { DVec3(0.0, 0.0, 1.0) };
+        let u0 = crossD(n, axis);
+        let u = u0 * (1.0 / u0.length());
+        let w = crossD(n, u);
+        var i = 0u32;
+        while i < rays && !escaped {
+          let z = (f64.from(i) + 0.5) / f64.from(rays);
+          let r = (1.0 - z * z).sqrt();
+          let phi = golden * f64.from(i);
+          let d = u * (r * libc.cos(phi)) + w * (r * libc.sin(phi)) + n * z;
+          escaped = rayEscapes(&tree, &ta, &tb, &tc, o, d, reach, u32.from(t), &mut stack);
+          i = i + 1u32;
+        }
+      }
+      if escaped { out.push(u32.from(t)); }
+    }
+    t = t + 1usize;
+  }
+  out
+}
+
+// Whether the unit ray (o, d) meets no triangle but 'skip' within 'reach'
+fn rayEscapes(tree: &Bvh, ta: &List[DVec3], tb: &List[DVec3], tc: &List[DVec3], o: DVec3, d: DVec3,
+    reach: f64, skip: u32, stack: &mut List[u32]) bool {
+  stack.clear();
+  stack.push(0u32);
+  while stack.len() > 0usize {
+    let node = usize.from(*stack[stack.len() - 1usize]);
+    stack.pop();
+    if !rayMeetsBox(o, d, *tree.lo[node], *tree.hi[node], reach) { continue; }
+    let cnt = usize.from(*tree.count[node]);
+    let f = *tree.first[node];
+    if cnt == 0usize {
+      stack.push(f + 1u32);
+      stack.push(f);
+    } else {
+      var k = 0usize;
+      while k < cnt {
+        let s = *tree.items[usize.from(f) + k];
+        if s != skip {
+          var w = DVec3(0.0, 0.0, 0.0);
+          let t = rayTriangle(o, d, *ta[usize.from(s)], *tb[usize.from(s)], *tc[usize.from(s)], CullNone, &mut w);
+          if t >= 0.0 && t <= reach { return false; }
+        }
+        k = k + 1usize;
+      }
+    }
+  }
+  true
+}

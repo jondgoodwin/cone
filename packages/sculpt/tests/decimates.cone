@@ -532,7 +532,74 @@ fn symmetry() {
   expect(unmirrored(&plain.mesh) > 0, "without symmetry the cut is lopsided");
 }
 
+// A 30 x 30 grid lifted into waves, rim included (so no rim side is straight)
+fn waves() PolyMesh {
+  var m = grid(30u32);
+  var v = 0usize;
+  while v < m.vertexCount() {
+    let p = *m.positions[v];
+    m.positions.set(v, Vec3(p.x, p.y, 0.15 * sin(7. * p.x) + 0.1 * cos(5. * p.y) + 0.2 * p.x * p.y));
+    v = v + 1usize;
+  }
+  m
+}
+
+// The most boundary sides any vertex has, and how many vertices have any
+fn rimDegrees(m: &PolyMesh, most: &mut i64, any: &mut i64) {
+  var deg = List[i64]();
+  var v = 0usize;
+  while v < m.vertexCount() { deg.push(0i64); v = v + 1usize; }
+  var e = 0u32;
+  while usize.from(e) < m.edgeCount() {
+    if m.isBoundaryEdge(e) {
+      let a = usize.from(*m.hVertex[usize.from(2u32 * e)]);
+      let b = usize.from(*m.hVertex[usize.from(2u32 * e + 1u32)]);
+      deg.set(a, *deg[a] + 1i64);
+      deg.set(b, *deg[b] + 1i64);
+    }
+    e = e + 1u32;
+  }
+  *most = 0i64;
+  *any = 0i64;
+  v = 0usize;
+  while v < m.vertexCount() {
+    if *deg[v] > *most { *most = *deg[v]; }
+    if *deg[v] > 0i64 { *any = *any + 1i64; }
+    v = v + 1usize;
+  }
+}
+
+// An open patch cut to a tenth: the default keeps its rim's line (so the cut
+// spends vertices on the rim), and a boundary weight of 0 lets the rim thin out
+// with the surface, and the result is still one disk (Euler 1, one boundary
+// loop: every rim vertex has exactly 2 rim sides)
+fn openPatch() {
+  let g = waves();
+  let rim0 = boundaryEdges(&g);
+  expectInt(rim0, 120, "waves: 120 rim sides");
+  let target = decimateTarget(&g, 0.1);
+  let kept = decimateWith(&g, target, -1., DecimateSymmetryNone, "");
+  clean(&kept.mesh, "waves default: validates");
+  let rimKept = boundaryEdges(&kept.mesh);
+  expect(rimKept >= 60, "waves default: the rim keeps most of its sides");
+  let same = decimateWithBoundary(&g, target, -1., DecimateSymmetryNone, "", 100.);
+  expect(sameBits(&kept.mesh, &same.mesh), "waves: a boundary weight of 100 is the default, bit for bit");
+  let open = decimateWithBoundary(&g, target, -1., DecimateSymmetryNone, "", 0.);
+  let m = &open.mesh;
+  clean(m, "waves open: validates");
+  expect(m.faceCount() <= usize.from(target) + 2usize, "waves open: cut to the target");
+  expectInt(i64.from(m.vertexCount()) - i64.from(m.edgeCount()) + i64.from(m.faceCount()), 1i64, "waves open: one disk (Euler 1)");
+  var most = 0i64;
+  var any = 0i64;
+  rimDegrees(m, &mut most, &mut any);
+  expectInt(most, 2i64, "waves open: every rim vertex has 2 rim sides (one loop)");
+  expectInt(boundaryEdges(m), any, "waves open: rim sides = rim vertices");
+  expect(boundaryEdges(m) * 3i64 <= rimKept * 2i64, "waves open: the rim thinned to under two thirds of the default's");
+  expect(boundaryEdges(m) >= 3i64, "waves open: a rim remains");
+}
+
 fn main() i32 {
+  openPatch();
   flatGrid();
   cubes();
   flips();

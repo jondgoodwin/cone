@@ -1,0 +1,371 @@
+// The two bridges (piecebridge.cone), each way, with an end and a stop crossing:
+//
+//   A. old producer to new receiver (ChunkBridge): every byte arrives, one end Finished, the old source has
+//      every buffer of its window back
+//   B. the new receiver says Stop to its 3rd piece: the old source is told to stop with that reason, ends with
+//      it, the receiver gets one end carrying it, and the window is whole again
+//   C. new producer to old sink (PieceBridge): every byte arrives, one end Finished
+//   D. the old sink says stop at its 3rd chunk: the new producer sees Stop and sends little more, the sink gets
+//      one end carrying the reason, every buffer comes home
+
+mod piecebridge;
+
+import testing use *;
+import collections use *;
+import iobuf use IoBuf;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import actors;
+import stages use *;
+
+fn textOf(e: &AnyError) String {
+  var text = String();
+  {
+    var w = text.textOut();
+    e.report(&uni w);
+  }
+  text
+}
+
+pub struct Took is Sendable {
+  pub pieces: u64;
+  pub bytes: u64;
+  pub ends: u64;
+  pub endKind: u32;            // 1 Finished, 2 Failed
+  pub endText: String;
+}
+
+pub struct Sent is Sendable {
+  pub sent: u64;
+  pub stops: u64;
+  pub inFlight: u64;
+  pub stopText: String;
+}
+
+// ---- an old source ----
+
+pub actor OldSource is ChunkSource {
+  down: Option[ChunkSink];
+  link: ChunkWindow;
+  left: u64;
+  sent: u64;
+  stops: u64;
+  why: String;
+
+  pub fn init(self: &new, down: ChunkSink, chunks: u64) {
+    *self = Self(down: Some[ChunkSink](down), link: ChunkWindow.own(262144usize), left: chunks, sent: 0u64,
+      stops: 0u64, why: String());
+    down.attach(selfactor);
+  }
+
+  pub async fn start(self) { self.pump(); }
+
+  pub async fn giveBack(self, b: IoBuf) {
+    link.give(b);
+    self.pump();
+  }
+
+  pub async fn stop(self, reason: Ending) {
+    stops = stops + 1u64;
+    match &reason {
+      case let &Failed(e) { why = textOf(e); }
+      case is Finished {}
+    }
+    self.finish(reason);
+  }
+
+  fn finish(self: &mut, how: Ending) {
+    var k = None[ChunkSink];
+    k <-> down;
+    match k {
+      case let Some(s) { s.end(how); }
+      case is None {}
+    }
+  }
+
+  fn pump(self: &mut) {
+    var more = down is Some;
+    while more {
+      if left == 0u64 {
+        self.finish(Ending.Finished);
+        more = false;
+      } else {
+        match link.take(65536usize) {
+          case is None { more = false; }
+          case let Some(b) {
+            var buf = b;
+            buf.setLen(65536usize);
+            left = left - 1u64;
+            sent = sent + 1u64;
+            match &down {
+              case let &Some(k) { k.accept(buf); }
+              case is None { link.give(buf); more = false; }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  pub async fn report(self, to: OneshotSender[Sent]) {
+    var t = to;
+    t.send(Sent(sent, stops, u64.from(link.inFlight()), String.from(why.view())));
+  }
+}
+
+// ---- a new receiver ----
+
+pub actor NewSink is PieceSink[IoBuf] {
+  stopAt: u64;
+  pieces: u64;
+  bytes: u64;
+  ends: u64;
+  endKind: u32;
+  endText: String;
+
+  pub fn init(self: &new, stopAt: u64) {
+    *self = Self(stopAt: stopAt, pieces: 0u64, bytes: 0u64, ends: 0u64, endKind: 0u32, endText: String());
+  }
+
+  pub async fn piece(self, tag: u64, c: IoBuf) PieceAck[IoBuf] {
+    pieces = pieces + 1u64;
+    if stopAt != 0u64 && pieces >= stopAt {
+      return Stop[IoBuf](Ending.Failed(AnyError.msg("bridge: enough")));
+    }
+    bytes = bytes + u64.from(c.len());
+    var b = c;
+    b.clear();
+    MoreWith[IoBuf](b)
+  }
+
+  pub async fn end(self, tag: u64, how: Ending) {
+    ends = ends + 1u64;
+    match how {
+      case is Finished { endKind = 1u32; }
+      case let Failed(e) { endKind = 2u32; endText = textOf(&e); }
+    }
+  }
+
+  pub async fn report(self, to: OneshotSender[Took]) {
+    var t = to;
+    t.send(Took(pieces, bytes, ends, endKind, String.from(endText.view())));
+  }
+}
+
+// ---- an old sink ----
+
+pub actor OldSink is ChunkSink {
+  up: Option[ChunkSource];
+  stopAt: u64;
+  pieces: u64;
+  bytes: u64;
+  ends: u64;
+  endKind: u32;
+  endText: String;
+
+  pub fn init(self: &new, stopAt: u64) {
+    *self = Self(up: None[ChunkSource], stopAt: stopAt, pieces: 0u64, bytes: 0u64, ends: 0u64, endKind: 0u32,
+      endText: String());
+  }
+
+  pub async fn attach(self, source: ChunkSource) { up = Some[ChunkSource](source); }
+
+  pub async fn accept(self, c: IoBuf) {
+    pieces = pieces + 1u64;
+    bytes = bytes + u64.from(c.len());
+    match &up {
+      case let &Some(u) {
+        if stopAt != 0u64 && pieces == stopAt { u.stop(Ending.Failed(AnyError.msg("old: enough"))); }
+        u.giveBack(c);
+      }
+      case is None {}
+    }
+  }
+
+  pub async fn end(self, how: Ending) {
+    ends = ends + 1u64;
+    up = None[ChunkSource];
+    match how {
+      case is Finished { endKind = 1u32; }
+      case let Failed(e) { endKind = 2u32; endText = textOf(&e); }
+    }
+  }
+
+  pub async fn report(self, to: OneshotSender[Took]) {
+    var t = to;
+    t.send(Took(pieces, bytes, ends, endKind, String.from(endText.view())));
+  }
+}
+
+// ---- a new producer: a window of four 64 KiB pieces ----
+// (PieceWindow is transitional, no part of stages' API: piecewindow.cone)
+
+pub actor NewProd {
+  pub async fn run(self, to: StreamTo[IoBuf], pieces: u64, report: OneshotSender[Sent]) {
+    var dest = to;
+    var w = PieceWindow[IoBuf].bytes(dest.budget, ChunkPool.make(262144usize));
+    var i = 0u64;
+    var stop = None[Ending];
+    var stops = 0u64;
+    var why = String();
+    while i < pieces && stop is None {
+      match fresh(&mut w, 65536usize) {
+        case let Some(b) {
+          var x = b;
+          x.setLen(65536usize);
+          let n = x.capacity();
+          w.sent(dest.sink.piece(dest.tag, x), n);
+          i = i + 1u64;
+        }
+        case is None {
+          match w.oldest() {
+            case let Some(reply) {
+              let a = await reply;
+              match w.answered(a) {
+                case let Some(s) {
+                  stops = stops + 1u64;
+                  match &s {
+                    case let &Failed(e) { why = textOf(e); }
+                    case is Finished {}
+                  }
+                  stop = Some[Ending](s);
+                }
+                case is None {}
+              }
+            }
+            case is None {}
+          }
+        }
+      }
+    }
+    var more = true;
+    while more {
+      match w.oldest() {
+        case let Some(reply) {
+          let a = await reply;
+          match w.answered(a) {
+            case let Some(s) {
+              stops = stops + 1u64;
+              if stop is None {
+                match &s {
+                  case let &Failed(e) { why = textOf(e); }
+                  case is Finished {}
+                }
+                stop = Some[Ending](s);
+              }
+            }
+            case is None {}
+          }
+        }
+        case is None { more = false; }
+      }
+    }
+    var how = Ending.Finished;
+    var s = None[Ending];
+    s <-> stop;
+    match s {
+      case let Some(x) { how = x; }
+      case is None {}
+    }
+    dest.end(how);
+    var r = report;
+    r.send(Sent(i, if stops > 0u64 {1u64} else {0u64}, u64.from(w.unanswered()), why));
+  }
+}
+
+fn tookOf(s: NewSink) Took {
+  var tx: OneshotSender[Took];
+  var rx: OneshotReceiver[Took];
+  tx, rx = Oneshot[Took].make();
+  s.report(tx);
+  rx.recv() || Took(0u64, 0u64, 0u64, 0u32, String())
+}
+
+fn oldTook(s: OldSink) Took {
+  var tx: OneshotSender[Took];
+  var rx: OneshotReceiver[Took];
+  tx, rx = Oneshot[Took].make();
+  s.report(tx);
+  rx.recv() || Took(0u64, 0u64, 0u64, 0u32, String())
+}
+
+fn oldSent(s: OldSource) Sent {
+  var tx: OneshotSender[Sent];
+  var rx: OneshotReceiver[Sent];
+  tx, rx = Oneshot[Sent].make();
+  s.report(tx);
+  rx.recv() || Sent(0u64, 0u64, 99u64, String())
+}
+
+fn main() i32 {
+  initAll();
+
+  // A
+  {
+    let sink = NewSink(0u64);
+    let src = OldSource(ChunkBridge(StreamTo[IoBuf].at(sink, 1u64)), 20u64);
+    src.start();
+    actors.waitQuiet();
+    let o = tookOf(sink);
+    let s = oldSent(src);
+    expectUInt(o.pieces, 20u64, "A: the new receiver took twenty pieces");
+    expectUInt(o.bytes, 1310720u64, "A: their bytes");
+    expectUInt(o.ends, 1u64, "A: one end");
+    expectUInt(u64.from(o.endKind), 1u64, "A: Finished");
+    expectUInt(s.inFlight, 0u64, "A: the old source's window is whole again");
+  }
+  // B
+  {
+    let sink = NewSink(3u64);
+    let src = OldSource(ChunkBridge(StreamTo[IoBuf].at(sink, 1u64)), 1000u64);
+    src.start();
+    actors.waitQuiet();
+    let o = tookOf(sink);
+    let s = oldSent(src);
+    expectUInt(s.stops, 1u64, "B: the old source was told to stop, once");
+    expectStr(s.stopText.view(), "bridge: enough", "B: with the receiver's reason");
+    expectBool(s.sent < 20u64, true, "B: and stopped sending");
+    expectUInt(o.ends, 1u64, "B: one end");
+    expectStr(o.endText.view(), "bridge: enough", "B: carrying the reason");
+    expectUInt(s.inFlight, 0u64, "B: the old source's window is whole again");
+  }
+  // C
+  {
+    let sink = OldSink(0u64);
+    var tx: OneshotSender[Sent];
+    var rx: OneshotReceiver[Sent];
+    tx, rx = Oneshot[Sent].make();
+    let p = NewProd();
+    p.run(StreamTo[IoBuf].at(PieceBridge(sink), 1u64), 20u64, tx);
+    let s = rx.recv() || Sent(0u64, 9u64, 99u64, String());
+    actors.waitQuiet();
+    let o = oldTook(sink);
+    expectUInt(s.sent, 20u64, "C: the new producer sent twenty pieces");
+    expectUInt(o.pieces, 20u64, "C: the old sink took twenty chunks");
+    expectUInt(o.bytes, 1310720u64, "C: their bytes");
+    expectUInt(o.ends, 1u64, "C: one end");
+    expectUInt(u64.from(o.endKind), 1u64, "C: Finished");
+    expectUInt(s.inFlight, 0u64, "C: every piece was answered");
+  }
+  // D
+  {
+    let sink = OldSink(3u64);
+    var tx: OneshotSender[Sent];
+    var rx: OneshotReceiver[Sent];
+    tx, rx = Oneshot[Sent].make();
+    let p = NewProd();
+    p.run(StreamTo[IoBuf].at(PieceBridge(sink), 1u64), 1000u64, tx);
+    let s = rx.recv() || Sent(0u64, 9u64, 99u64, String());
+    actors.waitQuiet();
+    let o = oldTook(sink);
+    expectUInt(s.stops, 1u64, "D: the new producer saw a Stop");
+    expectStr(s.stopText.view(), "old: enough", "D: carrying the old sink's reason");
+    expectBool(s.sent < 20u64, true, "D: and stopped sending");
+    expectUInt(o.ends, 1u64, "D: the old sink got one end");
+    expectStr(o.endText.view(), "old: enough", "D: carrying its reason");
+    expectUInt(s.inFlight, 0u64, "D: every piece was answered");
+  }
+
+  finalAll();
+  expectUInt(iobuf.stats().lent, 0u64, "every buffer is back in its pool");
+  done()
+}

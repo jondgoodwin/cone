@@ -1,0 +1,240 @@
+// A sized response dropped short (row 868): a handler sets Content-Length 100,000, writes 10,000 bytes and drops its
+// Exchange. Over HTTP/2 and HTTP/3 that one stream is reset with INTERNAL_ERROR: the client's fetch fails with it,
+// within a second of asking and never whole, and the connection lives (a request in hand on it meanwhile is answered,
+// and so is the next, with no second connection made). Over HTTP/1.1 the connection closes with the body short.
+// The client's words name the code over HTTP/2 only; over HTTP/3 'reset' says it is not H3_REQUEST_REJECTED (Refused).
+
+mod shortbody;
+
+import stdio use *;
+import libc;
+import thread;
+import fs;
+import path use Path;
+import sync use Channel, Sender, Receiver, Oneshot, OneshotSender, OneshotReceiver;
+import collections use List, String;
+import time use Instant, Duration;
+import iocore use SocketAddr, CancelGroup;
+import http use *;
+import httpclient use Response, Request;
+import tls;
+import actors;
+import aio use IoLimits, sleep;
+import actorhttp use HttpClient, Server, ServerConfig, Exchange, FetchError, HttpRoutes, HttpHandler;
+import h3driver;
+
+fn certs(name: &str) Path {
+  var p = String.from("../../../../../tls/tests/certs/");
+  p.append(name);
+  Path.fromString(p)
+}
+
+fn readText(name: &str) String {
+  var out = String();
+  let file = certs(name);
+  match fs.readFile(&file) {
+    case var Ok(r) {out <-> r;}
+    case let Err(e) {}
+  }
+  out
+}
+
+fn url(port: u16, path: &str) String {
+  var u = String.from("https://127.0.0.1:");
+  u.appendUInt(u64.from(port));
+  u.append(path);
+  u
+}
+
+// version 1, 2 or 3: HTTP/1.1, HTTP/2, HTTP/3 (with prior knowledge of the origin)
+fn client(version: u32, port: u16) HttpClient {
+  var cfg = httpclient.Config.make();
+  cfg.http2 = version == 2u32;
+  cfg.maxRetries = 0u32;
+  cfg.tlsConfig.verify = tls.Verifier.roots(readText("ca.pem").view());
+  cfg.tlsConfig.offline = true;
+  if version == 3u32 {
+    cfg.http3 = Some[&fn(t: &tls.ClientConfig) Uni[httpclient.Http3]](&h3driver.plugin);
+    cfg.http3Origins.push(url(port, ""));
+  }
+  HttpClient.make(cfg, actorhttp.defaultMaxBody)
+}
+
+actor Hello is HttpHandler {
+  n: u64;
+
+  fn init(self: &new) {*self = Self(n: 0u64);}
+
+  pub async fn handle(self, var ex: Exchange) {
+    ex.text(200u16, "hello");
+  }
+}
+
+fn makeHello() HttpHandler {
+  let h = Hello();
+  let r: HttpHandler = h;
+  r
+}
+
+// Still unanswered while /short is dropped
+actor Nap is HttpHandler {
+  n: u64;
+
+  fn init(self: &new) {*self = Self(n: 0u64);}
+
+  pub async fn handle(self, var ex: Exchange) {
+    _ = await sleep(Duration.fromMillis(1500i64));
+    ex.text(200u16, "rested");
+  }
+}
+
+fn makeNap() HttpHandler {
+  let h = Nap();
+  let r: HttpHandler = h;
+  r
+}
+
+// Declares 100,000 bytes, writes 10,000 and drops its Exchange
+actor Short is HttpHandler {
+  n: u64;
+
+  fn init(self: &new) {*self = Self(n: 0u64);}
+
+  pub async fn handle(self, var ex: Exchange) {
+    ex.start(ResponseHead.make(200u16), BodyLength.sized(100000u64));
+    var body = String.withCapacity(10000usize);
+    var i = 0usize;
+    while i < 10000usize {
+      body.appendByte(97u8);
+      i = i + 1usize;
+    }
+    let w = await ex.write(body);
+  }
+}
+
+fn makeShort() HttpHandler {
+  let h = Short();
+  let r: HttpHandler = h;
+  r
+}
+
+fn show(what: &str, r: &Result[Response, FetchError]) {
+  printStr("  ");
+  printStr(what);
+  printStr(": ");
+  match r {
+    case let &Ok(ok) {
+      printUInt(u64.from(ok.status));
+      printStr(" ");
+      printUInt(u64.from(ok.body.len()));
+      printStr(" bytes");
+    }
+    case let &Err(e) {printStr("failed: "); print <- e;}
+  }
+  printStr("\n");
+  print.flush();
+}
+
+actor Fetch {
+  client: HttpClient;
+
+  pub async fn run(self, u: String, what: String, var done: OneshotSender[u64]) {
+    let r = await client.get(u.view());
+    show(what.view(), &r);
+    done.send(1u64);
+  }
+
+  // The dropped response, with a 5 s deadline of its own: says whether it ended within a second
+  pub async fn short(self, u: String, var done: OneshotSender[u64]) {
+    let began = Instant.now();
+    let lim = IoLimits(None[CancelGroup], began + Duration.fromMillis(5000i64));
+    let r = await client.getIn(u.view(), lim);
+    let took = Instant.now() - began;
+    show("the short one", &r);
+    printStr("  within a second: ");
+    printStr(if took < Duration.fromMillis(1000i64) {"yes"} else {"NO"});
+    printStr("\n");
+    print.flush();
+    done.send(1u64);
+  }
+}
+
+fn fetch(c: &HttpClient, u: String, what: &str) OneshotReceiver[u64] {
+  var tx: OneshotSender[u64];
+  var rx: OneshotReceiver[u64];
+  tx, rx = Oneshot[u64].make();
+  Fetch(c.clone()).run(u, String.from(what), tx);
+  rx
+}
+
+fn drive(version: u32, port: u16) {
+  let c = client(version, port);
+  var first = fetch(&c, url(port, "/hello"), "a request");
+  first.recv();
+  // HTTP/1.1 carries one request at a time: a request in hand beside the short one is only for the other two
+  var naps = List[OneshotReceiver[u64]]();
+  if version != 1u32 {naps.push(fetch(&c, url(port, "/nap"), "in hand meanwhile"));}
+  var tx: OneshotSender[u64];
+  var rx: OneshotReceiver[u64];
+  tx, rx = Oneshot[u64].make();
+  Fetch(c.clone()).short(url(port, "/short"), tx);
+  rx.recv();
+  while naps.len() > 0usize {
+    var n = naps.pop().unwrap();
+    n.recv();
+    printStr("  connection actors: ");
+    printUInt(if version == 3u32 {actorhttp.liveH3ConnActors()} else {actorhttp.liveConnActors()});
+    printStr("\n");
+  }
+  var again = fetch(&c, url(port, "/hello"), "the next");
+  again.recv();
+}
+
+actor Acceptor {
+  server: Server;
+
+  pub async fn open(self, cfg: ServerConfig, var ports: Sender[u16]) {
+    let r = await actorhttp.listen(SocketAddr.localhost(0u16), cfg);
+    var res = r;
+    match &mut res {
+      case var &mut Ok(ok) {server <-> *ok;}
+      case let &mut Err(e) {printStr("listen failed\n"); libc.exit(1i32);}
+    }
+    ports.send(server.port());
+  }
+
+  pub async fn stop(self) {server.close();}
+}
+
+fn main() i32 {
+  initAll();
+  var version = 3u32;
+  while version > 0u32 {
+    printStr(if version == 3u32 {"HTTP/3\n"} else if version == 2u32 {"HTTP/2\n"} else {"HTTP/1.1\n"});
+    print.flush();
+    var ptx: Sender[u16];
+    var prx: Receiver[u16];
+    ptx, prx = Channel[u16].make();
+    let certFile = certs("server.pem");
+    let keyFile = certs("server.key");
+    let routes = HttpRoutes.make().handle("", "/hello", &makeHello).handle("", "/nap", &makeNap)
+      .handle("", "/short", &makeShort);
+    // a server for each protocol, so the connection actors counted are this client's
+    var cfg = ServerConfig.make().secure(tls.ServerConfig.make(&certFile, &keyFile)).routes(routes);
+    if version == 2u32 {cfg = cfg.offerHttp2();}
+    if version == 3u32 {cfg = cfg.offerHttp3(&h3driver.plugin);}
+    let acceptor = Acceptor(Server.none());
+    acceptor.open(cfg, ptx.clone());
+    let port = prx.recv() || 0u16;
+    drive(version, port);
+    acceptor.stop();
+    var waited = 0u32;
+    while (actorhttp.liveConnActors() > 0u64 || actorhttp.liveH3ConnActors() > 0u64) && waited < 500u32 {
+      thread.sleep(Duration.fromMillis(10i64));
+      waited = waited + 1u32;
+    }
+    version = version - 1u32;
+  }
+  finalAll();
+  0
+}
