@@ -1,9 +1,12 @@
 // THE WORKER PORT AND THE POLLER (row 493; the spec is "aio and http"'s
 // "Candidate C for UDP", 18 Nov 2026, sections 3, 4 and 6). The runtime owns a
 // second OS wait beside aio's I/O thread's, the WORKER PORT: on Linux an epoll
-// instance with an eventfd (the break) and a timerfd, on Windows a completion
-// port with a high-resolution timer whose expiry a wait completion packet
-// delivers to the port (the Loop's own scheme, iocore loop.cone). It is made
+// instance with an eventfd (the break) and a timerfd, on macOS a kqueue with a
+// user event (EVFILT_USER, EV_CLEAR: the break) and a one-shot nanosecond
+// timer (EVFILT_TIMER, EV_ONESHOT, armed relative to now as the timerfd is), on
+// Windows a completion port with a high-resolution timer whose expiry a wait
+// completion packet delivers to the port (the Loop's own scheme, iocore
+// loop.cone). It is made
 // once, at the workers' start or at the first workerPort(), and closed when
 // the stop has joined the workers.
 //
@@ -13,10 +16,12 @@
 // if it is free, by one compare-and-swap BEFORE it publishes itself PARKED, so
 // that a notifier whose compare-and-swap sees PARKED also sees the role
 // (SeqCst both) and chooses the right wake: a futex wake, or a BREAK, a packet
-// posted to the port (a PostQueuedCompletionStatus, an eventfd write),
-// coalesced by 'breakPending' as iocore's Port.wakes are. The port remembers a
-// break posted before the wait begins (a queued packet; a level-triggered
-// eventfd), so mark-then-break is safe in either order, as mark-then-futexWake
+// posted to the port (a PostQueuedCompletionStatus, an eventfd write, a
+// NOTE_TRIGGER of the user event), coalesced by 'breakPending' as iocore's
+// Port.wakes are. The port remembers a break posted before the wait begins (a
+// queued packet; a level-triggered eventfd; a triggered user event, which stays
+// pending until a kevent returns it and EV_CLEAR resets it), so
+// mark-then-break is safe in either order, as mark-then-futexWake
 // is. wakeOne chooses futex sleepers first and the poller last.
 //
 // KEEPING TIME. The poller's wait is bounded by 'pollUntil': the earliest of
@@ -52,7 +57,9 @@
 // polls without waiting itself.
 
 // The port's own entries. Linux: an epoll datum's high word 0 (a handle's
-// generation is never 0), the low word one of these. Windows: the keys
+// generation is never 0), the low word one of these. macOS: the ident of the
+// port's one EVFILT_USER (the break) and one EVFILT_TIMER (the timer); a
+// socket's or a process's event has another filter. Windows: the keys
 const portDatumBreak = 1u32;
 const portDatumTimer = 2u32;
 const portKeyBreak = 0x7B01usize;
@@ -76,6 +83,22 @@ struct PortTimerSpec {
   pub valueNsec: i64;
 }
 
+// macOS: struct kevent (<sys/event.h>; 32 bytes on arm64 and x86-64)
+struct PortKevent {
+  pub ident: usize;
+  pub filter: i16;
+  pub flags: u16;
+  pub fflags: u32;
+  pub data: i64;
+  pub udata: usize;
+}
+
+// macOS: struct timespec
+struct PortTimespec {
+  pub sec: i64;
+  pub nsec: i64;
+}
+
 // Windows: OVERLAPPED_ENTRY
 struct PortEntry {
   pub key: usize;
@@ -94,6 +117,14 @@ extern {
   fn @c("read") portSysRead(fd: i32, buf: *u8, n: usize) i64;
   fn @c("write") portSysWrite(fd: i32, buf: *u8, n: usize) i64;
   fn @c("close") portSysClose(fd: i32) i32;
+}
+
+#if #os == .macos {
+  extern {
+    fn @c kqueue() i32;
+    fn @c kevent(kq: i32, changes: *PortKevent, nchanges: i32, events: *PortKevent, nevents: i32,
+        timeout: *PortTimespec) i32;
+  }
 }
 
 #if #os == .windows {
@@ -119,6 +150,15 @@ const portCloexec = 0x80000i32;
 const portNonBlock = 0x800i32;
 const portClockMonotonic = 1i32;
 const portInfinite = 0xFFFFFFFFu32;
+// macOS, <sys/event.h>
+const portFilterUser = -10i16;      // EVFILT_USER
+const portFilterTimer = -7i16;      // EVFILT_TIMER
+const portEvAdd = 0x0001u16;        // EV_ADD
+const portEvOneshot = 0x0010u16;    // EV_ONESHOT
+const portEvClear = 0x0020u16;      // EV_CLEAR
+const portNoteTrigger = 0x01000000u32;  // NOTE_TRIGGER
+const portNoteNseconds = 0x00000004u32; // NOTE_NSECONDS
+const portNoteCritical = 0x00000020u32; // NOTE_CRITICAL
 const threadPriorityNormal = 0i32;
 const threadPriorityHighest = 2i32;
 
@@ -129,7 +169,7 @@ struct WorkerPort {
   pollUntil: Atomic[i64];     // the instant the poller's wait is armed for (noDue: none); the poller writes, parkers read
   waiting: Atomic[u64];       // what aio says waits in the port (workerPortWaits)
   gap: Array[u8, 40];
-  handle: usize;              // Linux: the epoll descriptor. Windows: the completion port
+  handle: usize;              // Linux: the epoll descriptor. macOS: the kqueue. Windows: the completion port
   wake: usize;                // Linux: the eventfd
   timer: usize;               // Linux: the timerfd. Windows: the high-resolution waitable timer, 0 if none
   packet: usize;              // Windows: the wait completion packet, 0 if none
@@ -209,6 +249,21 @@ fn portMake() {
         }
       }
     }
+  } #elif #os == .macos {
+    // A kqueue is not inherited by a fork's child, so it needs no close-on-exec
+    let kq = kqueue();
+    if kq < 0i32 {
+      libc.free(p as *u8);
+      return;
+    }
+    var a = PortKevent(usize.from(portDatumBreak), portFilterUser, portEvAdd | portEvClear, 0u32, 0i64, 0usize);
+    if kevent(kq, &mut a as *PortKevent, 1i32, null, 0i32, null) != 0i32 {
+      portSysClose(kq);
+      libc.free(p as *u8);
+      return;
+    }
+    // The timer is added at its first arming (portArm)
+    (*p).handle = usize.from(kq);
   } #else {
     let ep = epoll_create1(portCloexec);
     if ep < 0i32 {
@@ -251,6 +306,8 @@ fn portClose() {
     if (*p).packet != 0usize {CloseHandle((*p).packet);}
     if (*p).timer != 0usize {CloseHandle((*p).timer);}
     CloseHandle((*p).handle);
+  } #elif #os == .macos {
+    portSysClose(i32.from((*p).handle));
   } #else {
     portSysClose(i32.from((*p).timer));
     portSysClose(i32.from((*p).wake));
@@ -262,8 +319,8 @@ fn portClose() {
 
 // THE PORT'S OTHER ENTRIES, for the I/O package and not for programs (public
 // because aio calls it from its own package, as workerHooks is): the port's
-// handle, made now if it was not (an epoll descriptor on Linux, a completion
-// port on Windows), for a socket to be registered with; 0 if the system gave
+// handle, made now if it was not (an epoll descriptor on Linux, a kqueue on
+// macOS, a completion port on Windows), for a socket to be registered with; 0 if the system gave
 // none, or once the stop has closed it
 pub fn workerPort() usize {
   let p = portEnsure();
@@ -272,7 +329,8 @@ pub fn workerPort() usize {
 
 // The same: the hook every other entry of the port goes to, on the worker (or
 // the monitor) that took it, under inHook. Linux: (the epoll events, the datum
-// as entry | gen << 32, 0); Windows: (the key, the OVERLAPPED, the bytes). True
+// as entry | gen << 32, 0); macOS: (the address of the struct kevent, valid
+// for the call only, its udata, 0); Windows: (the key, the OVERLAPPED, the bytes). True
 // when it answered anything. Set once, before anything is registered; a later
 // call changes nothing
 pub fn workerEvents(events: &fn(a: usize, b: usize, n: u32) bool) {
@@ -322,6 +380,9 @@ fn portBreak(p: *WorkerPort) {
   (*p).breaks.addOrdered(1u64, MemOrder.Relaxed);
   #if #os == .windows {
     PostQueuedCompletionStatus((*p).handle, 0u32, portKeyBreak, null);
+  } #elif #os == .macos {
+    var t = PortKevent(usize.from(portDatumBreak), portFilterUser, 0u16, portNoteTrigger, 0i64, 0usize);
+    kevent(i32.from((*p).handle), &mut t as *PortKevent, 1i32, null, 0i32, null);
   } #else {
     var one = 1u64;
     portSysWrite(i32.from((*p).wake), &mut one as *u8, 8usize);
@@ -384,6 +445,8 @@ fn entriesHere(p: *WorkerPort) *u8 {
   if myEntries == 0usize {
     #if #os == .windows {
       myEntries = libc.calloc(usize.from((*p).batch), mem.sizeof[PortEntry]()) as usize;
+    } #elif #os == .macos {
+      myEntries = libc.calloc(usize.from((*p).batch), mem.sizeof[PortKevent]()) as usize;
     } #else {
       myEntries = libc.calloc(usize.from((*p).batch), mem.sizeof[PortEvent]()) as usize;
     }
@@ -440,6 +503,22 @@ fn portArm(p: *WorkerPort, until: i64, now: i64) u32 {
         }
       }
     }
+  } #elif #os == .macos {
+    // EV_ADD on the timer's ident adds it, or re-arms it if it is armed; a
+    // one-shot that fired is gone, and armedFor 0 says so (portTake).
+    // Relative, as the timerfd is: NOTE_ABSOLUTE counts on gettimeofday's
+    // epoch (or, with NOTE_MACHTIME, mach_absolute_time's), neither of which is
+    // CLOCK_MONOTONIC's. NOTE_CRITICAL asks the system not to coalesce the
+    // timer with others: without it, 300 lone 2 ms sleeps with every worker
+    // parked (4 workers, an M2) came back a mean 1.6 ms late, half over 1.5 ms,
+    // and a sixth of the waits ended on their own millisecond backstop first;
+    // with it, a mean 1.0-1.3 ms (the wheel's 1 ms tick included), 1-5% over
+    // 1.5 ms, and no wait's backstop came first
+    if (*p).armedFor.loadOrdered(MemOrder.Relaxed) != until {
+      var t = PortKevent(usize.from(portDatumTimer), portFilterTimer, portEvAdd | portEvOneshot, portNoteNseconds | portNoteCritical, left, 0usize);
+      kevent(i32.from((*p).handle), &mut t as *PortKevent, 1i32, null, 0i32, null);
+      (*p).armedFor.storeOrdered(until, MemOrder.Relaxed);
+    }
   } #else {
     if (*p).armedFor.loadOrdered(MemOrder.Relaxed) != until {
       var spec = PortTimerSpec(0i64, 0i64, left / 1000000000i64, left % 1000000000i64);
@@ -461,6 +540,15 @@ fn portWait(p: *WorkerPort, ms: u32) u32 {
       return 0u32;
     }
     got
+  } #elif #os == .macos {
+    var n = 0i32;
+    if ms == portInfinite {
+      n = kevent(i32.from((*p).handle), null, 0i32, buf as *PortKevent, i32.from((*p).batch), null);
+    } else {
+      var t = PortTimespec(i64.from(ms / 1000u32), i64.from(ms % 1000u32) * 1000000i64);
+      n = kevent(i32.from((*p).handle), null, 0i32, buf as *PortKevent, i32.from((*p).batch), &mut t as *PortTimespec);
+    }
+    if n <= 0i32 {0u32} else {u32.from(n)}
   } #else {
     let t = if ms == portInfinite {0i32 - 1i32} else {i32.from(ms)};
     let n = epoll_wait(i32.from((*p).handle), buf as *PortEvent, i32.from((*p).batch), t);
@@ -502,6 +590,20 @@ fn portTake(p: *WorkerPort, got: u32, holder: bool) bool {
         own = true;
       } else {
         answered = portHook(key, (*e).ov as usize, (*e).bytes) || answered;
+      }
+    } #elif #os == .macos {
+      let e = (buf as *PortKevent) + usize.from(k);
+      if (*e).filter == portFilterUser && (*e).ident == usize.from(portDatumBreak) {
+        // EV_CLEAR has reset the trigger: nothing to drain
+        if holder {portTakeHold();}
+        (*p).breakPending.store(0u32);
+        own = true;
+      } else if (*e).filter == portFilterTimer && (*e).ident == usize.from(portDatumTimer) {
+        (*p).armedFor.storeOrdered(0i64, MemOrder.Relaxed);
+        (*p).timerEntries.addOrdered(1u64, MemOrder.Relaxed);
+        own = true;
+      } else {
+        answered = portHook(e as usize, (*e).udata, 0u32) || answered;
       }
     } #else {
       let e = (buf as *PortEvent) + usize.from(k);
@@ -785,7 +887,7 @@ pub struct PollerStats {
   pub timeouts: u64;       // timed waits back with nothing (the wait's own timeout, not the timer's packet)
   pub lateMax: i64;        // the latest a timed wait came back past its instant, in nanoseconds
   pub batch: u32;          // pollBatch
-  pub fineTimer: bool;     // the port has its high-resolution timer (Linux: always)
+  pub fineTimer: bool;     // the port has its high-resolution timer (Linux and macOS: always)
 }
 
 pub fn pollerStats() PollerStats {
