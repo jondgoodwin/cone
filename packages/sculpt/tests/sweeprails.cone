@@ -1,0 +1,190 @@
+// The sculpt package's SweepSpec.rails, checked with the testing package against values worked out by hand; only a
+// failure prints, so sweeprails.out holds the summary alone.
+//
+// The bent tube: a spine going (0,0,0) to (0,0,2) in the first half of t, then (0,0,2) to (2,0,2) in the second (a
+// kink at t = 0.5, so 4 rings at 0, 0.25, 0.5, 0.75, 1 hold the corner), up y, 4 constant tracks the square (1,1)
+// (-1,1) (-1,-1) (1,-1), tracks 0-3.
+// - Square to the path: 5 square sections placed in the path's own frames at the points (0,0,0), (0,0,1.6), (0,0,2),
+//   (0.4,0,2), (2,0,2), the planes z = 0, z = 1.6, the corner's mitre, x = 0.4, x = 2. Planes z = 1.6 and x = 0.4 meet
+//   on the line x = 0.4, z = 1.6, which is inside both sections (z = 1.6 spans x +-1; x = 0.4 spans z 1 to 3), so
+//   loftTaggedFramed reports crossing sections.
+// - Rails: the front rail is the point C = (3, 0, -1), the back rail is the spine. Each plane holds the vertical line
+//   through C and the spine's point, so they all meet only on that line, 3.16 from the spine where every section
+//   reaches 1: no crossing, no problem line. Ring 0: plane normal (back - front) cross up = (-3, 0, 1) x ... worked
+//   out: (S - C) = (-3, 0, 1), cross (0, 1, 0) = (0*0 - 1*1, 1*0 - (-3)*0, -3*1 - 0*0) = (-1, 0, -3), unit
+//   (-1, 0, -3) / sqrt(10); profile y on up (0, 1, 0); profile x on up cross normal = (-3, 0, 1) / sqrt(10); so corner 0
+//   (1, 1) of ring 0 is (0,0,0) + (-0.9486833, 0, 0.3162278) + (0, 1, 0) = (-0.9486833, 1, 0.3162278), and the origin
+//   is on the plane already. The last ring (t = 1, spine (2,0,2)): S - C = (-1, 0, 3), cross up =
+//   (ay bz - az by, az bx - ax bz, ax by - ay bx) = (0 - 3, 0 - 0, -1 - 0) = (-3, 0, -1), unit
+//   (-3, 0, -1) / sqrt(10); profile x = up cross normal = (-1, 0, 3) / sqrt(10): corner 0 is (2,0,2) + (-0.3162278, 0,
+//   0.9486833) + (0, 1, 0) = (1.6837722, 1, 2.9486833).
+// - Rails that fan inside the tube: the front rail is the point (0.4, 0, 1.4), 0.43 from the spine at (0,0,1) (ring
+//   at t = 0.25): planes through one line inside the sections cross: a problem line.
+// - The ring's origin is the spine's point moved onto the plane along the normal; here every spine point already lies
+//   in its plane (the back rail is the spine), so the corners above are placed from the spine itself.
+// - Rings: the 'square planes' check uses 5 sections (20 vertices); the SweepSpec rows use 9 rings, t = 0, 0.125, ...
+//   1, the ring at the kink t = 0.5 is one of them, so 36 vertices, the last ring vertices 32-35. With the path's own
+//   planes the rings at t = 0.375 (z = 1.5), the corner's mitre (x + z = 2) and 0.625 (x = 0.5) meet on x = 0.5, z =
+//   1.5 (in the first two: 0.707 from the mitre ring's centre, inside its +-1), so a SweepSpec that ignored its rails
+//   would give a crossing line here, which is what the 'no crossing' row catches.
+// - Refusals: rails of 3 curves; rails and a normal together; a back rail on the front rail (the plane's normal is
+//   zero); rails along 'up' (front (0,0,0), back (0,5,0)); rails with a part-way closing.
+
+mod sweeprails;
+
+import testing use *;
+import collections use *;
+import geomath use *;
+import mesh use *;
+import sculpt use *;
+
+let near = 0.00001;
+
+fn f1(a: f32) List[f32] { var v = List[f32](); v.push(a); v }
+fn f2(a: f32, b: f32) List[f32] { var v = List[f32](); v.push(a); v.push(b); v }
+
+fn at(m: &PolyMesh, v: u32, x: f32, y: f32, z: f32, label: &Array[u8]) {
+  let p = *m.positions[usize.from(v)];
+  expectFloat(p.x, x, near, label);
+  expectFloat(p.y, y, near, label);
+  expectFloat(p.z, z, near, label);
+}
+
+fn c1(a: f32) RunCurve { RunCurve.of(f1(a)) }
+
+fn squareTracks() SweepTracks {
+  var tracks = SweepTracks();
+  tracks.push(SweepTrack(c1(1.), c1(1.), RunCurve.of(List[f32]())));
+  tracks.push(SweepTrack(c1(-1.), c1(1.), RunCurve.of(List[f32]())));
+  tracks.push(SweepTrack(c1(-1.), c1(-1.), RunCurve.of(List[f32]())));
+  tracks.push(SweepTrack(c1(1.), c1(-1.), RunCurve.of(List[f32]())));
+  tracks
+}
+
+// A curve of two linear pieces meeting at t = 0.5: values a b then b c
+fn bent(a: f32, b: f32, c: f32) RunCurve {
+  let vals = List[f32](4) <- a, b, b, c;
+  let kinks = List[f32](1) <- 0.5;
+  let pieces = List[u32](2) <- 2u32, 2u32;
+  RunCurve(vals, kinks, pieces)
+}
+
+fn bentSpine() RunCurves {
+  var s = RunCurves();
+  s.push(bent(0., 0., 2.));
+  s.push(c1(0.));
+  s.push(bent(0., 2., 2.));
+  s
+}
+
+fn point(x: f32, y: f32, z: f32) RunCurves {
+  var r = RunCurves();
+  r.push(c1(x));
+  r.push(c1(y));
+  r.push(c1(z));
+  r
+}
+
+// The front rail's three curves then the spine's three as the back rail
+fn railsFrom(front: RunCurves, back: RunCurves) RunCurves {
+  var r = RunCurves();
+  var i = 0usize;
+  while i < front.len() { r.push(copyCurve(&front[i])); i = i + 1usize; }
+  i = 0usize;
+  while i < back.len() { r.push(copyCurve(&back[i])); i = i + 1usize; }
+  r
+}
+
+fn copyCurve(c: &RunCurve) RunCurve {
+  var v = List[f32]();
+  var i = 0usize;
+  while i < c.values.len() { v.push(*c.values[i]); i = i + 1usize; }
+  var k = List[f32]();
+  i = 0usize;
+  while i < c.kinks.len() { k.push(*c.kinks[i]); i = i + 1usize; }
+  var p = List[u32]();
+  i = 0usize;
+  while i < c.pieces.len() { p.push(*c.pieces[i]); i = i + 1usize; }
+  RunCurve(v, k, p)
+}
+
+fn specOf(spine: RunCurves, normal: RunCurves, rails: RunCurves, closedFrom: f32) SweepSpec {
+  SweepSpec(spine, Vec3(0., 1., 0.), closedFrom, squareTracks(), normal, None[TaggedCurve], None[TaggedCurve], rails)
+}
+
+fn sections5() List[TaggedProfile] {
+  var out = List[TaggedProfile]();
+  var i = 0;
+  while i < 5 {
+    let spec = specOf(bentSpine(), RunCurves(), RunCurves(), 0.);
+    out.push(spec.sectionAt(0.));
+    i = i + 1;
+  }
+  out
+}
+
+fn squarePlanesCross() {
+  let pts = List[Vec3](5) <- Vec3(0., 0., 0.), Vec3(0., 0., 1.6), Vec3(0., 0., 2.), Vec3(0.4, 0., 2.), Vec3(2., 0., 2.);
+  let p = Path.fromPoints(pts.view(), false);
+  let fr = p.frames();
+  var problems = List[String]();
+  let m = loftTaggedFramed(&sections5(), &fr, &None[TaggedCurve], &None[TaggedCurve], 0u32, false, false, &mut problems);
+  expectInt(i64.from(m.vertexCount()), 20, "square planes: the mesh is built");
+  expectInt(i64.from(problems.len()), 1, "square planes: a crossing line");
+}
+
+fn railsDoNotCross() {
+  var problems = List[String]();
+  let rails = railsFrom(point(3., 0., -1.), bentSpine());
+  let m = specOf(bentSpine(), RunCurves(), rails, 0.).mesh(9u32, 0u32, false, false, &mut problems);
+  expectInt(i64.from(problems.len()), 0, "rails: no crossing, no problem line");
+  expectInt(i64.from(m.vertexCount()), 36, "rails: 9 rings of 4");
+  let s10: f32 = 0.9486833;
+  at(&m, 0u32, 0. - s10, 1., 0.3162278, "rails: ring 0 corner 0");
+  at(&m, 32u32, 1.6837722, 1., 2.9486833, "rails: the last ring corner 0");
+}
+
+fn railsFan() {
+  var problems = List[String]();
+  let rails = railsFrom(point(0.4, 0., 1.4), bentSpine());
+  let m = specOf(bentSpine(), RunCurves(), rails, 0.).mesh(9u32, 0u32, false, false, &mut problems);
+  expectInt(i64.from(m.vertexCount()), 36, "fan: the mesh is still built");
+  expect(problems.len() >= 1usize, "fan: planes through a line inside the tube: a crossing line");
+}
+
+fn refusals() {
+  var problems = List[String]();
+  var three = RunCurves();
+  three.push(c1(3.));
+  three.push(c1(0.));
+  three.push(c1(-1.));
+  let m1 = specOf(bentSpine(), RunCurves(), three, 0.).mesh(5u32, 0u32, false, false, &mut problems);
+  expectInt(i64.from(m1.vertexCount()), 0, "refusal: rails of 3 curves: empty");
+  expectInt(i64.from(problems.len()), 1, "refusal: rails of 3 curves: a line");
+  let rails = railsFrom(point(3., 0., -1.), bentSpine());
+  let m2 = specOf(bentSpine(), point(0., 0., 1.), rails, 0.).mesh(5u32, 0u32, false, false, &mut problems);
+  expectInt(i64.from(m2.vertexCount()), 0, "refusal: rails and a normal: empty");
+  expectInt(i64.from(problems.len()), 2, "refusal: rails and a normal: a line");
+  let same = railsFrom(point(0., 0., 0.), point(0., 0., 0.));
+  let m3 = specOf(bentSpine(), RunCurves(), same, 0.).mesh(5u32, 0u32, false, false, &mut problems);
+  expectInt(i64.from(m3.vertexCount()), 0, "refusal: rails together: empty");
+  expectInt(i64.from(problems.len()), 3, "refusal: rails together: a line");
+  let tall = railsFrom(point(0., 0., 0.), point(0., 5., 0.));
+  let m4 = specOf(bentSpine(), RunCurves(), tall, 0.).mesh(5u32, 0u32, false, false, &mut problems);
+  expectInt(i64.from(m4.vertexCount()), 0, "refusal: rails along up: empty");
+  expectInt(i64.from(problems.len()), 4, "refusal: rails along up: a line");
+  let m5 = specOf(bentSpine(), RunCurves(), railsFrom(point(3., 0., -1.), bentSpine()), 0.5).mesh(5u32, 0u32, false, false,
+    &mut problems);
+  expectInt(i64.from(m5.vertexCount()), 0, "refusal: rails with a part-way closing: empty");
+  expectInt(i64.from(problems.len()), 5, "refusal: rails with a part-way closing: a line");
+  // up 3, spine 4 + 1 kink, 1, 4 + 1 kink = 11, rails 3 + 11, tracks 8
+  expectInt(i64.from(specOf(bentSpine(), RunCurves(), railsFrom(point(3., 0., -1.), bentSpine()), 0.).numbers()), 36, "numbers counts the rails");
+}
+
+fn main() i32 {
+  squarePlanesCross();
+  railsDoNotCross();
+  railsFan();
+  refusals();
+  done()
+}

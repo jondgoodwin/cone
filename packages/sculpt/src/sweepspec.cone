@@ -43,6 +43,11 @@
 //   problem line for sections that cross inside the part, see taggedloft.cone). 'startCurve' and 'endCurve', when
 //   given, are the first and last rings (a 'TaggedCurve' with as many tags as there are tracks), the frames being the
 //   path's own when 'normal' is empty. Neither is built with a part-way closing. 'numbers' counts the normal's values.
+// - Rails: 'rails', empty or 6 curves (x, y, z of a front rail, then of a back rail). Ring r's plane passes through
+//   both rails' points at its t and contains 'up': its normal is (back - front) cross 'up' (so the order of the rails
+//   sets the plane's side), the profile y is 'up', the ring's origin the spine's point moved onto the plane along the
+//   normal. Built through 'loftTaggedFramed' like 'normal'; refused when both are given, with a part-way closing, or
+//   where the rails meet or the line between them is along 'up'. 'numbers' counts the rails' values.
 // - Refusals (a problem line, an empty mesh): a RunCurve of 3 values; a normal of 1 or 2 curves; a normal zero or along
 //   'up' at a ring; a normal or curve end with a part-way closing; fewer than 2 tracks (open all along) or 3
 //   (closed anywhere); a spine not 3 curves; 'rings' under 2; kinks not rising or not inside (0, 1); pieces not
@@ -226,6 +231,9 @@ pub struct SweepSpec {
   // When given, the first (last) ring is this curve
   pub startCurve: Option[TaggedCurve];
   pub endCurve: Option[TaggedCurve];
+  // Rails: empty, or 6 curves, the x, y and z of a front rail then of a back rail. Each ring's plane passes through
+  // both rails' points at the ring's t and contains 'up'. Not given together with 'normal'.
+  pub rails: RunCurves;
 
   // The path: the spine at 'samples' points, evenly in t, open. An empty path when the spine is not 3 curves or
   // 'samples' is below 2
@@ -329,8 +337,18 @@ pub struct SweepSpec {
       if why.len() > 0usize { return why; }
       k = k + 1usize;
     }
-    if (normal.len() > 0usize || hasCurve()) && closedFrom > 0. && closedFrom < 1. {
-      return String.from("SweepSpec: a normal or a curve end is not built with a part-way closing");
+    if rails.len() != 0usize && rails.len() != 6usize { return String.from("SweepSpec: the rails are not 6 curves"); }
+    if rails.len() > 0usize && normal.len() > 0usize { return String.from("SweepSpec: both 'normal' and 'rails' are given"); }
+    k = 0usize;
+    while k < rails.len() {
+      var label = String.from(if k < 3usize {"the front rail "} else {"the back rail "});
+      label.append(if k % 3usize == 0usize {"x"} else if k % 3usize == 1usize {"y"} else {"z"});
+      let why = rails[k].refusal(label.view());
+      if why.len() > 0usize { return why; }
+      k = k + 1usize;
+    }
+    if (normal.len() > 0usize || rails.len() > 0usize || hasCurve()) && closedFrom > 0. && closedFrom < 1. {
+      return String.from("SweepSpec: a normal, rails or a curve end is not built with a part-way closing");
     }
     if closedFrom > 0. && closedFrom < 1. {
       // The open path's two end tracks meet at closedFrom
@@ -433,7 +451,7 @@ pub struct SweepSpec {
       stations.push(if run > 0. {*cum[4usize * r] / run} else {t});
       r = r + 1usize;
     }
-    if !part && normal.len() == 0usize && !hasCurve() {
+    if !part && normal.len() == 0usize && rails.len() == 0usize && !hasCurve() {
       return loftTagged(&sections, &p, stations.view(), between, uvByLength, caps, problems);
     }
     if !part {
@@ -445,7 +463,23 @@ pub struct SweepSpec {
       r = 0usize;
       while r < nr {
         let t = *ringT[r];
-        if normal.len() == 0usize {
+        if rails.len() == 6usize {
+          // The plane through both rails' points at t, holding 'up': its normal is (back - front) cross up
+          let f = Vec3(rails[0usize].at(t), rails[1usize].at(t), rails[2usize].at(t));
+          let bk = Vec3(rails[3usize].at(t), rails[4usize].at(t), rails[5usize].at(t));
+          let nrm = unit((bk - f).cross(up));
+          let b0 = unit(up);
+          if nrm.length() == 0. || b0.length() == 0. {
+            var line = String.from("SweepSpec: the rails are together or along 'up' at ring ");
+            line.appendUInt(u64.from(r));
+            problems.push(line);
+            return PolyMesh();
+          }
+          // The ring sits in that plane: the spine's point moved onto it
+          let sp = Vec3(spine[0usize].at(t), spine[1usize].at(t), spine[2usize].at(t));
+          let origin = sp - nrm * (sp - f).dot(nrm);
+          frames.push(Frame(origin, nrm, b0.cross(nrm), b0));
+        } else if normal.len() == 0usize {
           frames.push(frameAtDistance(&p, &pf, &pd, pl, *stations[r] * pl));
         } else {
           let origin = Vec3(spine[0usize].at(t), spine[1usize].at(t), spine[2usize].at(t));
@@ -533,6 +567,11 @@ pub struct SweepSpec {
     k = 0usize;
     while k < normal.len() {
       total = total + normal[k].values.len() + normal[k].kinks.len();
+      k = k + 1usize;
+    }
+    k = 0usize;
+    while k < rails.len() {
+      total = total + rails[k].values.len() + rails[k].kinks.len();
       k = k + 1usize;
     }
     k = 0usize;
