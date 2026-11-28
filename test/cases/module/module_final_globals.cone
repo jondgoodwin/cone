@@ -1,21 +1,18 @@
-// A module's finalizer finalizes every global whose value has anything to do as
-// it dies, the question a local's death asks: an owning reference is released
-// (its value finalized, then freed through its region), plain or virtual, single
-// or counted, and a tuple or an array is finalized element by element. Before,
-// only a global whose type is a struct or an enum was: an owner held in a
-// global leaked, and so did a tuple or an array of values that finalize.
+// No global is finalized: the module's 'final' runs and that is all, whatever
+// the globals hold -- an owning reference, plain or virtual, a tuple, an array,
+// a lock around owners. A value assigned over is still finalized, in a global or
+// not. The module may declare a 'drop' of its own: no finalizer takes the name.
 //
-// The module's own 'final' runs first, then each global in the reverse of the
-// order set, once each: 'row' has its value where declared and 'init' never
-// sets it, so it is set first and finalized last; 'init' sets the rest in the
-// order declared. 'One' is a single-owner region and 'Tally' a counted one; both
-// count their allocations and frees and print each free, and 'Tally' prints
-// each count change: '+n' after an 'aliasRef', '-n' after a 'dealiasRef'. 'F<n>' is a
-// Fin's 'final'. A counted 'Tally' (its count is not atomic) is not Shareable, so it is no longer
-// a global: it is a local here, moved into another and released with it. Replacing a global owner
-// needed a plain 'var', refused (ErrorGlobalShare), so the owners that are replaced sit in a struct
-// behind a lock-guarded global ('Arc[Mutex, Owners]'); the other globals are 'let's set in 'init'. The
-// counts at the end say every allocation was freed, and freed once.
+// 'One' is a single-owner region and 'Tally' a counted one; both count their
+// allocations and frees and print each free, and 'Tally' prints each count
+// change: '+n' after an 'aliasRef', '-n' after a 'dealiasRef'. 'F<n>' is a Fin's
+// 'final'. A counted 'Tally' (its count is not atomic) is not Shareable, so it is
+// a local here, moved into another and released with it. Replacing a global owner
+// needs a plain 'var', refused (ErrorGlobalShare), so the owners that are
+// replaced sit in a struct behind a lock-guarded global ('Arc[Mutex, Owners]');
+// the other globals are 'let's set in 'init'. The counts at the end say that
+// the two owners replaced and the local were freed, and the two the global still
+// holds were not.
 
 mod module_final_globals;
 
@@ -74,6 +71,11 @@ fn final() {
   printStr("final ");
 }
 
+// An ordinary function, in a module whose globals' types finalize
+fn drop() {
+  printStr("\nown drop");
+}
+
 fn main() i32 {
   initAll();
   printStr("shared with a local: ");
@@ -91,6 +93,7 @@ fn main() i32 {
     owners.own = One[Fin](9);
     owners.vown = One[Fin](10);
   }
+  drop();
   printStr("\nfinalAll: ");
   finalAll();
   printStr("\nallocs ");

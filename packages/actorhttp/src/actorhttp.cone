@@ -229,8 +229,9 @@
 // held are finalized; the rest of the behaviour never runs. An exchange awaited
 // after that is abandoned the same way at once. aio's own I/O ends after, in
 // aio's finalizer. The package's actors may still run until then (a client
-// closing, a connection's end arriving), and reach none of the package's
-// globals that its finalizer's end drops.
+// closing, a connection's end arriving). No global is finalized, so the
+// package's registries are still there; once the program is over, those actors
+// record nothing in them, since nothing would end it.
 //
 // UPLOADS. 'client.upload(request, framing)' (or 'uploadIn' with a lim) sends a request whose
 // body is a stream: the request's own body must be empty, 'framing' is BodyLength.sized(n) or
@@ -573,8 +574,8 @@ let liveH3Endpoints: Atomic[u64];    // ...and H3Endpoints
 let manualReg: Arc[Mutex, ManualRegistry];    // the ManualConns not ended (manualconn.cone), for the program's end
 let manualTls: Arc[Mutex, TlsClients];   // manualconn.cone: connectSecure's TLS contexts, one for each config
 let clientReg: Arc[Mutex, ClientRegistry];    // the client actors not yet closed (clientactor.cone), for the program's end
-// Set by 'final', before it ends what the registries hold. The three globals above are dropped when 'final' returns, and
-// actors of this package may still run after that: once this is set, no behaviour reaches any of them
+// Set by 'final', before it ends what the registries hold. Actors of this package may still run after 'final' returns:
+// once this is set, none records itself in a registry or looks up a TLS context, since nothing would end or close it
 let programOver: Atomic[bool];
 
 fn @initpure init() {
@@ -669,11 +670,11 @@ pub fn servicesCreated() u64 {servicesMade.load()}
 // PROGRAM'S END). It ends here, not in aio's finalizer, so that it ends before
 // the packages it uses (httpconn, httpclient, tls) are finalized.
 //
-// The registries and the TLS contexts are globals, dropped as this returns, and an actor of this package can run after
-// that: a client whose last handle goes only when aio's final abandons the behaviour holding it, a manual connection whose
-// connection actor ends only when its cancelled I/O completes, either made by a value finalized then. So the program is
-// marked over first, and the quiet waited for after it means no behaviour that looked before is still at a registry; then
-// every client actor and manual connection recorded is ended
+// An actor of this package can run after this returns: a client whose last handle goes only when aio's final abandons
+// the behaviour holding it, a manual connection whose connection actor ends only when its cancelled I/O completes, either
+// made by a value finalized then. So the program is marked over first, and the quiet waited for after it means no
+// behaviour that looked before is still at a registry; then every client actor and manual connection recorded is ended,
+// which is what closes their connections: no global is finalized, so a registry's own death never does
 fn final() {
   actors.waitQuiet();
   programOver.store(true);

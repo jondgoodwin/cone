@@ -1,0 +1,55 @@
+// A global outlives I/O that completes late: a sleep completes after 'main' has
+// returned, while aio's finalizer is still waiting for quiet because another
+// actor is running, and the resumed behaviour reads a global List. A global is
+// never finalized, so the List is still there.
+mod globalexitlate;
+
+import stdio use *;
+import collections use *;
+import actors;
+import aio;
+import thread;
+import time use Duration;
+
+const items = 4000000usize;
+
+fn makeTable() List[u64] {
+  var l = List[u64]();
+  var i = 0usize;
+  while i < items {
+    l.push(7u64);
+    i = i + 1usize;
+  }
+  l
+}
+
+let table = makeTable();
+
+actor Sleeper {
+  n: u64 = 100u64;
+
+  pub async fn nap(self) {
+    let r = await aio.sleep(Duration.fromMillis(300i64));
+    printStr("sleeper: resumed, reading the table\n");
+    let v = table[usize.from(n)];
+    printStr("sleeper: table[n] (expected 7) ");
+    print <- v;
+    printStr("\n");
+  }
+}
+
+actor Busy {
+  n: u64 = 0u64;
+
+  pub async fn work(self) {
+    thread.sleep(Duration.fromMillis(1500i64));
+  }
+}
+
+fn main() {
+  let s = Sleeper();
+  s.nap();
+  let b = Busy();
+  b.work();
+  printStr("main returns\n");
+}
