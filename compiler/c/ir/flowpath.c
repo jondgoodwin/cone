@@ -5109,9 +5109,13 @@ static void pwStore(INode **lvalp, PathSet *holds, INode **rvalp, uint32_t fligh
 // place is part of. The temporary is no holder, so nothing would pend on it: where one of the
 // borrows it was made with is into a collection, an owner or a variant, a stand-in holds them
 // all (a 'mut' borrow the place was reached through, 'let r = &mut l; r[0] += ...', names what
-// a move takes away), from before the right side, and the write is its use. A place with no
-// such borrow ('x += {x = 5; 1}') is in the variable's own storage, which a move or a store
-// leaves in place. Returns it, or 0 for none
+// a move takes away), from before the right side, and the write is its use. A place reached
+// through any other borrow ('let r = &mut s; r.n += take(s)') stays where it is when what was
+// borrowed is replaced, but a move takes its value away: its stand-in pends on moves alone
+// (PathVar.compound 2). A place in a variable's own storage, named by the statement itself,
+// has none: a move there is the tree walk's (flowAssignValue), which accepts one that gives
+// the variable a new value before the write ('x += {x = 5; 1}' moves nothing). Returns the
+// stand-in, or 0 for none
 static uint32_t pwCompoundPlace(INode *lval) {
     if (!pathLoans || lval->tag != DerefTag)
         return 0;
@@ -5129,10 +5133,10 @@ static uint32_t pwCompoundPlace(INode *lval) {
         holds = pathSetAdd(holds, all->ids[i]);
         owned |= loanShapeMayMark(loanOf(all->ids[i]));
     }
-    if (!owned)
+    if (!owned && (holds == NULL || flowCompoundLocal(tmp)))
         return 0;
     uint32_t stand = pwStandIn(ref, holds);
-    pathVars[stand].compound = 1;
+    pathVars[stand].compound = owned ? 1 : 2;
     return stand;
 }
 

@@ -858,18 +858,17 @@ TypeCompare refvirtMatches(RefNode *to, RefNode *from, SubtypeConstraint constra
 
 // The type two references (thin, virtual or slice, alike) meet as when they
 // differ only in permission: one with the least permission both coerce to, and
-// the shorter of their lifetimes. NULL when they differ in anything else
-// (region, what is pointed at, a virtual reference's promises), when either is a
-// key, whose brand says more than a lifetime, or when no permission is common
+// the shorter of their lifetimes. Borrows and owners of one region meet alike,
+// and each is coerced to it as to a written type, so an owner that coercion
+// moves ('uni' to 'mut') is moved by the branch giving it. NULL when they differ
+// in anything else (region, what is pointed at, a virtual reference's promises),
+// when either is a key, whose brand says more than a lifetime, or when no
+// permission is common
 INode *refPermJoin(INode *type1, INode *type2) {
     RefNode *typ1 = (RefNode *)itypeGetTypeDcl(type1);
     RefNode *typ2 = (RefNode *)itypeGetTypeDcl(type2);
 
-    // Borrows only: an owner coerced to another permission in one branch of
-    // several is not yet generated right (a 'uni' and a 'mut' Rc, so wanted,
-    // corrupt the heap), so owners that differ are still refused
     if (typ1->tag != typ2->tag
-        || itypeGetTypeDcl(typ1->region) != (INode*)borrowRef
         || itypeGetTypeDcl(typ1->region) != itypeGetTypeDcl(typ2->region)
         || lifeIsInvariant(typ1->lifename) || lifeIsInvariant(typ2->lifename)
         || typ1->marks != typ2->marks || typ1->bound != typ2->bound

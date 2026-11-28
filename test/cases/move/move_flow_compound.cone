@@ -1,0 +1,153 @@
+// A compound assignment reaches its place before its right side and writes into it after.
+// So a right side that moves the variable the place lies in uses it after the move, as
+// 'let v = e; x += v' does: the sum would be stored into a variable that holds nothing,
+// and where the '+' lends 'x' to its method, or is a macro that reads it, what 'take'
+// freed would be read and released again. move_compound_success holds what is accepted
+// beside each.
+
+mod move_flow_compound;
+
+import collections use List;
+
+struct Item { pub a: Array[usize, 3]; }
+fn item(v: usize) Uni[Item] { Uni[Item](Item([v, v, v])) }
+
+struct Named { pub n: usize; pub u: Uni[Item]; }
+alias Pair = Array[Named, 2];
+fn named(v: usize) Named { Named(v, item(v)) }
+fn pair() Pair { [named(1usize), named(2usize)] }
+fn take(a: Pair) usize { 0usize }
+fn takeNamed(s: Named) usize { 0usize }
+fn takeTuple(t: (Named, usize)) usize { 0usize }
+
+struct Counted { pub items: List[usize]; pub n: usize; }
+fn takeCounted(c: Counted) usize { 0usize }
+
+// A move type whose '+' reads what 'self' owns, so '+=' lends it
+struct Sum {
+  pub n: usize; pub u: Uni[Item];
+  pub fn `+`(self: &, k: usize) Sum { Sum(self.n + self.u.a[0usize] + k, item(self.n)) }
+}
+struct Holder { pub sum: Sum; }
+fn sum() Sum { Sum(1usize, item(1usize)) }
+fn takeSum(s: Sum) usize { 0usize }
+fn takeHolder(h: Holder) usize { 0usize }
+
+// ... and one whose '+' is a macro
+struct Mac {
+  pub n: usize; pub u: Uni[Item];
+  pub macro `+`[self, k: usize] { Mac(self.n + k, item(1usize)) }
+}
+fn mac() Mac { Mac(1usize, item(1usize)) }
+fn takeMac(m: Mac) usize { 0usize }
+
+fn element() {
+  var a = pair();
+  a[0usize].n += take(a);                       //~ ErrorMove "moved out by the right side"
+}
+
+fn field() {
+  var s = named(1usize);
+  s.n += takeNamed(s);                          //~ ErrorMove "moved out by the right side"
+}
+
+fn tupleElement() {
+  var t = (named(1usize), 1usize);
+  t.1 += takeTuple(t);                          //~ ErrorMove "moved out by the right side"
+}
+
+fn listHolder() {
+  var c = Counted(List[usize](), 1usize);
+  c.n += takeCounted(c);                        //~ ErrorMove "moved out by the right side"
+}
+
+fn whole() {
+  var x = sum();
+  x += takeSum(x);                              //~ ErrorMove "moved out by the right side"
+}
+
+fn wholeElement() {
+  var a = [sum(), sum()];
+  a[0usize] += {let b = a; 0usize};             //~ ErrorMove "moved out by the right side"
+}
+
+fn wholeField() {
+  var h = Holder(sum());
+  h.sum += takeHolder(h);                       //~ ErrorMove "moved out by the right side"
+}
+
+fn macroOperator() {
+  var x = mac();
+  x += takeMac(x);                              //~ ErrorMove "moved out by the right side"
+}
+
+fn movedInABlock() {
+  var s = named(1usize);
+  s.n += {let t = s; 1usize};                   //~ ErrorMove "moved out by the right side"
+}
+
+fn onOnePath(c: bool) {
+  var s = named(1usize);
+  s.n += if c {takeNamed(s)} else {1usize};     //~ ErrorMove "moved out by the right side"
+}
+
+fn parameter(var s: Named) {
+  s.n += takeNamed(s);                          //~ ErrorMove "moved out by the right side"
+}
+
+fn borrowWritten() {
+  var s = named(1usize);
+  (&mut s.n) += takeNamed(s);                   //~ ErrorMove "moved out by the right side"
+}
+
+// Through a borrow a name holds, the move is of what is borrowed, as it is at
+// 'r.n = takeNamed(s)'
+fn namedBorrow() {
+  var s = named(1usize);
+  let r = &mut s;
+  r.n += takeNamed(s);                          //~ ErrorFrozen
+}
+
+fn namedBorrowOfAField() {
+  var s = named(1usize);
+  let r = &mut s.n;
+  *r += takeNamed(s);                           //~ ErrorFrozen
+}
+
+fn namedBorrowItself() {
+  var s = named(1usize);
+  var r = &mut s.n;
+  r += takeNamed(s);                            //~ ErrorFrozen
+}
+
+fn namedBorrowOfAnElement() {
+  var a = pair();
+  let r = &mut a[0usize];
+  r.n += take(a);                               //~ ErrorFrozen
+}
+
+fn namedBorrowMacro() {
+  var x = mac();
+  let r = &mut x;
+  r += takeMac(x);                              //~ ErrorFrozen
+}
+
+fn main() {
+  element();
+  field();
+  tupleElement();
+  listHolder();
+  whole();
+  wholeElement();
+  wholeField();
+  macroOperator();
+  movedInABlock();
+  onOnePath(false);
+  parameter(named(1usize));
+  borrowWritten();
+  namedBorrow();
+  namedBorrowOfAField();
+  namedBorrowItself();
+  namedBorrowOfAnElement();
+  namedBorrowMacro();
+}
