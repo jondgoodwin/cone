@@ -171,14 +171,24 @@ ref2 = &amp;mut other;   // Error 1017: You do not have permission to modify lva
 	<p>Where the branches of an <span class="pre">if</span> or <span class="pre">match</span>, the breaks of a loop
 		or the elements of an array literal are references that differ only in permission, the value they give has
 		the permission closest to theirs that each of them converts to, and lives only as long as the shorter-lived.
-		Only borrowed references are joined this way: owners such as <span class="pre">Rc</span> that differ in
-		permission are not, nor are references of different regions or to different types.</p>
+		Owners of one region are joined the same way (an owner has no lifetime to shorten), and each converts as it
+		does where that permission is written: a <span class="pre">uni</span> owner is moved by the branch that gives
+		it, and one that copies is copied. References of different regions or to different types are not joined, nor
+		is a reference whose permission is a lock with any other permission.</p>
 <pre>
 var a = 1;
 let b = 2;
 let r = if c {&amp;mut a} else {&amp;b};   // r is a &amp;i32 (ro)
 let s = if c {&amp;imm b} else {&amp;mut a}; // ro too: both convert to it
 *r = 3;                              // Error 1017: r may not be written through
+</pre>
+<pre>
+let one = Rc[i32](1);                // an Rc[uni, i32]
+let two = Rc[mut, i32](2);
+let n = if c {one} else {two};       // n is an Rc[mut, i32]
+*n = 3;                              // Ok: mut may write
+*two = 4;                            // Ok: two was copied, and is still an owner
+let m = *one;                        // Error: one was moved into n
 </pre>
 	<h3 id="fromuni">From uni, for a while</h3>
 	<p>A value with one <span class="pre">uni</span> reference sometimes needs several for a while. A
