@@ -1570,26 +1570,33 @@ static int pwPlace(INode **nodep, Place *pl, PathSet **base) {
 // the place the call lent holds, so it carries what the call's receiver holds, not the loans the
 // call made of the receiver itself. A read through a named reference drops them the same way
 // (pathSetThrough). The reference to the slot itself, not read through, keeps its loan.
-static PathSet *pwSlotRead(StarNode *deref, PathSet *base) {
+static int pwReadsOwnSlot(StarNode *deref) {
     INode *e = deref->vtexp;
     while (e->tag == BorrowTag || e->tag == DerefTag)
         e = e->tag == BorrowTag ? ((RefNode *)e)->vtexp : ((StarNode *)e)->vtexp;
     if (e->tag != FnCallTag || (FnCallNode *)e != pwOwnCall || pwOwnCnt == 0)
-        return base;
+        return 0;
     // Only where the value read is itself a borrow
-    if (!pwIsBorrowed(iexpGetTypeDcl((INode *)deref)))
-        return base;
-    for (uint32_t k = 0; k < pwOwnCnt; ++k) {
-        for (uint32_t i = 0; base && i < base->cnt; ) {
-            if (loanOf(base->ids[i]) == pwOwnLoans[k]) {
-                base = pathSetWithout(base, base->ids[i]);
+    return pwIsBorrowed(iexpGetTypeDcl((INode *)deref));
+}
+
+// 'set' without the loans listed
+static PathSet *pwWithoutLoans(PathSet *set, uint32_t *loans, uint32_t cnt) {
+    for (uint32_t k = 0; k < cnt; ++k) {
+        for (uint32_t i = 0; set && i < set->cnt; ) {
+            if (loanOf(set->ids[i]) == loans[k]) {
+                set = pathSetWithout(set, set->ids[i]);
                 i = 0;
             }
             else
                 ++i;
         }
     }
-    return base;
+    return set;
+}
+
+static PathSet *pwSlotRead(StarNode *deref, PathSet *base) {
+    return pwReadsOwnSlot(deref) ? pwWithoutLoans(base, pwOwnLoans, pwOwnCnt) : base;
 }
 
 // A place read, or moved when 'move' says the value goes to a new holder
@@ -5086,7 +5093,9 @@ static PathSet *pwAssign(AssignNode *node) {
     return holds;
 }
 
-// Each side of a swap is stored over with the other's value
+// Each side of a swap is stored over with the other's value, so each gives the other the
+// loans a value read from it carries. A side that is no place, one reached through a raw
+// pointer, still gives what a read of it carries; nothing is tracked as stored there
 static void pwSwap(SwapNode *node) {
     INode **sides[2] = { &node->lval, &node->rval };
     uint32_t whole[2] = { 0, 0 };
@@ -5094,6 +5103,12 @@ static void pwSwap(SwapNode *node) {
     Place places[2];
     int found[2] = { 0, 0 };
     PathSet *bases[2] = { NULL, NULL };
+    // The loans a call made itself, which what is read out of the slot it lent does not
+    // carry (pwSlotRead): kept per side, as the other side's walk may make a call too
+    uint32_t own[2][sizeof(pwOwnLoans) / sizeof(pwOwnLoans[0])];
+    uint32_t owncnt[2] = { 0, 0 };
+    int carries = pathLoans && (pwCarries(((IExpNode *)node->lval)->vtype)
+        || pwCarries(((IExpNode *)node->rval)->vtype));
     // A side holding a seam reaches its place first, the other after the
     // seam, as generation does (genlTerm, SwapTag)
     int first = pwSeams && awaitWithin(node->rval) && !awaitWithin(node->lval) ? 1 : 0;
@@ -5146,6 +5161,10 @@ static void pwSwap(SwapNode *node) {
         }
         else {
             found[i] = pwPlace(sides[i], pl, &bases[i]);
+            if ((*sides[i])->tag == DerefTag && pwReadsOwnSlot((StarNode *)*sides[i])) {
+                owncnt[i] = pwOwnCnt;
+                memcpy(own[i], pwOwnLoans, pwOwnCnt * sizeof(own[i][0]));
+            }
             pwIndexUse(stand, *sides[i]);
             // What a reference's target holds, as it was when the address was
             // made: the other side may point the reference elsewhere
@@ -5160,8 +5179,11 @@ static void pwSwap(SwapNode *node) {
     for (int k = 0; k < 2; ++k) {
         int i = k ^ first;
         Place *pl = &places[i];
-        if (!found[i])
+        if (!found[i]) {
+            if (carries && pwCarries(((IExpNode *)*sides[i])->vtype))
+                holds[i] = pwWithoutLoans(bases[i], own[i], owncnt[i]);
             continue;
+        }
         if (whole[i]) {
             VarDclNode *var = pathVars[whole[i]].var;
             holds[i] = pathVars[whole[i]].holds;
@@ -5177,6 +5199,7 @@ static void pwSwap(SwapNode *node) {
             pwDropUse(pl, *sides[i], 0);
             PathSet *now = pwPlaceHolds(pl, *sides[i]);
             holds[i] = pl->deref ? pathSetUnion(holds[i], now) : now;
+            holds[i] = pwWithoutLoans(holds[i], own[i], owncnt[i]);
             pwAccess(pl, AccessWrite, *sides[i]);
         }
     }
@@ -5191,8 +5214,10 @@ static void pwSwap(SwapNode *node) {
     // one: the holder there holds the other side's loans from here on, so
     // 'h.r <-> t' keeps what 't' borrowed alive while 'h' is used.
     for (int i = 0; i < 2; ++i) {
-        if (!found[i])
+        if (!found[i]) {
+            pwStoreStatic(*sides[i], holds[1 - i]);
             continue;
+        }
         if (!whole[i])
             pwJoinField(*sides[i], &places[i], *sides[1 - i], holds[1 - i]);
         PathSet *stored = pwStoreEscapes(*sides[i], &places[i], holds[1 - i], NULL);

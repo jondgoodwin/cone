@@ -2099,6 +2099,15 @@ is the reference's referent, shared and written by the reference's permission, a
 is marked for the `String`. `collection_flow_reshape_through_call` pins the refusals and
 `collection_reshape_through_call_success` what stays accepted.
 
+**A side of a swap** reached through a call's result is read through that stand-in, so
+the other side gains what is read there and what it gives is stored into every holder the
+reference may point into (`pwStoreInto`). As in `t = l[0usize]`, what is read out of the
+slot a call lent does not carry the loans that call made itself (`pwReadsOwnSlot`, kept
+per side, since the other side's walk may make a call too); without that `l[0usize] <-> t`
+left `t` borrowing `l`. A side reached through a raw pointer is no place: it gives the
+loans a read of it carries, and nothing is tracked as stored there, as for a plain store.
+`lifetime_mix_swap_through_call_refused`, `..._escape` and `..._ok` pin it.
+
 **An element in an `imm` path.** A method's returned borrow is a plain `&Item`, whose permission
 alone says another holder may write it (`Place.shwrite` of the reference's type), so a source lent
 `&imm` lost its imm-ness at `src.items[0usize]`. `pwElemView` flags the receiver's loan
