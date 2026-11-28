@@ -1,0 +1,138 @@
+// What a function stores through a '&mut' parameter is handed out as its result is. A function
+// handed a list, or a struct holding one, may store a view of an element where its caller reads it
+// back, and replacing the list then frees what the view points at. A returned view was refused and a
+// stored one was not, so each of these was accepted and read freed storage
+// (collection_reshape_stored_success holds what stays accepted).
+
+mod collection_flow_reshape_stored;
+
+import stdio use *;
+import collections use *;
+
+struct Holder { pub p: &i32; }
+
+struct Box {
+  pub items: List[i32];
+  pub fn put(self: &, out: &mut Option[&i32]) { *out = Some[&i32](&self.items[0usize]); }
+}
+
+fn grab(l: &List[i32], out: &mut Option[&i32]) { *out = Some[&i32](&(*l)[0usize]); }
+fn named(l: &'a List[i32], out: &mut Option[&'a i32]) { *out = Some[&i32](&(*l)[0usize]); }
+fn through(l: &List[i32], out: &mut Option[&i32]) { grab(l, out); }
+fn grabBox(b: &Box, out: &mut Option[&i32]) { *out = Some[&i32](&b.items[0usize]); }
+fn grabHolder(l: &List[i32], h: &mut Holder) { h.p = &(*l)[0usize]; }
+fn grabInto(l: &List[i32], out: &mut List[&i32]) { out.push(&(*l)[0usize]); }
+fn grabSome(o: &Option[i32], out: &mut Option[&i32]) { if let Some(v) = o { *out = Some[&i32](v); } }
+
+fn byName(a: &mut List[i32]) {
+  var out: Option[&i32] = None;
+  grab(a, &mut out);
+  *a = List[i32]();                      //~ ErrorShapeStore:3 "while 'out' still holds a borrow into it"
+  if let Some(v) = out { printInt(i64.from(*v)); }
+}
+
+fn otherName(a: &mut List[i32], b: &mut List[i32]) {
+  var out: Option[&i32] = None;
+  grab(a, &mut out);
+  *b = List[i32]();                      //~ ErrorShapeStore:3
+  if let Some(v) = out { printInt(i64.from(*v)); }
+}
+
+fn reborrowed(a: &mut List[i32]) {
+  var out: Option[&i32] = None;
+  grab(&*a, &mut out);
+  *a = List[i32]();                      //~ ErrorShapeStore:3
+  if let Some(v) = out { printInt(i64.from(*v)); }
+}
+
+fn throughLocal(a: &mut List[i32]) {
+  let l = &*a;
+  var out: Option[&i32] = None;
+  grab(l, &mut out);
+  *a = List[i32]();                      //~ ErrorShapeStore:3
+  if let Some(v) = out { printInt(i64.from(*v)); }
+}
+
+fn grown(a: &mut List[i32]) {
+  var out: Option[&i32] = None;
+  grab(a, &mut out);
+  a.push(1i32);                          //~ ErrorShapeReshape:4
+  if let Some(v) = out { printInt(i64.from(*v)); }
+}
+
+fn namedLifetime(a: &mut List[i32]) {
+  var out: Option[&i32] = None;
+  named(a, &mut out);
+  *a = List[i32]();                      //~ ErrorShapeStore:3
+  if let Some(v) = out { printInt(i64.from(*v)); }
+}
+
+fn twoCalls(a: &mut List[i32]) {
+  var out: Option[&i32] = None;
+  through(a, &mut out);
+  *a = List[i32]();                      //~ ErrorShapeStore:3
+  if let Some(v) = out { printInt(i64.from(*v)); }
+}
+
+fn intoParameter(a: &mut List[i32], out: &mut Option[&i32]) {
+  grab(a, out);
+  *a = List[i32]();                      //~ ErrorShapeStore:3
+  if let Some(v) = *out { printInt(i64.from(*v)); }
+}
+
+fn intoField(a: &mut List[i32]) {
+  let zero = 0i32;
+  var h = Holder(&zero);
+  grabHolder(a, &mut h);
+  *a = List[i32]();                      //~ ErrorShapeStore:3 "while 'h' still holds a borrow into it"
+  printInt(i64.from(*h.p));
+}
+
+fn intoList(a: &mut List[i32]) {
+  var out = List[&i32]();
+  grabInto(a, &mut out);
+  *a = List[i32]();                      //~ ErrorShapeStore:3
+  let p: &i32 = out[0usize];
+  printInt(i64.from(*p));
+}
+
+fn receiver(b: &mut Box) {
+  var out: Option[&i32] = None;
+  b.put(&mut out);
+  b.items = List[i32]();                 //~ ErrorFrozen:4 "borrowed (by 'put'"
+  if let Some(v) = out { printInt(i64.from(*v)); }
+}
+
+fn receiverWhole(b: &mut Box) {
+  var out: Option[&i32] = None;
+  b.put(&mut out);
+  *b = Box(List[i32]());                 //~ ErrorShapeStore:3
+  if let Some(v) = out { printInt(i64.from(*v)); }
+}
+
+fn fieldPlace(b: &mut Box) {
+  var out: Option[&i32] = None;
+  grab(&b.items, &mut out);
+  b.items = List[i32]();                 //~ ErrorShapeStore:4
+  if let Some(v) = out { printInt(i64.from(*v)); }
+}
+
+fn structArgument(b: &mut Box) {
+  var out: Option[&i32] = None;
+  grabBox(b, &mut out);
+  b.items = List[i32]();                 //~ ErrorFrozen:4
+  if let Some(v) = out { printInt(i64.from(*v)); }
+}
+
+fn variant(o: &mut Option[i32]) {
+  var out: Option[&i32] = None;
+  grabSome(o, &mut out);
+  *o = None;
+  if let Some(v) = out { printInt(i64.from(*v)); }   //~ ErrorVariantReshape "after the store at"
+}
+
+fn main() {
+  var a = List[i32]();
+  a.push(7i32);
+  byName(&mut a);
+}

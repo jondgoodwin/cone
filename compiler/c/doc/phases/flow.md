@@ -1732,12 +1732,17 @@ a struct, means **both** hold of its methods (`siInferStruct`):
   type that owns its block through a member (a `Set`'s `Dict`, a `String`'s
   `List`) has no pointer field of its own and writes through the member's method
   all the same, which is why the test is not "has a pointer field";
-- one returns a type that carries a borrow (`itypeCarriesBorrow`).
+- one lends: returns a type that carries a borrow (`itypeCarriesBorrow`), or may store a
+  borrow of `*self` through another parameter (`siStoresOut`: that parameter is a writable way
+  to a place that can hold a borrow of something inside the type, `itypeMayHoldBorrowInside`,
+  asked by the types whatever lifetimes the signature names). A store is a handing out as a
+  result is, so a type whose only lending is `fn put(self &, out &mut Option[&i32])` changes
+  shape as one that returns the view does.
 
 The methods are not the only code that lends from a type or changes it: a
 **free function of the type's own module** that takes it by reference counts
 too (`siEachFree`, `siFreeFn`). It is a lender when its result carries a
-borrow, and a writer when it takes the type `&mut`, is visible, and writes
+borrow or it may store one of what it was handed of the type (`siStoresOut`), and a writer when it takes the type `&mut`, is visible, and writes
 storage through that parameter (`siParamWrites`, the same engine as for a method's
 `self`). The two may come from either side, so `Block` with a lending method and a
 free `grow(b &mut Block)`, `Cell` with a free lender and a free writer, and
@@ -2168,6 +2173,20 @@ reference and an operator are not lent from, and a result that cannot hold the
 borrow (a number, `'static`) lends nothing; where the signature names a lifetime for
 another parameter the loan is made but the result does not carry it, so nothing is
 frozen.
+
+**What a call stores is handed out as its result is.** `grab(l, &mut out)`, `grab` storing
+`&(*l)[0]` in `*out`, hands the caller a view of `l` as a return would. So the lending above
+(`pwReceiver`, `pwLentArg`, `pwLentByName`, the stand-in) runs for an argument where the
+result carries borrows *or* another argument is a way to store one that can end
+(`flowCallMayStore`: a writable borrow reached at some depth, `pwStoreDepth`, or an arena's).
+`pwCallStores` answers what was stored, by the signature's lifetimes and the places' types, and
+a receiver's or a lent argument's loan among it is followed as one among the result is
+(`pwRecvShapeLent`, `pwShapeLent`), after `pwShapeCall`, so the call itself is not asked of
+what it hands out. `siNeedNode` settles the type of each such argument as it does where the
+result carries borrows. Not followed, as for a result: a method's argument that is not its
+receiver, and an argument of a call through a function reference or a closure (their loan is
+made, and marked for no shape check). Tests: `collection_flow_reshape_stored`,
+`collection_reshape_stored_success`.
 
 **A result borrowed from what an argument reaches through a shared owner** (`pwReachShared`,
 called from `pwCall` after the lending above). `first(&o)`, `o` an `Rc[mut, List[i32]]`, may

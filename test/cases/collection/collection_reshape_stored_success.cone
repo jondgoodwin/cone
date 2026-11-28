@@ -1,0 +1,107 @@
+// What stays accepted beside collection_flow_reshape_stored: a view stored through a '&mut'
+// parameter with no later change to the list while it is used, and a store of something the lent
+// list cannot reach, by its type or by the lifetimes the signature names.
+
+mod collection_reshape_stored_success;
+
+import stdio use *;
+import collections use *;
+
+struct Box {
+  pub items: List[i32];
+  pub fn put(self: &, out: &mut Option[&i32]) { *out = Some[&i32](&self.items[0usize]); }
+}
+
+fn grab(l: &List[i32], out: &mut Option[&i32]) { *out = Some[&i32](&(*l)[0usize]); }
+fn otherType(l: &List[i32], x: &i64, out: &mut Option[&i64]) { *out = Some[&i64](x); } //~ WarnLifetimeTie
+fn otherLife(l: &'a List[i32], x: &'b i32, out: &mut Option[&'b i32]) { *out = Some[&i32](x); }
+fn copied(l: &List[i32], out: &mut i32) { *out = (*l)[0usize]; }
+
+fn show(v: &Option[&i32]) { if let Some(p) = *v { printInt(i64.from(*p)); print <- "\n"; } }
+
+// The view is used up before the list is replaced
+fn usedFirst(a: &mut List[i32]) {
+  var out: Option[&i32] = None;
+  grab(a, &mut out);
+  show(&out);
+  *a = List[i32]();
+  a.push(2i32);
+}
+
+// ...or is not used after
+fn neverAgain(a: &mut List[i32]) {
+  var out: Option[&i32] = None;
+  grab(a, &mut out);
+  *a = List[i32]();
+  a.push(3i32);
+  printInt(i64.from(a[0usize]));
+  print <- "\n";
+}
+
+// What is stored cannot point into the list, by its type
+fn byType(a: &mut List[i32]) {
+  let zero = 0i64;
+  let four = 4i64;
+  var out = Some[&i64](&zero);
+  otherType(a, &four, &mut out);
+  *a = List[i32]();
+  a.push(4i32);
+  if let Some(p) = out { printInt(*p); print <- "\n"; }
+}
+
+// ...or by the lifetimes the signature names
+fn byLifetime(a: &mut List[i32]) {
+  let five = 5i32;
+  var out: Option[&i32] = None;
+  otherLife(a, &five, &mut out);
+  *a = List[i32]();
+  a.push(6i32);
+  show(&out);
+}
+
+// Nothing borrowed is stored
+fn value(a: &mut List[i32]) {
+  var out = 0i32;
+  copied(a, &mut out);
+  *a = List[i32]();
+  a.push(7i32);
+  printInt(i64.from(out));
+  print <- "\n";
+}
+
+// Another list is replaced
+fn otherList(a: &mut List[i32]) {
+  var m = List[i32]();
+  m.push(8i32);
+  var out: Option[&i32] = None;
+  grab(a, &mut out);
+  m = List[i32]();
+  show(&out);
+  printInt(i64.from(m.len));
+  print <- "\n";
+}
+
+// The receiver's view is used up before its list is replaced
+fn receiver(b: &mut Box) {
+  var out: Option[&i32] = None;
+  b.put(&mut out);
+  show(&out);
+  b.items = List[i32]();
+  b.items.push(9i32);
+}
+
+fn main() {
+  var a = List[i32]();
+  a.push(1i32);
+  usedFirst(&mut a);        // 1, leaves [2]
+  neverAgain(&mut a);       // 3, leaves [3]
+  byType(&mut a);           // 4, leaves [4]
+  byLifetime(&mut a);       // 5, leaves [6]
+  value(&mut a);            // 6, leaves [7]
+  otherList(&mut a);        // 7 (the view of 'a'), then 0
+  var b = Box(List[i32]());
+  b.items.push(10i32);
+  receiver(&mut b);         // 10, leaves [9]
+  printInt(i64.from(b.items[0usize]));    // 9
+  print <- "\n";
+}
