@@ -1,0 +1,51 @@
+// A global outlives main for a detached thread too: the thread reads a 'let'
+// global List after main has returned. A busy actor holds the program's end at
+// its wait for quiet long enough for the thread to read. A global is never
+// finalized, so the List is still there.
+mod concurrency_global_exit_thread;
+
+import stdio use *;
+import collections use *;
+import actors;
+import thread;
+import time use Duration;
+
+const items = 4000000usize;
+
+fn makeTable() List[u64] {
+  var l = List[u64]();
+  var i = 0usize;
+  while i < items {
+    l.push(7u64);
+    i = i + 1usize;
+  }
+  l
+}
+
+let table = makeTable();
+
+fn reader(a: u32) u32 {
+  thread.sleep(Duration.fromMillis(300i64));
+  printStr("thread: reading the table\n");
+  let v = table[100usize];
+  printStr("thread: table[100] (expected 7) ");
+  print <- v;
+  printStr("\n");
+  0u32
+}
+
+actor Busy {
+  n: u64 = 0u64;
+
+  pub async fn work(self) {
+    thread.sleep(Duration.fromMillis(1500i64));
+  }
+}
+
+fn main() {
+  let b = Busy();
+  b.work();
+  let t = thread.start(0u32, &reader);
+  t.detach();
+  printStr("main returns\n");
+}

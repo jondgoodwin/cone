@@ -1,0 +1,56 @@
+// A 'var' global that holds a way to an owner, used soundly: a borrow of what the owner points at
+// is lent to functions that read the owner through the global and write only what they were lent,
+// to one that stores into an owner it made itself, to one that stores over another type's owner
+// through the global, and the global is stored over once no borrow is held
+// (collection_flow_reshape_global_owner holds the refusals). Sums are worked out by hand: 7 is
+// lent, 'reads' adds 7 (what the global's task holds) and 1, to 15; 'own' adds 5 and 1, to 21;
+// 'other' adds 1, to 22. The new task is 50, which 'reads' then raises by 50 and 1, to 101.
+
+mod collection_reshape_global_owner_success;
+
+import stdio use *;
+
+struct Idle { pub count: i64; }
+struct Note { pub value: i64; }
+struct Tcb { pub task: Rc[mut, Idle]; pub note: Rc[mut, Note]; }
+
+var cur: Option[Rc[mut, Tcb]] = None[Rc[mut, Tcb]];
+
+fn reads(self: &mut Idle) {
+  match cur {
+    case let Some(t) { let n = t.task.count; self.count += n; }
+    else {}
+  }
+  self.count += 1;
+}
+
+fn fresh() Rc[mut, Tcb] { Rc[mut, Tcb](Rc[mut, Idle](5), Rc[mut, Note](0)) }
+
+fn own(self: &mut Idle) {
+  let made = fresh();
+  made.task = Rc[mut, Idle](5);
+  self.count += made.task.count;
+  self.count += 1;
+}
+
+fn other(self: &mut Idle) {
+  match cur {
+    case let Some(t) { t.note = Rc[mut, Note](9); }
+    else {}
+  }
+  self.count += 1;
+}
+
+fn main() {
+  let t1 = Rc[mut, Tcb](Rc[mut, Idle](7), Rc[mut, Note](0));
+  cur = Some(t1);
+  reads(&mut *t1.task);
+  print <- t1.task.count, "\n";
+  own(&mut *t1.task);
+  print <- t1.task.count, "\n";
+  other(&mut *t1.task);
+  print <- t1.task.count, " ", t1.note.value, "\n";
+  t1.task = Rc[mut, Idle](50);
+  reads(&mut *t1.task);
+  print <- t1.task.count, "\n";
+}

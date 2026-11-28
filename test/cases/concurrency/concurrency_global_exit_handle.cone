@@ -1,0 +1,59 @@
+// A global outlives the actors package's own end: a behaviour paused on a timer
+// is abandoned there, after the root module's finalizer has run, and it held the
+// last handle to a second actor, whose 'final' reads a global. A global is never
+// finalized, so the List is still there.
+mod concurrency_global_exit_handle;
+
+import stdio use *;
+import collections use *;
+import actors use Timer;
+import time use Duration, Instant;
+
+const items = 4000000usize;
+
+fn makeTable() List[u64] {
+  var l = List[u64]();
+  var i = 0usize;
+  while i < items {
+    l.push(7u64);
+    i = i + 1usize;
+  }
+  l
+}
+
+let table = makeTable();
+
+actor Child {
+  n: u64 = 100u64;
+
+  pub async fn hello(self) {
+    n = n + 0u64;
+  }
+
+  fn final(self: &uni) {
+    printStr("child final: reading the table\n");
+    let v = table[usize.from(n)];
+    printStr("child final: table[n] (expected 7) ");
+    print <- v;
+    printStr("\n");
+  }
+}
+
+actor Holder {
+  timer: Timer;
+
+  pub async fn park(self) {
+    let c = Child();
+    c.hello();
+    timer.set(Instant.fromNanos(Instant.now().nanos() + 3600000000000i64));
+    let r = await timer.next();
+    c.hello();
+  }
+}
+
+fn main() {
+  let h = Holder(Timer.make());
+  h.park();
+  actors.waitQuiet();
+  printStr("main returns\n");
+}

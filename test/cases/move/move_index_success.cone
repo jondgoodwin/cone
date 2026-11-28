@@ -1,0 +1,84 @@
+// Beside move_flow_index, accepted: an index that moves another value, one that reads
+// the indexed array through a borrow, one that moves it and gives it a new value before
+// the element is reached, a move after the element is done with, and a move on a path
+// that returns. Each element holds its number three times, so a value printed says
+// which item was reached.
+
+mod move_index_success;
+
+import stdio use *;
+
+struct Item { pub a: Array[usize, 3]; }
+alias Items = Array[Uni[Item], 2];
+struct Holder { pub items: Items; }
+
+fn item(v: usize) Uni[Item] { Uni[Item](Item([v, v, v])) }
+fn items(v: usize) Items { [item(v), item(v + 1usize)] }
+fn take(a: Items) usize { 0usize }
+fn takeHolder(h: Holder) usize { 0usize }
+
+fn anotherMoved() {
+  var a = items(10usize);
+  var b = items(20usize);
+  let r = &a[take(b)];
+  print <- r.a[0usize], "\n";
+}
+
+fn anotherHolderMoved() {
+  var h = Holder(items(30usize));
+  var other = Holder(items(40usize));
+  print <- h.items[takeHolder(other)].a[0usize], "\n";
+}
+
+fn readByBorrow() {
+  var a = items(50usize);
+  let r = &a[(&a).len - 1usize];
+  print <- r.a[0usize], "\n";
+}
+
+fn assignedAgain() {
+  var a = items(60usize);
+  let r = &a[{take(a); a = items(70usize); 0usize}];
+  print <- r.a[0usize], "\n";
+  print <- a[{take(a); a = items(80usize); 1usize}].a[0usize], "\n";
+}
+
+fn fieldOwnerAssignedAgain() {
+  var h = Holder(items(90usize));
+  print <- h.items[{takeHolder(h); h = Holder(items(100usize)); 1usize}].a[0usize], "\n";
+}
+
+fn assignedAgainInALoop() {
+  var a = items(110usize);
+  var i = 0usize;
+  while i < 2usize {
+    print <- a[{if i == 0usize {take(a); a = items(120usize);} i}].a[0usize], "\n";
+    i += 1usize;
+  }
+}
+
+fn movedAfter() {
+  var a = items(130usize);
+  let v = a[0usize].a[0usize];
+  let n = take(a);
+  print <- v + n, "\n";
+}
+
+fn movedOnAReturningPath(c: bool) {
+  var a = items(140usize);
+  let r = &a[if c {take(a); return;} else {1usize}];
+  print <- r.a[0usize], "\n";
+}
+
+fn main() {
+  anotherMoved();
+  anotherHolderMoved();
+  readByBorrow();
+  assignedAgain();
+  fieldOwnerAssignedAgain();
+  assignedAgainInALoop();
+  movedAfter();
+  movedOnAReturningPath(false);
+  movedOnAReturningPath(true);
+  print <- "done\n";
+}
