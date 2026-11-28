@@ -940,17 +940,6 @@ static void incWant(IncGen *g, INode *node) {
     }
 }
 
-// Whether a module-level global goes in: it is exported, or it is one the
-// module's finalizer drops, which an importer must see to derive that the
-// package's finalizer is its 'drop' (module.md, "Init and final")
-static int incGlobalDropped(VarDclNode *var) {
-    return modGlobalFinalized(var);
-}
-
-static int incGlobalWanted(IncGen *g, VarDclNode *var) {
-    return dclIsExported(g->root, (INode*)var) || incGlobalDropped(var);
-}
-
 // Whether a module-level type goes in of its own: it is public, or a body an
 // importer expands names it or one of its variants
 static int incTypeReached(StructNode *strnode) {
@@ -1080,7 +1069,7 @@ static void incSeedDcl(IncGen *g, DclSpan *span) {
         }
         break;
     case VarDclTag:
-        if (incGlobalWanted(g, (VarDclNode*)node))
+        if (dclIsExported(g->root, node))
             incWalkType(g, ((VarDclNode*)node)->vtype);
         break;
     case StructTag:
@@ -1103,14 +1092,12 @@ static void incSeedDcl(IncGen *g, DclSpan *span) {
 }
 
 // A submodule's declarations the program reaches without naming them: its
-// 'init' and 'final', which the program's stitched pair calls, and each global
-// its finalizer drops, from which the program derives that finalizer
+// 'init' and 'final', which the program's stitched pair calls
 static void incSeedLifecycle(IncGen *g, DclSpan *span) {
     INode *node = span->node;
     if (node == NULL)
         return;
-    if ((node->tag == FnDclTag && (((FnDclNode*)node)->dclinfo.facts & DclLifecycle))
-        || (node->tag == VarDclTag && incGlobalDropped((VarDclNode*)node)))
+    if (node->tag == FnDclTag && (((FnDclNode*)node)->dclinfo.facts & DclLifecycle))
         incWant(g, node);
 }
 
@@ -1253,7 +1240,7 @@ static void incEditRootDcl(IncGen *g, IncMod *m, DclSpan *span, char *floor) {
             incCut(g, m, span);
         break;
     case VarDclTag:
-        if (!incGlobalWanted(g, (VarDclNode*)node))
+        if (!dclIsExported(g->root, node))
             incDelete(g, span, floor);
         else if (!(node->flags & FlagExtern))
             incCut(g, m, span);

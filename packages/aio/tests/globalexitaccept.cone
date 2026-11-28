@@ -1,0 +1,73 @@
+// A global outlives aio's own end: a behaviour paused on an accept is abandoned
+// there, on the I/O thread, and it held the last handle to a second actor, whose
+// 'final' reads a global List. A global is never finalized, so the List is
+// still there.
+mod globalexitaccept;
+
+import stdio use *;
+import collections use *;
+import actors;
+import aio use Socket;
+import iocore use SocketAddr, IoError;
+import thread;
+import time use Duration;
+
+const items = 4000000usize;
+
+fn makeTable() List[u64] {
+  var l = List[u64]();
+  var i = 0usize;
+  while i < items {
+    l.push(7u64);
+    i = i + 1usize;
+  }
+  l
+}
+
+let table = makeTable();
+
+actor Child {
+  n: u64 = 100u64;
+
+  pub async fn hello(self) {
+    n = n + 0u64;
+  }
+
+  fn final(self: &uni) {
+    printStr("child final: reading the table\n");
+    let v = table[usize.from(n)];
+    printStr("child final: table[n] (expected 7) ");
+    print <- v;
+    printStr("\n");
+  }
+}
+
+fn socketOf(r: Result[Socket, IoError]) Socket {
+  var res = r;
+  var s = Socket.none();
+  match &mut res {
+    case var &mut Ok(ok) {s <-> *ok;}
+    case let &mut Err(e) {panic("socketOf: the operation failed");}
+  }
+  s
+}
+
+actor Server {
+  n: u64 = 0u64;
+
+  pub async fn serve(self) {
+    let c = Child();
+    c.hello();
+    let ls = socketOf(await aio.listen(SocketAddr.localhost(0u16)));
+    printStr("server: awaiting accept\n");
+    let a = socketOf(await ls.accept());
+    c.hello();
+  }
+}
+
+fn main() {
+  let s = Server();
+  s.serve();
+  thread.sleep(Duration.fromMillis(300i64));
+  printStr("main returns\n");
+}

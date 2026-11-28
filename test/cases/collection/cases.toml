@@ -635,6 +635,19 @@ category = "run"
 description = "A view taken through a reference a call returned ('ui.items[0usize].label.view()') and copied out first, handed to a callee that grows nothing it points into or only reads, used up before the call that grows, or taken from a list the function owns; and handed to a callee that grows a String of its own and is handed nothing that holds the viewed one (a read-only source, a loop, a field beside the list, an element of a List[String])"
 tags = ["flow", "genllvm", "runtime"]
 
+# The same view stored through a '&mut' parameter instead of returned
+# (collection_reshape_shared_stored_success holds what is accepted beside each refusal).
+[scenario.collection_flow_reshape_shared_stored]
+category = "reject"
+description = "A view a function stored through a '&mut' parameter out of what a shared owner holds (a free function, a method, through two calls, into a parameter, a struct's field, a list or a reference, a function value, a borrow written as the argument, a receiver, in a loop), then stored over or handed to a call through the other holder"
+tags = ["flow"]
+diagnostics = 13
+
+[scenario.collection_reshape_shared_stored_success]
+category = "run"
+description = "A view stored out of a shared owner with no later change or used up before it, a borrow of what no shared owner holds, a change to a list of another type, and a call that replaces the list and then stores a view of the new one"
+tags = ["flow", "genllvm", "runtime"]
+
 # A view a function took out of what a shared owner holds ('first(&o)', 'o' an 'Rc[mut, List]'),
 # which a second holder then replaces or grows
 # (collection_reshape_shared_result_success holds what is accepted beside each refusal).
@@ -800,6 +813,31 @@ diagnostics = 13
 [scenario.collection_reshape_global_success]
 category = "run"
 description = "A view of a 'var' global across calls that cannot reshape it: its length, a copy, a call that writes nothing, a print, a view of a 'let' global, a '&<mut fn' marked '+ ShapeKeeping', a view of a local beside a 'var' global, and a view through a reference of a type no 'var' global reaches"
+tags = ["flow", "genllvm", "runtime"]
+
+# A 'var' global that holds a way to an owner is another holder of it: the callee lent what the owner
+# points at may come by the owner from the global in more ways than the global's own name.
+[scenario.collection_flow_reshape_global_owner]
+category = "reject"
+description = "What an owner points at lent to a function that stores over that owner through a 'var' global: through the global's pattern binding, a copy of it, a function that answers it, the owner or the global passed on, and a callee; lent to a function or as a method's receiver"
+tags = ["flow"]
+diagnostics = 7
+
+[scenario.collection_reshape_global_owner_success]
+category = "run"
+description = "A 'var' global holding an owner used soundly beside a borrow of what the owner points at: read through the global, an owner of the function's own stored into, another type's owner stored over, and the owner replaced once no borrow is held"
+tags = ["flow", "genllvm", "runtime"]
+
+# Behind a virtual reference, a 'var' global is a holder only if its type could hold what is borrowed.
+[scenario.collection_flow_reshape_global_behind]
+category = "reject"
+description = "A borrow lent by a method behind a virtual reference, held across a virtual call, while a 'var' global holds an owner of a type that has what the trait asks for"
+tags = ["flow"]
+diagnostics = 2
+
+[scenario.collection_reshape_global_behind_success]
+category = "run"
+description = "The same beside a 'var' global whose type is none of the borrowed trait: core's 'Error.report' and a function of the program's own are not refused"
 tags = ["flow", "genllvm", "runtime"]
 
 # A generic closure that captured the owner by '&mut' holds it as '& &mut Ed': a read-only reference

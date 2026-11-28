@@ -119,7 +119,7 @@ and nothing writes it** (`genlGloVarIsConstant`): it has an initial value, is
 not `extern`, not thread-local, and its type has no drop function. A global
 without a value is assigned by its module's `init` at run time, an `extern`
 one's value is another object's and may be assigned by that package's `init`,
-and a finalizing one is handed to its `final` as `&uni` by its module's `drop`.
+and one whose type has a drop function is left in writable storage.
 A constant's loads may be assumed never to change, and its storage may be
 read-only.
 
@@ -245,7 +245,7 @@ answering both is what keeps the object and the include file from disagreeing:
 - a declaration name resolution marked `DclExpandReached` — named by an
   `inline`, generic or macro body, a trait's default or a generic type's method,
   bare or through a path ([Name Resolution](name-resolution.md), "Contract");
-- a module's `init`, its `final` and the `drop` it is given (`DclLifecycle`),
+- a module's `init` and its `final` (`DclLifecycle`),
   public or not: the program's stitched init and final call them from its own
   object;
 - a public function or global of a module;
@@ -878,7 +878,8 @@ deep per link. Debug builds keep the death in line.
 (`genlFinalizeAt`), and every death reaches it: a local's at its scope's end
 (flow lists the variable, or for a struct or an enum a call to its drop), a
 region value's before its `free`, a field's inside its holder's drop, a
-module's global in the module's `drop` (listed as a local is), and the
+module's global when it is assigned over (never at the program's end,
+[module](../nodes/module.md), "Init and final"), and the
 `finalize` intrinsic. An owning reference is released (`genlReleaseOwning`). A
 struct or an enum calls its drop, which is the whole death, its owners' release
 included. A tuple finalizes each element that needs it, in order, each reached

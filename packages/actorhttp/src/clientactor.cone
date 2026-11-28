@@ -41,7 +41,7 @@ struct ClientRegistry {
   ids: List[u64];
 }
 
-// Neither touches the registry once the program is over (final): it is a global, dropped when final returns
+// Neither touches the registry once the program is over (final): what it recorded then, nothing would end
 fn regAdd(a: ClientActor, id: u64) {
   if programOver.load() {return;}
   let r = &mut *clientReg;
@@ -1590,9 +1590,36 @@ pub actor ClientConnActor {
 
   fn kick(self, now: Instant) {
     if ex.ended {return;}
-    let isDone = cc.done(now);
+    let known = layerLost(cc.failureOf());
+    var isDone = cc.done(now);
     if !writing {
-      let n = cc.fill(now);
+      var n = cc.fill(now);
+      if n == 0usize && !layerLost(cc.failureOf()) {
+        // 'fill' can itself end the protocol (as ConnActor's kick says): what it says is read now
+        ex.step(&mut cc, now);
+        ex.report(&cc);
+        isDone = cc.done(now);
+        n = cc.fill(now);
+      }
+      // A layer that failed with nothing left to end the connection (as ConnActor's kick says): it goes now, its
+      // fetches failed with the layer's failure
+      var lost = false;
+      var why = httpclient.Failure.none();
+      if !isDone {
+        match cc.failureOf() {
+          case let &Some(f) {
+            if f.stage == httpconn.Stage.Tls && (n == 0usize || !known) {
+              lost = true;
+              why = httpclient.Failure.fromConn(f);
+            }
+          }
+          else {}
+        }
+      }
+      if lost {
+        self.finishEnd(false, why, true);
+        return;
+      }
       if n > 0usize {
         writing = true;
         writeBy = now + args.conn.protocol.bodyTimeout;
