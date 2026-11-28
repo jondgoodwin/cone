@@ -2054,9 +2054,16 @@ by value or through owners alone (`reshapeStoreHits`). A local holding an owning
 owner's own place (`reshapeUniqueLocalOf`), reached by no other name but a borrow of it: a loan's own
 root variables are listed beside the loan even where the owner is shared (`loanRootsNote`), so
 `&mut r` lent to the call that replaces `r` is asked. The receiver's own borrow of an owner
-(`left.insert(v)`: an owner lent as `self`, the loan `recvloan`) is the value the method works on, so
-only its other arguments are asked (`reshapeCall`'s `skiprecv`), and a replacement they make is
-reported at the call (`loanShapeNow`). The check does not tell two owners of one type apart.
+(`t.task.run()`: an owner lent as `self`, the loan `recvloan`) is asked as any argument is, since what
+the receiver holds may lead back to the owner, which the method then stores over. A virtual call's
+receiver (`FlagVDisp`: a method of an owned trait object, an owned closure called) is not asked, so one
+that leads back to its owner is accepted [differs]. The other exception
+(`reshapeOwnerAbove`, `reshapeCall`'s `skiprecv`) is a unique owner (`Uni`, a region that is `Move`)
+whose receiver reaches an owner of that type only through what it owns uniquely: no shared owner,
+borrow, pointer or virtual reference it holds leads to one, so every owner it can store over is below
+it (a node's method called through its owner, `left.insert(v)`), and only the other arguments are
+asked. The borrow is handed to this very call, so a replacement is reported at the call
+(`loanShapeNow`). The check does not tell two owners of one type apart.
 An owner of a trait object (`Uni[Gadget]`, `Rc[mut, Gadget]`: a `VirtRefTag` with an owning region) is an
 owner like any other (`reshapeIsOwner`), the borrow a method of the trait lends an owner's contents. `rcWalk`
 reads a virtual reference as it does for a collection: its implementers are unknown, so it reaches any container
