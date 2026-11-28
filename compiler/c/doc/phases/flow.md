@@ -881,19 +881,26 @@ too (`reshapeUnborrow`: `pwStoreTarget`, `pwReceiverFieldOwner`, `pwStoreOverFie
 `reshapeLocalRoot`). The borrow an index with `FlagBorrow` is made on is not such a
 dereference: its result is that borrow's.
 
-**A borrow a block yields, then dereferenced.** So too for a borrowed reference that a
-block, an `if`, a `match` or a slice borrow yields (`*{&o}`, `*(if c {&a} else {&b})`,
-`(&[]o)[0usize]`): `pwThrough` finds no place in the value, and which place it is may be
-decided only as the program runs, so it holds what the value carries in a stand-in
+**A borrow any other value yields, then dereferenced.** So too for a borrowed reference
+that is no place: the value of a block, an `if`, a `match` or a slice borrow (`*{&o}`,
+`*(if c {&a} else {&b})`, `(&[]o)[0usize]`), of an assignment (`*(r = &o)`), of a call
+(`*pass(&o)`, a method's, a function reference's or a closure's), of an element or a field
+of a value made here (`*(&o, 1).0`, `*H(&o).r`, `*[&o][0usize]`), or of an owner's
+referent (`**Uni[&T](&o)`). `pwThrough` finds no place in the value, and which place it
+points at the walk does not say, so it holds what the value carries in a stand-in
 (`pwYieldStandIn`) and reads the dereference through it, as through a name given the value
-(`let r = if c {&a} else {&b}; *r`). The place stands for every place the value can be: a
-view made through it holds the loans of each, and is marked for the shape check as one
-through a name is. The loans of borrows that may write are kept on the place too
-(`pwWritingLoans`, `Place.kept`), as `*&uni x` keeps its own. The stand-in is a temporary,
-but what it holds is not dropped at its statement's end (`PathVar.yielded`). Other values
-that are no place (an assignment's value, a tuple element, a field of a struct literal, a call's result where
-the stand-in of the paragraph on a reference a call returned is not made) are still read as
-values, and what is dereferenced there is not followed.
+(`let r = pick(&a, &b); *r`). The place stands for every place the value's loans name, a
+call's result carrying those its signature gives it ("What holds what"): a view made
+through it holds the loans of each, and is marked for the shape check as one through a name
+is, and a store through it lands in each. A borrow written there is not such a value (above),
+and the one an index with `FlagBorrow` is made on is left as it is. A value made of several parts is read whole, so
+an element of a tuple carries its neighbours' loans too. The loans of borrows that may write
+are kept on the place too (`pwWritingLoans`, `Place.kept`), as `*&uni x` keeps its own,
+but a borrow copied out through a call's result drops the ones the call made of its receiver
+and lent arguments (`pwSlotRead`). The stand-in is a temporary, but what it holds is not
+dropped at its statement's end (`PathVar.yielded`). A reference that is no borrow and no place (an owner)
+is not followed this way. `collection_flow_yielded_value_deref` pins the refusals and
+`collection_yielded_value_deref_success` what stays accepted.
 
 **Cone's `mut` is not Rust's `&mut`.** `uni` is Rust's `&mut` (one active
 reference); `mut` is shared mutable within a thread, `ro` a view others may
@@ -2099,19 +2106,25 @@ cannot be read, and replaces any owner of the type a borrow is held into, the ob
 `+ ShapeKeeping` on the owner (`Uni[Gadget + ShapeKeeping]`) and on the virtual reference it is lent as is the
 cure, as for a collection.
 
-**A reference a call returned** is held by a stand-in variable (`pwStandIn`) when a method
-that returns a borrow, on a container that changes shape, is called on a place reached
-through it (`pwStandInOn`, set around the receiver in `pwCall`; `pwThrough` makes the
-stand-in). `ui.items[0usize].label.view()`: a `List`'s `[]` is a call, so the place
-`.label` is read through the reference it returned, which `pwPlace` does not track, and the
-`view` had no loan on the `String` at all (only the `[]` loan on the `List`, marked for the
-`List`'s shape, which a call that grows a `String` does not change). The stand-in is a
-temporary (`pwTempsEnd`) that holds what the call carries, so the walk goes on as for
-`let item = ui.items[0usize]; item.label.view()`: the place is the reference's referent,
-shared and written by the reference's permission, and its loan is marked for the `String`.
-Only a method's receiver is followed so, not a free function's borrowed argument.
-`collection_flow_reshape_through_call` pins the refusals and
+**A reference a call returned** is held by a stand-in wherever it is dereferenced ("A
+borrow any other value yields"). `ui.items[0usize].label.view()`: a `List`'s `[]` is a
+call, so the place `.label` is read through the reference it returned, and without the
+stand-in the `view` would have no loan on the `String` at all (only the `[]` loan on the
+`List`, marked for the `List`'s shape, which a call that grows a `String` does not change).
+With it the walk goes on as for `let item = ui.items[0usize]; item.label.view()`: the place
+is the reference's referent, shared and written by the reference's permission, and its loan
+is marked for the `String`. `collection_flow_reshape_through_call` pins the refusals and
 `collection_reshape_through_call_success` what stays accepted.
+
+**A side of a swap** reached through a call's result is read through that stand-in, so
+the other side gains what is read there and what it gives is stored into every holder the
+reference may point into (`pwStoreInto`). As in `t = l[0usize]`, what is read out of the
+slot a call lent does not carry the loans that call made itself (`pwReadsOwnSlot`, kept
+per side, since the other side's walk may make a call too); without that `l[0usize] <-> t`
+left `t` borrowing `l`. A side reached through a raw pointer is no place: it gives the
+loans a read of it carries, and nothing is tracked as stored there, as for a plain store.
+`lifetime_mix_swap_through_call_refused`, `..._escape` and `..._ok` pin it, and
+`lifetime_mix_store_through_call_refused` pins the same of a plain store.
 
 **An element in an `imm` path.** A method's returned borrow is a plain `&Item`, whose permission
 alone says another holder may write it (`Place.shwrite` of the reference's type), so a source lent

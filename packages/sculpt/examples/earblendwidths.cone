@@ -1,0 +1,85 @@
+// earblendwidths: the knight's right ear unioned onto the head, the root's back arc rounded at 0.15 mm and its
+// front left crisp (blendSeamWidths), beside blendSeam's one width of 0.15. The input is earblend's
+// (C:/src/zz-w70/head.obj and ear-R.obj); the output is in C:/src/zz-w107/.
+//
+//   congo run --release --example earblendwidths   (from packages/sculpt)
+//
+// The head's long axis is z and the muzzle lies toward low y (the head's y runs 7.8 to 43.3 and the ear root
+// is at 27.3), so the root's front is its seam vertices below y = 27.25 (the seam's mean y). The width goes
+// from 0 at 0.4 mm below that to 0.15 at 0.4 mm above it (smoothstep), so the round is not stepped.
+
+mod earblendwidths;
+
+import stdio use *;
+import collections use *;
+import geomath use *;
+import mesh use *;
+import fs;
+import path use Path as FilePath;
+import sculpt use *;
+
+fn loadObj(path: &str) PolyMesh {
+  var problems = List[String]();
+  let m = readPolyObj(&FilePath.from(path), &mut problems);
+  if problems.len() > 0usize { print <- "problems reading ", path, ": ", problems.len(), "\n"; }
+  m
+}
+
+fn volumeOf(m: &PolyMesh) f64 {
+  var sum = 0.0;
+  var f = 0usize;
+  while f < m.faceCount() {
+    let pts = m.facePositions(u32.from(f));
+    var i = 1usize;
+    while i + 1usize < pts.len() {
+      let a = DVec3.from(*pts[0usize]);
+      let b = DVec3.from(*pts[i]);
+      let c = DVec3.from(*pts[i + 1usize]);
+      sum = sum + a.x * (b.y * c.z - b.z * c.y) + a.y * (b.z * c.x - b.x * c.z) + a.z * (b.x * c.y - b.y * c.x);
+      i = i + 1usize;
+    }
+    f = f + 1usize;
+  }
+  sum / 6.0
+}
+
+fn main() i32 {
+  let head = loadObj("C:/src/zz-w70/head.obj");
+  let ear = loadObj("C:/src/zz-w70/ear-R.obj");
+  var problems = List[String]();
+  let hard = booleanWith(&head, &ear, BooleanUnion, 2., &mut problems);
+  let ch = hard.findFloatChannel(EdgeDomain, "crease");
+  var seam = List[u32]();
+  var e = 0usize;
+  while ch != NoIndex && e < hard.edgeCount() {
+    if hard.float(ch, u32.from(e)) == 2. { seam.push(u32.from(e)); }
+    e = e + 1usize;
+  }
+  let sv = seamVertices(&hard, seam.view());
+  var meanY = 0.0f32;
+  var i = 0usize;
+  while i < sv.len() { meanY = meanY + hard.positions[usize.from(*sv[i])].y; i = i + 1usize; }
+  meanY = meanY / f32.from(sv.len());
+  var widths = List[f32]();
+  var crisp = 0usize;
+  var round = 0usize;
+  i = 0usize;
+  while i < sv.len() {
+    var t = (hard.positions[usize.from(*sv[i])].y - meanY + 0.4) / 0.8;
+    if t < 0. { t = 0.; }
+    if t > 1. { t = 1.; }
+    let w = 0.15 * t * t * (3. - 2. * t);
+    if w == 0. { crisp = crisp + 1usize; }
+    if w >= 0.15 { round = round + 1usize; }
+    widths.push(w);
+    i = i + 1usize;
+  }
+  print <- "seam ", seam.len(), " edges, ", sv.len(), " vertices, mean y ", meanY, "; width 0 at ", crisp, ", 0.15 at ", round, "\n";
+  var p = List[String]();
+  let r = blendSeamWidths(&hard, seam.view(), widths.view(), &mut p);
+  print <- "widths: band ", r.faces.len(), " triangles; volume ", volumeOf(&r.mesh), " (hard ", volumeOf(&hard), "); validate ", r.mesh.validate().len(), "; problems ", p.len(), "\n";
+  var pi = 0usize;
+  while pi < p.len() { print <- "  ", p[pi].view(), "\n"; pi = pi + 1usize; }
+  if !writeObj(&r.mesh, &FilePath.from("C:/src/zz-w107/ear-widths.obj")) { print <- "could not write ear-widths.obj\n"; }
+  0i32
+}
