@@ -76,17 +76,29 @@ pub struct CageFit {
 
 // The default weight of the smoothness term (the sum of the squared
 // differences of the step across the cage's edges), relative to the mean
-// diagonal of the normal matrix. Chosen on the head patch's 307-point cage at
-// 3 levels (27 Nov): 0.01 and 0.03 stall (the first step overshoots, rms to
-// target 0.151 and 0.101 after 5 and 6 rounds), 0.1 gives 0.092 in 24 rounds,
-// 0.2 gives 0.088 in 39 and 0.3 gives 0.092 in 14: 0.2 is the least rms.
-pub const CageSmoothness = 0.2;
+// diagonal of the normal matrix. The fit's job is a clean base cage (one hit
+// along each normal, little fold, the target reached), not the least rms. On
+// the head patch from a manifold start cage (decimateWithBoundary 0, 27 Nov),
+// 311 points, 4 levels, 40 rounds, free steps: 0.2 gives multi-hit 2.55%,
+// reach 98.4%, patch rms 0.0533; 8 gives multi-hit 0.15%, reach 99.3%, patch
+// rms 0.0741 (Python's cage 0.11%, 99.6%, 0.0838). At 1,019 points, 3 levels,
+// 8 rounds, 8 gives multi-hit 0.08%, reach 99.5%. Earlier (the torn 307-point
+// cage, 3 levels) 0.2 gave the least rms to the target; that is no longer the
+// aim. Normal-only steps give much the same at 8 (lower fold, higher rms).
+pub const CageSmoothness = 8.0;
 
 // What 'fitCage' names, with the term's weight and the residual kind given:
 // 'planar' false makes the point-to-point residual (three rows to a pair, one
-// to each axis), the mutant that shows what the plane buys
+// to each axis), the mutant that shows what the plane buys. 'normalOnly' true
+// restricts each control point's move to its own normal (the normal of the
+// subdivided surface at that point, found again after every kept step), as the
+// Python experiment's cages.py does (its step is 0.7 of the height along that
+// normal): the unknown of the least squares is one number a point, not three,
+// solved by the same conjugate gradients on the moves projected onto the
+// normals. The surface then cannot slide toward the target's crisp features
+// sideways, and a tight fit stays a single-valued height over its own normals.
 pub fn fitCageWith(target: &PolyMesh, start: &PolyMesh, levels: u32, rounds: u32, smoothness: f32,
-    planar: bool, problems: &mut List[String]) CageFit {
+    planar: bool, normalOnly: bool, problems: &mut List[String]) CageFit {
   let nc = start.vertexCount();
   if nc == 0usize || start.faceCount() == 0usize {
     problems.push(String.from("fitCage: the start cage is empty"));
@@ -113,6 +125,8 @@ pub fn fitCageWith(target: &PolyMesh, start: &PolyMesh, levels: u32, rounds: u32
   let samples = targetSamples(&tIndex, count);
 
   var c = copyList[Vec3](&start.positions);
+  var dirs = List[Vec3]();     // each control point's normal when 'normalOnly', else empty
+  if normalOnly { dirs = controlNormals(&shape, &wt, &c, nc); }
   var rows = newRows();
   var st = Stats(0.0, 0usize, 0., 0.0, 0usize, 0.);
   fitRows(&tIndex, &samples, &shape, &wt, &c, planar, &mut rows, &mut st);
@@ -137,7 +151,7 @@ pub fn fitCageWith(target: &PolyMesh, start: &PolyMesh, levels: u32, rounds: u32
     var tries = 0u32;
     while !accepted && tries < 8u32 {
       var delta = List[f64]();
-      solveStep(&rows, nc, &edges, f64.from(smoothness), mu, &mut delta);
+      solveStep(&rows, nc, &edges, &dirs, f64.from(smoothness), mu, &mut delta);
       var c2 = copyList[Vec3](&c);
       var i = 0usize;
       while i < nc {
@@ -153,6 +167,7 @@ pub fn fitCageWith(target: &PolyMesh, start: &PolyMesh, levels: u32, rounds: u32
       if rms2 < rms {
         let gain = rms - rms2;
         c = c2;
+        if normalOnly { dirs = controlNormals(&shape, &wt, &c, nc); }
         rows = rows2;
         st = st2;
         rms = rms2;
@@ -182,7 +197,38 @@ pub fn fitCageWith(target: &PolyMesh, start: &PolyMesh, levels: u32, rounds: u32
 // with no faces, a target with none, or levels 0 is a line pushed on
 // 'problems' and the start returned as it was (rms -1).
 pub fn fitCage(target: &PolyMesh, start: &PolyMesh, levels: u32, rounds: u32, problems: &mut List[String]) CageFit {
-  fitCageWith(target, start, levels, rounds, f32.from(CageSmoothness), true, problems)
+  fitCageWith(target, start, levels, rounds, f32.from(CageSmoothness), true, false, problems)
+}
+
+// The unit normal of the subdivided surface at each of the nc control points
+// (the subdivided mesh keeps the cage's vertex numbers), for control points c
+fn controlNormals(shape: &PolyMesh, wt: &CageWeights, c: &List[Vec3], nc: usize) List[Vec3] {
+  let surface = withPositions(shape, cageLimit(wt, c));
+  let all = surface.vertexNormals();
+  var out = List[Vec3].withCapacity(nc);
+  var i = 0usize;
+  while i < nc {
+    out.push(*all[i]);
+    i = i + 1usize;
+  }
+  out
+}
+
+// v (3 numbers a control point) with each point's part off its normal taken
+// away: a point whose normal has no length keeps nothing
+fn projectOnto(v: &mut List[f64], dirs: &List[Vec3]) {
+  var i = 0usize;
+  while i < dirs.len() {
+    let n = *dirs[i];
+    let nx = f64.from(n.x);
+    let ny = f64.from(n.y);
+    let nz = f64.from(n.z);
+    let s = *v[3usize * i] * nx + *v[3usize * i + 1usize] * ny + *v[3usize * i + 2usize] * nz;
+    v.set(3usize * i, s * nx);
+    v.set(3usize * i + 1usize, s * ny);
+    v.set(3usize * i + 2usize, s * nz);
+    i = i + 1usize;
+  }
 }
 
 fn failedFit(start: &PolyMesh) CageFit {
@@ -569,7 +615,7 @@ fn fitRows(tIndex: &SurfaceIndex, samples: &List[Vec3], shape: &PolyMesh, wt: &C
 // The control points' move d (3 numbers each) minimising |A d + r|^2 plus
 // m x |d|^2 plus s x |d_i - d_j|^2 summed over the cage's edges (i, j), m = mu
 // and s = smoothness times the mean diagonal of A^T A, by conjugate gradients
-fn solveStep(rows: &Rows, nc: usize, edges: &List[u32], smoothness: f64, mu: f64, delta: &mut List[f64]) {
+fn solveStep(rows: &Rows, nc: usize, edges: &List[u32], dirs: &List[Vec3], smoothness: f64, mu: f64, delta: &mut List[f64]) {
   let nu = 3usize * nc;
   var diag = List[f64].withCapacity(nu);
   var b = List[f64].withCapacity(nu);
@@ -604,6 +650,11 @@ fn solveStep(rows: &Rows, nc: usize, edges: &List[u32], smoothness: f64, mu: f64
     }
     r = r + 1usize;
   }
+  // With 'dirs' (one unit normal a control point), the move of each point is
+  // held on its normal: the operator is P K P, P the projection onto the
+  // normals, kept symmetric and positive on the normals' span
+  let held = dirs.len() == nc;
+  if held { projectOnto(&mut b, dirs); }
   var sum = 0.0;
   var cnt = 0usize;
   i = 0usize;
@@ -635,7 +686,17 @@ fn solveStep(rows: &Rows, nc: usize, edges: &List[u32], smoothness: f64, mu: f64
   var inv = List[f64].withCapacity(nu);
   i = 0usize;
   while i < nu {
-    let dd = *diag[i] + lam + lap * *valence[i / 3usize];
+    var dd = *diag[i] + lam + lap * *valence[i / 3usize];
+    if held {
+      // the same number for the point's three axes: the diagonal along its normal
+      let p = i / 3usize;
+      let n = *dirs[p];
+      let q = 3usize * p;
+      let nx = f64.from(n.x);
+      let ny = f64.from(n.y);
+      let nz = f64.from(n.z);
+      dd = *diag[q] * nx * nx + *diag[q + 1usize] * ny * ny + *diag[q + 2usize] * nz * nz + lam + lap * *valence[p];
+    }
     inv.push(if dd > 0.0 {1.0 / dd} else {0.0});
     i = i + 1usize;
   }
@@ -648,6 +709,10 @@ fn solveStep(rows: &Rows, nc: usize, edges: &List[u32], smoothness: f64, mu: f64
     z.push(*res[i] * *inv[i]);
     d.push(*res[i] * *inv[i]);
     i = i + 1usize;
+  }
+  if held {
+    projectOnto(&mut z, dirs);
+    projectOnto(&mut d, dirs);
   }
   var rz = dotList(&res, &z);
   let bnorm = dotList(&b, &b).sqrt();
@@ -699,6 +764,7 @@ fn solveStep(rows: &Rows, nc: usize, edges: &List[u32], smoothness: f64, mu: f64
       }
       r = r + 1usize;
     }
+    if held { projectOnto(&mut ad, dirs); }
     let dad = dotList(&d, &ad);
     if dad <= 0.0 { break; }
     let alpha = rz / dad;
@@ -709,6 +775,7 @@ fn solveStep(rows: &Rows, nc: usize, edges: &List[u32], smoothness: f64, mu: f64
       z.set(i, *res[i] * *inv[i]);
       i = i + 1usize;
     }
+    if held { projectOnto(&mut z, dirs); }
     let rzNew = dotList(&res, &z);
     let beta = if rz > 0.0 {rzNew / rz} else {0.0};
     rz = rzNew;
