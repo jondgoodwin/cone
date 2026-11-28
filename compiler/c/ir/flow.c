@@ -2744,6 +2744,218 @@ void flowGateSwap(FlowState *fstate, INode *lval, INode *rval) {
         fstate->gate |= FlowGateShape;
 }
 
+// A call lent what an owning reference points at ('run(&mut *t.task, &mut s)'), where
+// others may reach the way to that owner: the callee, handed a way to write an owner of
+// the type, may store over it and free what it was lent. The loan walk refuses such a
+// call (flowpath.c, pwOwnerLent; reshape.h, reshapeCall), so the function is walked, its
+// callees checked first. The way to write is another argument that reaches an owner of
+// the type, or the lent argument itself, where what it points at leads back to one
+// ('run(&mut *t.task)', 't.task.run()')
+
+// Argument 'i' lends what an owner of type 'owner' points at
+static void flowGateLentAsk(FlowState *fstate, FnCallNode *call, uint32_t i, INode *owner) {
+    INode **argsp;
+    uint32_t cnt;
+    uint32_t j = 0;
+    for (nodesFor(call->args, cnt, argsp)) {
+        uint32_t k = j++;
+        INode *type = ((IExpNode *)*argsp)->vtype;
+        if (type == NULL)
+            continue;
+        INode *dcl = iexpGetTypeDcl(*argsp);
+        if (k == i) {
+            // The lent argument alone. A virtual call's receiver is not asked by the walk;
+            // and under a unique owner, what the value owns below itself is no way back
+            if ((k == 0 && (call->flags & FlagVDisp)) || reshapeOwnerAbove(owner, dcl))
+                continue;
+        }
+        unsigned bits = reshapeReach(type, owner, 1);
+        // A value passed whole writes only what it holds by reference
+        if (dcl->tag != RefTag && dcl->tag != ArrayRefTag && dcl->tag != VirtRefTag && dcl->tag != PtrTag)
+            bits &= ReachBorrowed | ReachVirtual;
+        if (bits) {
+            fstate->gate |= FlowGateShape;
+            return;
+        }
+    }
+}
+
+// The owner whose contents a borrow of 'place' (or an owner lent where a borrow is wanted)
+// points into: the nearest owning reference dereferenced on the way, as the walk keeps it
+// (Place.ownertype). NULL where there is none, or where nothing else reaches the way to it
+// (a local that is the owner, or holds it by value or by unique owners): another way to
+// store over that owner would be a borrow of the local, which other triggers see. A 'var'
+// global as that other way is not asked here. 'result' is set to a call whose result the
+// place is reached through
+static INode *flowGateLendOwner(INode *place, INode **result) {
+    INode *owner = NULL;
+    *result = NULL;
+    while (1) {
+        INode *from;
+        switch (place->tag) {
+        case BorrowTag:
+        case ArrayBorrowTag:
+            place = ((RefNode *)place)->vtexp;
+            continue;
+        case CastTag:
+            from = ((CastNode *)place)->exp;
+            if (!flowGateIsOwnedLent((CastNode *)place)) {
+                place = from;
+                continue;
+            }
+            break;
+        case FldAccessTag:
+        case ArrIndexTag:
+            from = ((FnCallNode *)place)->objfn;
+            break;
+        case DerefTag:
+            from = ((StarNode *)place)->vtexp;
+            break;
+        case FnCallTag:
+            *result = place;
+            return NULL;
+        default:
+            return NULL;
+        }
+        INode *type = iexpGetTypeDcl(from);
+        if (type->tag == RefTag || type->tag == ArrayRefTag || type->tag == VirtRefTag) {
+            if (!flowGateIsBorrowRef(type)) {
+                if (owner == NULL) {
+                    if (type->tag != ArrayRefTag)
+                        owner = type;
+                }
+                else if (permGetFlags(((RefNode *)type)->perm) & MayAlias)
+                    return owner;
+            }
+            else if (owner)
+                return owner;
+        }
+        else if (type->tag == PtrTag && owner)
+            return owner;
+        place = from;
+    }
+}
+
+// A call's result handed on as an argument may point into what a unique owner holds,
+// reached behind a borrow the call was given ('run(first(a), b)'): each such owner type
+// in 'type' is asked. (Into what a shared owner holds, flowGateShapeAsk has asked)
+static void flowGateLentThrough(FlowState *fstate, FnCallNode *call, uint32_t i, INode *type, int behind, int depth) {
+    type = type ? flowGateTypeDcl(type) : NULL;
+    if (type == NULL || depth > 6 || (fstate->gate & FlowGateShape))
+        return;
+    if (++flowGateVisits > FlowGateTypeVisits) {
+        fstate->gate |= FlowGateShape;
+        return;
+    }
+    INode **nodesp;
+    uint32_t cnt;
+    switch (type->tag) {
+    case RefTag:
+    case ArrayRefTag:
+    case VirtRefTag: {
+        RefNode *ref = (RefNode *)type;
+        if (itypeGetTypeDcl(ref->region) == borrowRef)
+            behind = 1;
+        else if (behind && type->tag != ArrayRefTag && !(permGetFlags(ref->perm) & MayAlias))
+            flowGateLentAsk(fstate, call, i, type);
+        if (type->tag != VirtRefTag)
+            flowGateLentThrough(fstate, call, i, ref->vtexp, behind, depth + 1);
+        return;
+    }
+    case PtrTag:
+        flowGateLentThrough(fstate, call, i, ((StarNode *)type)->vtexp, behind, depth + 1);
+        return;
+    case ArrayTag:
+        flowGateLentThrough(fstate, call, i, arrayElemType(type), behind, depth + 1);
+        return;
+    case TTupleTag:
+        for (nodesFor(((TupleNode *)type)->elems, cnt, nodesp))
+            flowGateLentThrough(fstate, call, i, *nodesp, behind, depth + 1);
+        return;
+    case StructTag: {
+        StructNode *st = (StructNode *)type;
+        for (nodelistFor(&st->fields, cnt, nodesp))
+            flowGateLentThrough(fstate, call, i, ((IExpNode *)*nodesp)->vtype, behind, depth + 1);
+        if (st->derived) {
+            for (nodesFor(st->derived, cnt, nodesp))
+                flowGateLentThrough(fstate, call, i, *nodesp, behind, depth + 1);
+        }
+        return;
+    }
+    default:
+        return;
+    }
+}
+
+// What argument 'i' of the call is, or holds, that may lend: a borrow written or an owner
+// lent where one is wanted, and the same inside a literal or a call whose value carries it
+static void flowGateLends(FlowState *fstate, FnCallNode *call, uint32_t i, INode *node) {
+    if (fstate->gate & FlowGateShape)
+        return;
+    INode **nodesp;
+    uint32_t cnt;
+    switch (node->tag) {
+    case NamedValTag:
+        flowGateLends(fstate, call, i, ((NamedValNode *)node)->val);
+        return;
+    case CastTag:
+        if (!flowGateIsOwnedLent((CastNode *)node)) {
+            flowGateLends(fstate, call, i, ((CastNode *)node)->exp);
+            return;
+        }
+        break;
+    case BorrowTag:
+    case ArrayBorrowTag:
+        break;
+    // '&uni s[i]' on a slice is the index of a borrow of the slice
+    case ArrIndexTag:
+        flowGateLends(fstate, call, i, ((FnCallNode *)node)->objfn);
+        return;
+    case VTupleTag:
+        for (nodesFor(((TupleNode *)node)->elems, cnt, nodesp))
+            flowGateLends(fstate, call, i, *nodesp);
+        return;
+    case ArrayLitTag:
+        for (nodesFor(((ArrayNode *)node)->elems, cnt, nodesp))
+            flowGateLends(fstate, call, i, *nodesp);
+        return;
+    case TypeLitTag:
+    case FnCallTag: {
+        FnCallNode *inner = (FnCallNode *)node;
+        if (inner->args == NULL || inner->vtype == NULL || flowGateCarriesNone(inner->vtype)
+                || !itypeCarriesBorrow(flowGateTypeDcl(inner->vtype)))
+            return;
+        for (nodesFor(inner->args, cnt, nodesp)) {
+            flowGateLends(fstate, call, i, *nodesp);
+            if (node->tag == FnCallTag) {
+                flowGateVisits = 0;
+                flowGateLentThrough(fstate, call, i, ((IExpNode *)*nodesp)->vtype, 0, 0);
+            }
+        }
+        return;
+    }
+    default:
+        return;
+    }
+    INode *result;
+    INode *owner = flowGateLendOwner(node, &result);
+    if (owner)
+        flowGateLentAsk(fstate, call, i, owner);
+    else if (result)
+        flowGateLends(fstate, call, i, result);
+}
+
+void flowGateLentCall(FlowState *fstate, FnCallNode *call) {
+    // (an intrinsic, an init and a '+ ShapeKeeping' call are asked of no borrow)
+    if (reshapeCallExempt(call))
+        return;
+    INode **argsp;
+    uint32_t cnt;
+    uint32_t i = 0;
+    for (nodesFor(call->args, cnt, argsp))
+        flowGateLends(fstate, call, i++, *argsp);
+}
+
 void flowGateUse(FlowState *fstate, VarDclNode *var) {
     for (uint16_t i = 0; i < fstate->inflightcnt; ++i) {
         if (fstate->inflight[i] == var) {

@@ -6624,6 +6624,7 @@ void fnCallFlow(FlowState *fstate, FnCallNode **nodep) {
     flowGateOperandsEnd(fstate, inflight, keep);
     flowGateCall(fstate, node->args);
     flowGateShape(fstate, node);
+    flowGateLent(fstate, node);
     // Where this walk is a module's 'init', what a function of the module it
     // calls reads counts as read here
     modInitCall(fstate, node);
