@@ -1512,6 +1512,10 @@ static int pwPlace(INode **nodep, Place *pl, PathSet **base) {
         // must leave it good ('n.r[change(m)]', 'l[0].a[grow(&mut l)]')
         uint32_t stand = pathLoans && !seamfirst && !pwIndexOnlyReads(node)
             ? pwIndexStandIn(node, found ? pwPlaceRests(node, pl) : *base) : 0;
+        // The reference made to reach the place ('base', or one kept with the place) is held by
+        // nothing while the index is walked
+        uint32_t mark = loanFlightMark();
+        uint32_t flight = loanFlightPushHeld(found ? pl->kept : *base, NULL);
         INode **argsp;
         uint32_t cnt;
         for (nodesFor(index->args, cnt, argsp)) {
@@ -1520,6 +1524,11 @@ static int pwPlace(INode **nodep, Place *pl, PathSet **base) {
             if (holdsrefs && !pwIsLitIndex(*argsp))
                 loanIndexedRefs(node);
         }
+        if (found)
+            pl->kept = pathSetUnion(pl->kept, loanFlightGained(flight));
+        else
+            *base = pathSetUnion(*base, loanFlightGained(flight));
+        loanFlightPop(mark);
         pwIndexUse(stand, node);
         if (found)
             pwStep(pl, PlaceStepElem);
@@ -1788,6 +1797,18 @@ static void pwElemBorrowIndexes(INode *node, Place *pl, PathSet *base) {
     pwIndexUse(stand, node);
 }
 
+// An element borrow's indexes, walked after what it carries, 'lent', is made: nothing holds
+// that meanwhile. 'pl' is the array's place, or NULL. Returns it, with what a store an index
+// made gave it (pwLentGains)
+static PathSet *pwElemBorrowAfter(INode *node, Place *pl, PathSet *lent) {
+    uint32_t mark = loanFlightMark();
+    uint32_t flight = loanFlightPushHeld(lent, NULL);
+    pwElemBorrowIndexes(node, pl, pl ? NULL : lent);
+    lent = pathSetUnion(lent, loanFlightGained(flight));
+    loanFlightPop(mark);
+    return lent;
+}
+
 // A method's receiver taken by reference: a loan of the receiver's place,
 // whether borrowed here ('list.push(x)' is '(&mut list).push(x)', the borrow
 // injected) or reached through a reference it is handed ('r.push(x)' for 'r
@@ -1827,14 +1848,10 @@ static PathSet *pwLendRef(INode **recvp, INode *selftype, int lvalop, int reserv
     if (pwIsElemBorrow(recv)) {
         INode *perm;
         INode *site;
-        if (!pwElemBorrowPlace(recv, pl, &base, &perm, &site)) {
-            pwElemBorrowIndexes(recv, NULL, base);
-            return base;
-        }
+        if (!pwElemBorrowPlace(recv, pl, &base, &perm, &site))
+            return pwElemBorrowAfter(recv, NULL, base);
         *access = lvalop ? AccessWrite : loanBorrowAccess(perm);
-        PathSet *lent = pwLend(site, pl, perm, reserve ? pwReserved(*access) : *access, loan);
-        pwElemBorrowIndexes(recv, pl, NULL);
-        return lent;
+        return pwElemBorrowAfter(recv, pl, pwLend(site, pl, perm, reserve ? pwReserved(*access) : *access, loan));
     }
     if (!pwIsBorrowed(iexpGetTypeDcl(recv)) || selftype->tag != RefTag)
         return pwValue(recvp, 1);
@@ -1997,6 +2014,17 @@ static void pwLentGains(uint32_t var, PathSet *holds) {
                 continue;
             pathSetFacts(holder, pathSetUnion(pv->holds, gain), pv->pending);
             pwLentGains(holder, gain);
+        }
+        // A value still being made that holds one, an earlier argument or
+        // field, can read it there as a variable holding it can
+        for (uint32_t f = 0; f < loanFlightMark(); ++f) {
+            INode *operand = loanFlightOperand(f);
+            if (!pathSetHasLoan(loanFlightHeld(f), loan)
+                    || !pwReadsBorrows(operand && isExpNode(operand) ? ((IExpNode *)operand)->vtype : NULL, 0))
+                continue;
+            PathSet *gain = pathSetLoansAs(pwPlaceSlots(loanPlaceOf(loan), holds), 1);
+            if (!pathSetWithin(gain, loanFlightHeld(f)))
+                loanFlightGain(f, gain);
         }
     }
 }
@@ -4468,6 +4496,9 @@ static PathSet *pwCall(FnCallNode *call) {
     PathSet *localsets[8];
     uint32_t nargs = call->args == NULL ? 0 : call->args->used;
     PathSet **argsets = nargs <= 8 ? localsets : (PathSet **)memAllocBlk(nargs * sizeof(PathSet *));
+    // Where each is held while the arguments after it are walked
+    uint32_t localflight[8];
+    uint32_t *flight = nargs <= 8 ? localflight : (uint32_t *)memAllocBlk(nargs * sizeof(uint32_t));
     // The arguments of a free function lent to its result as a receiver is
     // (pwLentArg): the place, the loan and the container of each
     Place lentpl[8];
@@ -4509,7 +4540,7 @@ static PathSet *pwCall(FnCallNode *call) {
                     loanTiedBy(recvloan, tiedfn);
             }
             twophase = recvloan && pwTwoPhase(recvaccess);
-            loanFlightPushOf(carried, twophase ? recvloan : 0, *argsp);
+            flight[argi] = loanFlightPushOf(carried, twophase ? recvloan : 0, *argsp);
             recvholds = carried;
             argsets[argi] = carried;
             continue;
@@ -4535,7 +4566,7 @@ static PathSet *pwCall(FnCallNode *call) {
             carried = pwValue(argsp, 1);
             pwArenaValue = savedvalue;
         }
-        loanFlightPushOf(carried, 0, *argsp);
+        flight[argi] = loanFlightPushOf(carried, 0, *argsp);
         if (carries && pathLoans && !sig) {
             FnDclNode *tiedfn = pwTiedCallee(call);
             if (tiedfn)
@@ -4544,6 +4575,18 @@ static PathSet *pwCall(FnCallNode *call) {
         if (carries)
             result = pathSetUnion(result, pwArgCarriesTo(sig, argi, rettype, carried, globalonly));
         argsets[argi] = carried;
+    }
+    // What an argument was given by a store a later one made (pwLentGains).
+    // The receiver's reaches the result with the receiver's own, below
+    for (uint32_t i = 0; i < nargs; ++i) {
+        PathSet *gain = loanFlightGained(flight[i]);
+        if (gain == NULL)
+            continue;
+        argsets[i] = pathSetUnion(argsets[i], gain);
+        if (meth && i == 0)
+            recvholds = argsets[0];
+        else if (carries)
+            result = pathSetUnion(result, pwArgCarriesTo(sig, i, rettype, gain, globalonly));
     }
     if (pathLoans && (sig || lifeStaticBoundSeen)) {
         // A signature naming no lifetime may still bound one by ''static'
@@ -4683,12 +4726,15 @@ static void pwJoinField(INode *lval, Place *pl, INode *val, PathSet *holds) {
 
 // Store a value carrying 'holds' into an lval. 'rvalp' is the value's slot,
 // or NULL where the value is one element of another (a destructuring).
-static void pwStore(INode **lvalp, PathSet *holds, INode **rvalp) {
+// 'flight' is where the value is held until it is stored, or LoanNoFlight:
+// what the walk of the place, or the store of another element, gives it
+static void pwStore(INode **lvalp, PathSet *holds, INode **rvalp, uint32_t flight) {
     // A '_' stores nothing: what it takes is dropped at the statement's end
     if (assignIsAnon(*lvalp))
         return;
     VarDclNode *var = pwNamedVar(*lvalp);
     if (var) {
+        holds = pathSetUnion(holds, loanFlightGained(flight));
         if (var->namesym == anonName)
             return;
         // The whole variable is replaced: not a use of it. A holder reassigned
@@ -4727,7 +4773,9 @@ static void pwStore(INode **lvalp, PathSet *holds, INode **rvalp) {
     }
     Place pl;
     PathSet *base;
-    if (!pwPlace(lvalp, &pl, &base)) {
+    int found = pwPlace(lvalp, &pl, &base);
+    holds = pathSetUnion(holds, loanFlightGained(flight));
+    if (!found) {
         pwStoreStatic(*lvalp, holds);
         if (pathLoans && loanShapeCount())
             pwShapeStore(*lvalp, NULL);
@@ -4799,25 +4847,24 @@ static PathSet *pwAssign(AssignNode *node) {
         uint32_t mark = loanFlightMark();
         uint32_t premark = pwPreCnt;
         int early = pwSeams && awaitWithin(node->lval);
-        if (early) {
-            loanFlightPushOf(holds, 0, node->rval);
+        uint32_t flight = early ? loanFlightPushOf(holds, 0, node->rval) : loanFlightPushHeld(holds, node->rval);
+        if (early)
             premark = pwPreBegin(((TupleNode *)node->lval)->elems);
-        }
         for (nodesFor(((TupleNode *)node->lval)->elems, cnt, lvalp)) {
-            pwStore(lvalp, holds, rvals && index < rvals->used ? &nodesGet(rvals, index) : NULL);
+            pwStore(lvalp, holds, rvals && index < rvals->used ? &nodesGet(rvals, index) : NULL, flight);
             ++index;
         }
         pwPreCnt = premark;
-        if (early)
-            loanFlightPop(mark);
+        loanFlightPop(mark);
     }
     else {
         // A seam in the place comes after the value is made, which is in
-        // flight across it (genlTerm, AssignTag)
+        // flight across it (genlTerm, AssignTag). With none, the value is
+        // still held by nothing while the place is walked
         uint32_t mark = loanFlightMark();
-        if (pwSeams && awaitWithin(node->lval))
-            loanFlightPushOf(holds, 0, node->rval);
-        pwStore(&node->lval, holds, &node->rval);
+        uint32_t flight = pwSeams && awaitWithin(node->lval) ? loanFlightPushOf(holds, 0, node->rval)
+            : pwNamedVar(node->lval) ? LoanNoFlight : loanFlightPushHeld(holds, node->rval);
+        pwStore(&node->lval, holds, &node->rval, flight);
         loanFlightPop(mark);
         // The variant stored narrows the name to it from here
         VarDclNode *narrowed = (node->flags & FlagNarrowAssigned) ? pwNamedVar(node->lval) : NULL;
@@ -5817,13 +5864,9 @@ static PathSet *pwValue(INode **nodep, int move) {
         PathSet *base;
         INode *perm;
         INode *site;
-        if (!pwElemBorrowPlace(node, &pl, &base, &perm, &site)) {
-            pwElemBorrowIndexes(node, NULL, base);
-            return base;
-        }
-        PathSet *lent = pwLend(site, &pl, perm, loanBorrowAccess(perm), NULL);
-        pwElemBorrowIndexes(node, &pl, NULL);
-        return lent;
+        if (!pwElemBorrowPlace(node, &pl, &base, &perm, &site))
+            return pwElemBorrowAfter(node, NULL, base);
+        return pwElemBorrowAfter(node, &pl, pwLend(site, &pl, perm, loanBorrowAccess(perm), NULL));
     }
     if (pwNamedVar(node) || node->tag == DerefTag || node->tag == ArrIndexTag
         || node->tag == FldAccessTag)
@@ -5868,6 +5911,9 @@ static PathSet *pwValue(INode **nodep, int move) {
         int join = pathLoans && !slotted && nelems >= 2 && !inarena;
         INode **joinparts = !join ? NULL : nelems <= 8 ? localparts : (INode **)memAllocBlk(nelems * sizeof(INode *));
         PathSet **joinsets = !join ? NULL : nelems <= 8 ? localsets : (PathSet **)memAllocBlk(nelems * sizeof(PathSet *));
+        // Where each part is held while the parts after it are walked
+        uint32_t localflight[8];
+        uint32_t *flight = nelems <= 8 ? localflight : (uint32_t *)memAllocBlk(nelems * sizeof(uint32_t));
         for (uint32_t k = 0; k < nelems; ++k) {
             uint32_t fieldi = order[k];
             INode **nodesp = &nodesGet(elems, fieldi);
@@ -5885,12 +5931,24 @@ static PathSet *pwValue(INode **nodep, int move) {
                 joinparts[fieldi] = *valp;
                 joinsets[fieldi] = carried;
             }
-            loanFlightPushOf(carried, 0, *valp);
+            flight[fieldi] = loanFlightPushOf(carried, 0, *valp);
             uint32_t tag = 0;
             if (slotted && fieldi < slotted->fields.used)
                 tag = lifeFieldTag(slotted, (FieldDclNode *)nodelistGet(&slotted->fields, fieldi));
             carried = tag ? pathSetRemake(carried, RemakeTagged, tag, 0) : pathSetUntagged(carried);
             holds = pathSetUnion(holds, carried);
+        }
+        // What a part was given by a store a later one made (pwLentGains)
+        for (uint32_t fieldi = 0; fieldi < nelems; ++fieldi) {
+            PathSet *gain = loanFlightGained(flight[fieldi]);
+            if (gain == NULL)
+                continue;
+            if (join)
+                joinsets[fieldi] = pathSetUnion(joinsets[fieldi], gain);
+            uint32_t tag = 0;
+            if (slotted && fieldi < slotted->fields.used)
+                tag = lifeFieldTag(slotted, (FieldDclNode *)nodelistGet(&slotted->fields, fieldi));
+            holds = pathSetUnion(holds, tag ? pathSetRemake(gain, RemakeTagged, tag, 0) : pathSetUntagged(gain));
         }
         loanFlightPop(mark);
         if (join)
@@ -5911,6 +5969,8 @@ static PathSet *pwValue(INode **nodep, int move) {
         int join = pathLoans && nelems >= 2 && !inarena;
         INode **joinparts = !join ? NULL : nelems <= 8 ? localparts : (INode **)memAllocBlk(nelems * sizeof(INode *));
         PathSet **joinsets = !join ? NULL : nelems <= 8 ? localsets : (PathSet **)memAllocBlk(nelems * sizeof(PathSet *));
+        uint32_t localflight[8];
+        uint32_t *flight = nelems <= 8 ? localflight : (uint32_t *)memAllocBlk(nelems * sizeof(uint32_t));
         for (uint32_t k = 0; k < nelems; ++k) {
             INode **nodesp = &nodesGet(elems, order[k]);
             INode *savedvalue = pwArenaValue;
@@ -5921,8 +5981,16 @@ static PathSet *pwValue(INode **nodep, int move) {
                 joinparts[order[k]] = *nodesp;
                 joinsets[order[k]] = carried;
             }
-            loanFlightPushOf(carried, 0, *nodesp);
+            flight[order[k]] = loanFlightPushOf(carried, 0, *nodesp);
             holds = pathSetUnion(holds, pathSetUntagged(carried));
+        }
+        for (uint32_t i = 0; i < nelems; ++i) {
+            PathSet *gain = loanFlightGained(flight[i]);
+            if (gain == NULL)
+                continue;
+            if (join)
+                joinsets[i] = pathSetUnion(joinsets[i], gain);
+            holds = pathSetUnion(holds, pathSetUntagged(gain));
         }
         loanFlightPop(mark);
         if (join)

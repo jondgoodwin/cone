@@ -1,0 +1,293 @@
+// A borrow of a variable that is made and not yet held by any variable -- an
+// earlier argument, field or element, a method's receiver, the reference an
+// index reaches its place by, a value waiting for the place it is stored in --
+// while the variable is given a shorter-lived borrow. What is read through the
+// borrow can be that value, so it may not be kept where it outlives what it
+// borrows.
+//
+// Verdict: refuse, ErrorFrozen at the inner local, which ends while a holder
+// that could still read it is used afterwards, or while the value is in making.
+// Basis: the lifetime invariant (references-and-regions.md): whatever holds a
+// borrow must not outlive its referent; a value in the making is such a holder.
+// Master 8159838a5: all accepted, and they dangle. Row 921.
+
+mod lifetime_mix_borrow_in_flight_kept;
+
+struct P {
+  pub r: &mut &usize;
+  pub n: usize;
+}
+struct M {
+  pub r: &usize;
+  fn me(self: &mut) &mut M {
+    self
+  }
+  fn get(self: &mut, n: usize) &mut M {
+    self
+  }
+}
+
+fn pick(x: &mut &usize, n: usize) &mut &usize {
+  x
+}
+fn pickOuter(x: &mut &mut &usize, n: usize) &mut &mut &usize {
+  x
+}
+fn same(x: &mut M) &mut M {
+  x
+}
+fn nine(x: &mut &usize, a: usize, b: usize, c: usize, d: usize, e: usize, f: usize, g: usize,
+    n: usize) &mut &usize {
+  x
+}
+fn set(x: &mut &'v usize, v: &'v usize) usize {
+  *x = v;
+  1usize
+}
+fn store(o: &mut Array[&'v usize, 1], q: &mut &'v usize, n: usize) {
+  o[0usize] = *q;
+}
+fn same2(x: &mut Array[&usize, 1]) &mut Array[&usize, 1] {
+  x
+}
+
+// An earlier argument of a call
+fn argument() {
+  var a = 1usize;
+  var h = &a;
+  var out = [&a];
+  {
+    var b = 2usize;           //~ ErrorFrozen
+    var p = pick(&mut h, {h = &b; 1usize});
+    out[0usize] = *p;
+  }
+  let v = *out[0usize];
+}
+
+// Past the eighth argument
+fn ninth() {
+  var a = 1usize;
+  var h = &a;
+  var out = [&a];
+  {
+    var b = 2usize;           //~ ErrorFrozen
+    var p = nine(&mut h, 1usize, 2usize, 3usize, 4usize, 5usize, 6usize, 7usize, {h = &b; 1usize});
+    out[0usize] = *p;
+  }
+  let v = *out[0usize];
+}
+
+// A call's result, itself an argument
+fn nested() {
+  var a = 1usize;
+  var h = &a;
+  var out = [&a];
+  {
+    var b = 2usize;           //~ ErrorFrozen
+    var p = pick(pick(&mut h, 0usize), {h = &b; 1usize});
+    out[0usize] = *p;
+  }
+  let v = *out[0usize];
+}
+
+// A copy of a borrow a variable holds
+fn copied() {
+  var a = 1usize;
+  var h = &a;
+  var out = [&a];
+  {
+    var b = 2usize;           //~ ErrorFrozen
+    var q = &mut h;
+    var p = pick(q, {h = &b; 1usize});
+    out[0usize] = *p;
+  }
+  let v = *out[0usize];
+}
+
+// The store made by a later argument's own call
+fn setByCall() {
+  var a = 1usize;
+  var h = &a;
+  var out = [&a];
+  {
+    var b = 2usize;           //~ ErrorFrozen
+    var p = pick(&mut h, set(&mut h, &b));
+    out[0usize] = *p;
+  }
+  let v = *out[0usize];
+}
+
+// The call itself stores what the earlier argument reaches
+fn storedByCall() {
+  var a = 1usize;
+  var h = &a;
+  var out = [&a];
+  {
+    var b = 2usize;           //~ ErrorFrozen
+    store(&mut out, &mut h, {h = &b; 1usize});
+  }
+  let v = *out[0usize];
+}
+
+// A borrow of a borrow of the variable stored into
+fn outerBorrow() {
+  var a = 1usize;
+  var h = &a;
+  var r = &mut h;
+  var out = [&a];
+  {
+    var b = 2usize;           //~ ErrorFrozen
+    var p = pickOuter(&mut r, {h = &b; 1usize});
+    out[0usize] = **p;
+  }
+  let v = *out[0usize];
+}
+
+// A struct literal's earlier field
+fn structField() {
+  var a = 1usize;
+  var h = &a;
+  var out = [&a];
+  {
+    var b = 2usize;           //~ ErrorFrozen
+    var p = P(&mut h, {h = &b; 1usize});
+    out[0usize] = *p.r;
+  }
+  let v = *out[0usize];
+}
+
+// A tuple's earlier element
+fn tupleElement() {
+  var a = 1usize;
+  var h = &a;
+  var out = [&a];
+  {
+    var b = 2usize;           //~ ErrorFrozen
+    var p = (&mut h, {h = &b; 1usize});
+    out[0usize] = *p.0;
+  }
+  let v = *out[0usize];
+}
+
+// An array literal's earlier element
+fn arrayElement() {
+  var a = 1usize;
+  var h = &a;
+  var x = &a;
+  var out = [&a];
+  {
+    var b = 2usize;           //~ ErrorFrozen
+    var p = [&mut h, {h = &b; &mut x}];
+    out[0usize] = *p[0usize];
+  }
+  let v = *out[0usize];
+}
+
+// A method's receiver, a reference a method returned
+fn receiverMethod() {
+  var a = 1usize;
+  var out = [&a];
+  var s = M(&a);
+  {
+    var b = 2usize;           //~ ErrorFrozen
+    var p = s.me().get({s.r = &b; 0usize});
+    out[0usize] = p.r;
+  }
+  let v = *out[0usize];
+}
+
+// A method's receiver, a reference a function returned
+fn receiverCall() {
+  var a = 1usize;
+  var out = [&a];
+  var s = M(&a);
+  {
+    var b = 2usize;           //~ ErrorFrozen
+    var p = same(&mut s).get({s.r = &b; 0usize});
+    out[0usize] = p.r;
+  }
+  let v = *out[0usize];
+}
+
+// The reference an element is borrowed through, made before the index
+fn indexBase() {
+  var a = 1usize;
+  var harr = [&a];
+  var rr = &mut harr;
+  var out = [&a];
+  {
+    var b = 2usize;           //~ ErrorFrozen
+    var p = &mut (*rr)[{harr[0usize] = &b; 0usize}];
+    out[0usize] = *p;
+  }
+  let v = *out[0usize];
+}
+
+// The same, the reference a call's result
+fn indexBaseCall() {
+  var a = 1usize;
+  var harr = [&a];
+  var out = [&a];
+  {
+    var b = 2usize;           //~ ErrorFrozen
+    var p = &mut (*same2(&mut harr))[{harr[0usize] = &b; 0usize}];
+    out[0usize] = *p;
+  }
+  let v = *out[0usize];
+}
+
+// The same, the element read
+fn indexRead() {
+  var a = 1usize;
+  var harr = [&a];
+  var out = [&a];
+  {
+    var b = 2usize;           //~ ErrorFrozen
+    out[0usize] = (*same2(&mut harr))[{harr[0usize] = &b; 0usize}];
+  }
+  let v = *out[0usize];
+}
+
+// A value waiting for its place, whose index stores
+fn assigned() {
+  var a = 1usize;
+  var h = &a;
+  var x = &a;
+  var ps = [&mut x];
+  var out = [&a];
+  {
+    var b = 2usize;           //~ ErrorFrozen
+    ps[{h = &b; 0usize}] = &mut h;
+    out[0usize] = *ps[0usize];
+  }
+  let v = *out[0usize];
+}
+
+// A parallel assignment's value, while another of its places is stored
+fn parallelAssigned() {
+  var a = 1usize;
+  var h = &a;
+  var x = &a;
+  var p = &mut x;
+  var out = [&a];
+  {
+    var b = 2usize;           //~ ErrorFrozen
+    h, p = (&b, &mut h);
+    out[0usize] = *p;
+  }
+  let v = *out[0usize];
+}
+
+// The local ends inside the later argument, with the earlier one still waiting
+fn endsInFlight() {
+  var a = 1usize;
+  var h = &a;
+  var p = pick(&mut h, {
+    var b = 2usize;           //~ ErrorFrozen
+    h = &b;
+    1usize
+  });
+  let v = **p;
+}
+
+fn main() {}
