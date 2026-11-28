@@ -2192,6 +2192,17 @@ another `Rc[mut, List[i32]]` is refused too, as it is for `&(*o)[0]`. Not follow
 whose borrow is hidden in a trait object it owns.
 Tests: `collection_flow_reshape_shared_result`, `collection_reshape_shared_result_success`.
 
+**What a call stores is marked as what it returns** (`pwStoreReach`, from `pwPartsStore`).
+A store through a `&mut` place is a handing out, as a result is, so for each place a call may
+store into, each other argument is asked what a result is asked, from its parameter's type,
+with the place's contents (the referent of the place's parameter) where the result's type
+stood. The loans are the argument's second loans again, one set per place (`pwReachLoan`'s
+`store`), and are given to the place's holder after the call has been asked what it may
+reshape (`pwStoreMarks`), so a call that replaces a list and then stores a view of the new
+one is accepted, as one returning it is. An arena as the place (`arenaplace`) and the parts
+of one value (`pwJoinStores`) are not asked.
+Tests: `collection_flow_reshape_shared_stored`, `collection_reshape_shared_stored_success`.
+
 **A trait object a function is handed** (`pwReachTrait`, wherever the walk above meets a virtual
 reference: a parameter, a field or element within one, borrowed, or owned). The call is judged by
 its signature, and a trait object's signature is its trait's public methods and fields (the
@@ -2208,9 +2219,28 @@ given the unseen loan a virtual call's result has (below), under the trait. Noth
 through `opaq` or a lock. Past 200 deep or 100000 types the answer is yes. `flowGateReachesOwner`
 answers yes for every borrowed virtual reference, so such a function's caller is walked. A plain
 reference to an open trait calls no method (`fnCallLowerTraitMethod`), so its referent is walked
-as a struct is, field by field. Not followed: a downcast of the trait object in the callee, which
-can reach past a shared owner in the concrete value that no method or field of the trait hands
-out. Tests: `collection_flow_reshape_handed_trait`, `collection_reshape_handed_trait_success`.
+as a struct is, field by field. Tests: `collection_flow_reshape_handed_trait`,
+`collection_reshape_handed_trait_success`.
+
+**A downcast of a trait object** (`Loan.narrowed`, `Loan.hidden`, `pwHiddenLeaves`). A caller
+can't see what a downcast reaches, so the body is checked: a borrow that passed a shared owner
+from a narrowed trait object may not leave the function (returned, yielded, stored where it may
+outlive the function, or handed to a call that may store it there) unless the trait's methods or
+fields could give it (Error 1064). The marks:
+- The value a downcast gives (a `CastTag` from a virtual reference to a reference) holds its
+  loans marked with the trait (`loanNarrow`; a caller loan takes a second of the same part).
+  A borrow made through a variable holding one carries the mark.
+- A call's result from an argument that reaches a trait object is marked too where neither the
+  trait's signature nor the parameter's own type (outside trait objects, `pwShows`) names what
+  the result may point at (`pwTraitGivesAll`): the callee narrowed it, as `downcastRef` does.
+  A type the parameter shows is already judged by type at the caller, so it is left alone.
+- A marked borrow whose place dereferences an owner others may write through (`Place.ownwrite`:
+  `Rc[mut]`, with no borrowed reference read since but a `&uni`) is hidden. So is the reach loan
+  a call's result gets from a marked argument whose parameter type has a shared owner of its own
+  to pass (`helper(c)`).
+- Leaving: `pwTraitCouldGive` exempts what the trait's methods could hand out, or what its
+  fields reach in the same container.
+Tests: `collection_flow_downcast_leaves`, `collection_downcast_leaves_success`.
 
 **A result borrowed from behind a virtual call's receiver** (`pwReachShared`, argument 0 of a
 `FlagVDisp` call: a method called through a virtual reference, a closure behind `&<fn`, a method

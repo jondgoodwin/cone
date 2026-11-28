@@ -69,6 +69,10 @@ typedef struct {
                         // variable has left scope or been given another reference (loanRootsNote)
     void *unseen;      // a shape loan of what came from behind a trait object ('shapecont' the trait): what the
                         // borrow may point at (flowpath.c, PwUnseen), else NULL
+    INode *narrowed;    // held in a value that may point into the concrete value behind a trait object of this
+                        // trait: what a downcast, or a function that may have downcast, gives (loanNarrow), else NULL
+    INode *hidden;      // then, a borrow that passed a shared owner from there, of what no signature names: it may
+                        // not leave the function (loanHiddenLeaves), else NULL
 } Loan;
 
 // A pending conflict: 'access' conflicted with 'loan', held by 'holder'. On a
@@ -326,6 +330,8 @@ static uint32_t loanMakeKeyed(INode *site, Place *pl, INode *perm, uint32_t key)
     loan->unseen = NULL;
     loan->repoint = 0;
     loan->way = pl->deref ? pathVars[pl->var].holds : NULL;
+    loan->narrowed = NULL;
+    loan->hidden = NULL;
     // Linked from its root variable, so an access finds it
     loan->next = pathVars[pl->var].loans;
     pathVars[pl->var].loans = id;
@@ -402,6 +408,7 @@ uint32_t loanMakeReach(INode *site, uint32_t n, uint32_t base) {
     loan->elemview = 0;
     loan->unseen = NULL;
     loan->repoint = 0;
+    loan->hidden = NULL;
     if (loan->kind == LoanCaller)
         loan->next = 0;
     else {
@@ -459,8 +466,61 @@ uint32_t loanCaller(uint32_t var, uint32_t part) {
     loan->elemview = 0;
     loan->unseen = NULL;
     loan->way = NULL;
+    loan->narrowed = NULL;
+    loan->hidden = NULL;
     mapPut(parm, 0, loanCallerKey(part), id);
     return id;
+}
+
+// A downcast's value, or what a function that may have downcast gives, holds 'id': the loan
+// to hold instead. A caller's loan is one per part of its parameter, so it takes a second of
+// the same part that carries the trait; any other loan carries it itself
+uint32_t loanNarrow(uint32_t id, INode *trait) {
+    if (loans[id].narrowed)
+        return id;
+    if (loans[id].kind != LoanCaller) {
+        loans[id].narrowed = trait;
+        return id;
+    }
+    uint32_t made = mapGet(trait, id, 0xC0000000u);
+    if (made)
+        return made;
+    if (nloans > LoanIdMask) {
+        errorUnreachable(loans[id].site, "more loans in one function than an entry of a loan set can name");
+        return id;
+    }
+    if (nloans >= loancap)
+        loans = (Loan *)pathGrow(loans, &loancap, sizeof(Loan));
+    made = nloans++;
+    loans[made] = loans[id];
+    loans[made].narrowed = trait;
+    loans[made].mayhold = 0;
+    loans[made].nmay = 0;
+    loans[made].maycap = 0;
+    mapPut(trait, id, 0xC0000000u, made);
+    return made;
+}
+
+uint32_t loanNarrowedLoan(PathSet *set) {
+    for (uint32_t i = 0; set && i < set->cnt; ++i) {
+        if (loans[loanOf(set->ids[i])].narrowed)
+            return loanOf(set->ids[i]);
+    }
+    return 0;
+}
+
+INode *loanNarrowedIn(PathSet *set) {
+    uint32_t loan = loanNarrowedLoan(set);
+    return loan ? loans[loan].narrowed : NULL;
+}
+
+void loanHiddenSet(uint32_t loan, INode *trait) {
+    loans[loan].narrowed = trait;
+    loans[loan].hidden = trait;
+}
+
+INode *loanHidden(uint32_t loan) {
+    return loans[loan].hidden;
 }
 
 uint32_t loanOwnNext(uint32_t var, uint32_t loan) {
@@ -1344,6 +1404,20 @@ static char *loanAttempt(int access) {
 }
 
 static char *loanCaptureAdvice(uint32_t loan, char *buf, size_t size);
+
+void loanHiddenLeaves(INode *node, uint32_t loan, int how) {
+    // Once, and not beside loanEscape's report of the same node
+    if (mapGet(node, 0, 1))
+        return;
+    mapPut(node, 0, 1, 1);
+    char where[160];
+    loanWhere(&loans[loan], where, sizeof(where));
+    Name *trait = ((StructNode *)loans[loan].narrowed)->namesym;
+    errorMsgNode(node, ErrorEscape,
+        "%s a borrow (made %s) reached from a '%s' trait object narrowed to a concrete type and then past a shared owner, where it may outlive this function. A caller can't see what a downcast reaches, so another holder of the owner could free it unseen. Copy the value out, or have '%s' offer it through a method or a 'pub' field.",
+        how == LoanEscapeReturn ? "Returned here is" : how == LoanEscapeStore ? "Stored here is" : "Handed to a call that could store it is",
+        where, &trait->namestr, &trait->namestr);
+}
 
 void loanEscape(INode *node, uint32_t loan, int how) {
     // Once, though a loop's body is walked again
