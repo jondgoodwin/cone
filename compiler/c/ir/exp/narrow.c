@@ -213,7 +213,7 @@ static int narrowIsNamed(VarDclNode *var) {
 
 // The closed enum a local or parameter holds, by value or through a borrowed
 // reference. A reference that no other reference can change the variant under ('uni',
-// 'imm', 'mut1') is narrowed as the name itself; one that others may share is narrowed by
+// 'imm') is narrowed as the name itself; one that others may share is narrowed by
 // a hidden local, followed by the loan walk (*shared).
 static StructNode *narrowEnumOfVar(VarDclNode *var, int *isref, int *shared) {
     if (var->tag != VarDclTag || var->scope == 0 || !narrowIsNamed(var) || (var->flags & FlagStatic))
@@ -228,7 +228,7 @@ static StructNode *narrowEnumOfVar(VarDclNode *var, int *isref, int *shared) {
         RefNode *ref = (RefNode *)type;
         if (itypeGetTypeDcl(ref->region) != (INode *)borrowRef)
             return NULL;
-        if (!(permGetFlags(ref->perm) & MayIntRefSum))
+        if (!(permWriterFlags(ref->perm) & MayIntRefSum))
             *shared = 1;
         type = itypeGetTypeDcl(ref->vtexp);
         *isref = 1;
