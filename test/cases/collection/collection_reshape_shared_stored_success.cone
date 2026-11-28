@@ -1,0 +1,57 @@
+// What stays accepted beside collection_flow_reshape_shared_stored: a view stored out of a shared
+// owner with no later change, or used up before one; a store of a borrow of something not past a
+// shared owner; a change to a list of another type; and a call that itself replaces the list and
+// then stores a view of the new one, as a returned view is accepted.
+
+mod collection_reshape_shared_stored_success;
+
+import stdio use *;
+import collections use *;
+
+fn make(n: i32) List[i32] {
+  var l = List[i32]();
+  l.push(n);
+  l
+}
+
+struct Holder { pub rc: Rc[mut, List[i32]]; pub n: i32; }
+fn take(h: &Holder, out: &mut Option[&i32]) { *out = Some[&i32](&(*h.rc)[0usize]); }
+struct Plain { pub n: i32; }
+fn field(p: &Plain, out: &mut Option[&i32]) { *out = Some[&i32](&p.n); }
+fn refill(h: &Holder, out: &mut Option[&i32]) {
+  let r = h.rc;
+  *r = make(5);
+  *out = Some[&i32](&(*h.rc)[0usize]);
+}
+
+fn main() {
+  let o = Rc[mut, List[i32]](make(7));
+  let o2 = o;
+  let h = Holder(o, 3);
+  let zero = 0i32;
+
+  var kept = Some[&i32](&zero);
+  take(&h, &mut kept);
+  if let Some(v) = kept { print <- "kept = ", *v, " ", (*o2)[0usize], "\n"; }
+
+  var used = Some[&i32](&zero);
+  take(&h, &mut used);
+  if let Some(v) = used { print <- "usedUp = ", *v, "\n"; }
+  *o2 = make(8);
+
+  let p = Plain(3);
+  var own = Some[&i32](&zero);
+  field(&p, &mut own);
+  *o2 = make(9);
+  if let Some(v) = own { print <- "notShared = ", *v, " ", (*o)[0usize], "\n"; }
+
+  let other = Rc[mut, List[i64]](List[i64]());
+  var away = Some[&i32](&zero);
+  take(&h, &mut away);
+  *other = List[i64]();
+  if let Some(v) = away { print <- "otherType = ", *v, "\n"; }
+
+  var fresh = Some[&i32](&zero);
+  refill(&h, &mut fresh);
+  if let Some(v) = fresh { print <- "refilled = ", *v, "\n"; }
+}

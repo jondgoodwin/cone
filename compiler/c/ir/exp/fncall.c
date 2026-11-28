@@ -6642,12 +6642,8 @@ void fnCallFlow(FlowState *fstate, FnCallNode **nodep) {
 // dereference being injected, so the element is read through the reference here
 void fnCallArrIndexFlow(FlowState *fstate, FnCallNode **node) {
     flowLoadThroughRef(fstate, &(*node)->objfn);
-    flowGateIndex(fstate, (INode *)*node);
     // Every index is read: each dimension's, or a range's start and end
-    INode **argsp;
-    uint32_t cnt;
-    for (nodesFor((*node)->args, cnt, argsp))
-        flowLoadValue(fstate, argsp);
+    flowIndexArgs(fstate, *node);
 }
 
 // Perform data flow analysis on field access node

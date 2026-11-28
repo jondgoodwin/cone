@@ -1,0 +1,149 @@
+// What a function stores through a '&mut' parameter is handed out as its result is. A function
+// handed '&h', 'h' holding an 'Rc[mut, List]', may store a view of an element where its caller
+// reads it back, and a second holder of the same 'Rc' ('o2') can then replace the list. The
+// result of such a function was marked for the shape check (collection_flow_reshape_shared_result)
+// and what it stored was not, so each of these was accepted and read freed storage
+// (collection_reshape_shared_stored_success holds what stays accepted).
+
+mod collection_flow_reshape_shared_stored;
+
+import stdio use *;
+import collections use *;
+
+struct Holder {
+  pub rc: Rc[mut, List[i32]];
+  pub fn put(self: &, out: &mut Option[&i32]) { *out = Some[&i32](&(*rc)[0usize]); }
+}
+
+fn take(h: &Holder, out: &mut Option[&i32]) { *out = Some[&i32](&(*h.rc)[0usize]); }
+fn through(h: &Holder, out: &mut Option[&i32]) { take(h, out); }
+
+fn wipe(o: Rc[mut, List[i32]]) { *o = List[i32](); }
+
+fn freeFunction(h: &Holder, o2: Rc[mut, List[i32]]) {
+  let zero = 0i32;
+  var out = Some[&i32](&zero);
+  take(h, &mut out);
+  *o2 = List[i32]();                     //~ ErrorShapeStore:3 "made by 'take'"
+  if let Some(v) = out { printInt(i64.from(*v)); }
+}
+
+fn method(h: &Holder, o2: Rc[mut, List[i32]]) {
+  let zero = 0i32;
+  var out = Some[&i32](&zero);
+  h.put(&mut out);
+  *o2 = List[i32]();                     //~ ErrorShapeStore:3 "made by 'put'"
+  if let Some(v) = out { printInt(i64.from(*v)); }
+}
+
+fn mutHolder(h: &mut Holder, o2: Rc[mut, List[i32]]) {
+  let zero = 0i32;
+  var out = Some[&i32](&zero);
+  take(h, &mut out);
+  *o2 = List[i32]();                     //~ ErrorShapeStore:3 "made by 'take'"
+  if let Some(v) = out { printInt(i64.from(*v)); }
+}
+
+fn twoCalls(h: &Holder, o2: Rc[mut, List[i32]]) {
+  let zero = 0i32;
+  var out = Some[&i32](&zero);
+  through(h, &mut out);
+  *o2 = List[i32]();                     //~ ErrorShapeStore:3 "made by 'through'"
+  if let Some(v) = out { printInt(i64.from(*v)); }
+}
+
+fn intoParameter(h: &Holder, o2: Rc[mut, List[i32]], out: &mut Option[&i32]) {
+  take(h, out);
+  *o2 = List[i32]();                     //~ ErrorShapeStore:3 "made by 'take'"
+  if let Some(v) = *out { printInt(i64.from(*v)); }
+}
+
+fn functionValue(h: &Holder, o2: Rc[mut, List[i32]]) {
+  let zero = 0i32;
+  var out = Some[&i32](&zero);
+  let f = &take;
+  f(h, &mut out);
+  *o2 = List[i32]();                     //~ ErrorShapeStore:3
+  if let Some(v) = out { printInt(i64.from(*v)); }
+}
+
+fn handedToCall(h: &Holder, o2: Rc[mut, List[i32]]) {
+  let zero = 0i32;
+  var out = Some[&i32](&zero);
+  take(h, &mut out);
+  wipe(o2);                              //~ ErrorShapeReshape "made by 'take'"
+  if let Some(v) = out { printInt(i64.from(*v)); }
+}
+
+struct Cache['a] { pub view: Option[&'a i32]; }
+fn fill(h: &'a Holder, c: &mut Cache['a]) { c.view = Some[&i32](&(*h.rc)[0usize]); }
+
+fn intoField(h: &Holder, o2: Rc[mut, List[i32]]) {
+  let zero = 0i32;
+  var c = Cache(Some[&i32](&zero));
+  fill(h, &mut c);
+  *o2 = List[i32]();                     //~ ErrorShapeStore:3 "made by 'fill'"
+  if let Some(v) = c.view { printInt(i64.from(*v)); }
+}
+
+fn add(h: &Holder, out: &mut List[&i32]) { out.push(&(*h.rc)[0usize]); }
+
+fn intoList(h: &Holder, o2: Rc[mut, List[i32]]) {
+  var out = List[&i32]();
+  add(h, &mut out);
+  *o2 = List[i32]();                     //~ ErrorShapeStore:3 "made by 'add'"
+  let v = out[0usize];
+  printInt(i64.from(*v));
+}
+
+// A borrow written as the argument, of what a shared owner holds
+fn grab(l: &List[i32], out: &mut Option[&i32]) { *out = Some[&i32](&l[0usize]); }
+
+fn writtenBorrow(o: &Rc[mut, List[i32]], o2: Rc[mut, List[i32]]) {
+  let zero = 0i32;
+  var out = Some[&i32](&zero);
+  grab(&**o, &mut out);
+  *o2 = List[i32]();                     //~ ErrorShapeStore:3 "made by 'grab'"
+  if let Some(v) = out { printInt(i64.from(*v)); }
+}
+
+// A place that is itself a reference, '&mut &i32', stored into through two calls
+fn putRef(h: &Holder, out: &mut &i32) { *out = &(*h.rc)[0usize]; }
+fn getRef(h: &Holder, out: &mut &i32) { putRef(h, out); }
+
+fn intoReference(h: &Holder, o2: Rc[mut, List[i32]]) {
+  let zero = 0i32;
+  var v = &zero;
+  getRef(h, &mut v);
+  *o2 = List[i32]();                     //~ ErrorShapeStore:3 "made by 'getRef'"
+  printInt(i64.from(*v));
+}
+
+// A receiver reached through a shared owner
+struct Bag {
+  pub items: List[i32];
+  pub fn viewInto(self: &, out: &mut Option[&i32]) { *out = Some[&i32](&self.items[0usize]); }
+}
+
+fn receiver(o: Rc[mut, Bag], o2: Rc[mut, Bag]) {
+  let zero = 0i32;
+  var out = Some[&i32](&zero);
+  (*o).viewInto(&mut out);
+  o2.items = List[i32]();                //~ ErrorShapeStore "made by 'viewInto'"
+  if let Some(v) = out { printInt(i64.from(*v)); }
+}
+
+// In a loop, the view of one round used after the next round's store
+fn inLoop(h: &Holder, o2: Rc[mut, List[i32]]) {
+  let zero = 0i32;
+  var out = Some[&i32](&zero);
+  var i = 0i32;
+  while i < 2i32 {
+    if let Some(v) = out { printInt(i64.from(*v)); }
+    take(h, &mut out);
+    *o2 = List[i32]();                   //~ ErrorShapeStore "made by 'take'"
+    i += 1i32;
+  }
+}
+
+fn main() {}
