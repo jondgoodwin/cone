@@ -20,8 +20,8 @@
 // manual page, "From 'uni'", is the rule; flow.md, "The loan walk", the note.
 enum LoanKind {
     LoanShared,     // read-only: 'ro' or 'imm' of a 'uni' source; '&imm' of a shared one
-    LoanExcl,       // may write: 'mut', 'uni', 'mut1' of a 'uni' source; '&uni' of any
-    LoanAlias,      // 'mut', 'ro', 'mut1' of a shared source: it needs the source only alive
+    LoanExcl,       // may write: '&uni' of any source
+    LoanAlias,      // 'mut', 'mut1' of any source; 'ro' of a shared one: it needs the source only alive
     LoanPin,        // neither: 'opaq', which holds only the address
     LoanCaller,     // what the caller lent through a parameter: frozen by the caller, nothing here conflicts
 };
@@ -257,9 +257,9 @@ static uint8_t loanKindOf(INode *perm, Place *pl) {
         return LoanExcl;
     case AccessBorrowMut:
         // A 'mut' borrow of a place reached as 'uni' is an alias loan too: the source stays usable as
-        // one more 'mut' alias (flow.md, "The loan walk"). A 'mut1' one, which may hand out interior
-        // references into a sum, keeps the source to itself
-        return pl->shared || (permGetFlags(perm) & MayAliasWrite) ? LoanAlias : LoanExcl;
+        // one more 'mut' alias (flow.md, "The loan walk"). So is a 'mut1' one, whose copies write
+        // (permWriterFlags)
+        return pl->shared || (permWriterFlags(perm) & MayAliasWrite) ? LoanAlias : LoanExcl;
     case AccessBorrowImm:
         return LoanShared;
     case AccessBorrow:
