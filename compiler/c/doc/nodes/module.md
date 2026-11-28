@@ -89,7 +89,7 @@ like any other, registered under their canonical paths in the packages folder
 | `trait` | the `ModTraitNode` `traitname` names, once resolved: what `modTraitCheck` compares the module against in type check |
 | `ntaken` | how many of `nodes`, at its end, are copies of the trait's defaults the module took (`modTraitConform`). They arrive resolved, so `modNameRes` walks the nodes before them only |
 | `initfn` | the module's own `init`, once `modLifecycle` has found it well formed; NULL where it declares none. What the stitched init calls |
-| `finalfn` | what finalizes the module: the `drop` `modLifecycle` gives it where a global needs finalizing, else its own `final`; NULL where it has neither. What the stitched final calls |
+| `finalfn` | the module's own `final`, once `modLifecycle` has checked it; NULL where it declares none. What the stitched final calls |
 | `genericinfo` | `mod stack[T]`: a generic module's type parameters and its instances (`memonodes`, as a generic type's), from the `mod` line; NULL for any other module. See "Generic modules" |
 | `generic` | an instance of a generic module: the generic it was cloned from; NULL for every module the source declares. `instnode` is then the call that made it, whose arguments are the instance's type arguments |
 | `instdeps` | an instance: the modules it follows in the init order besides its generic — each its type arguments come from, and each instance its own body made (`pgmInstanceOrder`) |
@@ -799,7 +799,7 @@ cloned with the rest; the instance keeps the generic's `trait`, so
 `modTraitCheck` checks each instance. It is registered before it is type checked, so a body
 naming its own instance reaches it rather than instantiating it again; it is
 then type checked with no function around it, which runs `modLifecycle`, so
-**each instance has its own `init` and `final`** and its own `drop`.
+**each instance has its own `init` and `final`**.
 
 **A path through an instance is collapsed at type check** (`fnCallTypeCheck`,
 `fnCallModuleInstancePath`), since the instance does not exist at name
@@ -1337,10 +1337,8 @@ statement by statement, whether the text goes in whole, goes in cut to an
   between. A private declaration nothing an importer expands names is not
   exported, and so not declared.
 
-**Beyond the exported set**, three kinds go in because an importer's compile
-reads them without naming them: a global the module's finalizer drops, so the
-importer derives the package's `drop` as the package did ("Init and final"); a
-type's `final` and `clone`, which decide what dropping or copying a value
+**Beyond the exported set**, two kinds go in because an importer's compile
+reads them without naming them: a type's `final` and `clone`, which decide what dropping or copying a value
 does; and a method meeting a requirement of a trait its type is, which the
 importer's type check asks for. The last two are exported too, public or not
 (`fnIsTypeLifecycle`, `fnIsTraitMethod`), since an importer's drop and its
@@ -1467,9 +1465,8 @@ private to its package. What is reached, transitively:
   public name a submodule's star fold brings, an enum and its variants. A list
   anywhere — a `use`, an import of a sister — brings what it names, so the fold
   finds it.
-- **A submodule's `init`, `final` and each global its finalizer drops**, which the
-  program's stitched pair calls or derives from, so a submodule's `init` now runs
-  in a program that imports the package.
+- **A submodule's `init` and `final`**, which the program's stitched pair calls,
+  so a submodule's `init` now runs in a program that imports the package.
 - **The blocks around a block**: a nested submodule's parent, a sister a block
   imports or extends. A block's import of a sister with no block is dropped, and
   so is a `use` of a submodule or enum the file does not hold.
@@ -1949,8 +1946,8 @@ that enum's copies of its base's variants, which the module does not own
 **order decides when a declaration is checked, not whether** — a name reached
 from elsewhere pulls its declaration forward. See
 [Type Check Phase](../phases/type-check.md). **Last, once every global's type is
-settled, `modLifecycle`** finds and checks the module's `init` and `final`, and
-gives it the `drop` that finalizes its globals ("Init and final", below). A
+settled, `modLifecycle`** finds and checks the module's `init` and `final`
+("Init and final", below). A
 generic module stops after its imports: only its instances are checked, each as
 it is made ("Generic modules").
 
@@ -2157,7 +2154,7 @@ first from declaration order: each after the setups it reads, a stable order
 otherwise. A setup reached again while its reads are placed is `ErrorSetupCycle`,
 at the global the round returns to. Only a module with neither is built:
 the ordered assignments become the body of `-setups`, a function of the module
-built pre-lowered as `drop` is (a name no source can write), whose flow pass is
+built pre-lowered (a name no source can write), whose flow pass is
 run at once with the setups' `VarInitialized` cleared, so flow judges each
 assignment as it judges a first assignment in `init` and a read of a setup global
 before its assignment is its own refusal. `init` calls it first: a call node put at the
@@ -2166,9 +2163,8 @@ head of the body of the module's own `init`, or, where the module writes none, i
 `mod->initfn` then is. So the program's stitched init, the C-named constructors and a
 package's exported `init` need nothing new; the include file declares the made `init`
 (`incAssemble`: `extern fn @initpure init();` at the module's end), since no
-source text does. `modGiveDrop` puts the setups, in the order they run, between the
-constant-valued globals and those `init` assigns, so rule 6's reverse holds. A
-generic module's instance is checked like any module and has setups of its own.
+source text does. A generic module's instance is checked like any module and has
+setups of its own.
 
 **A setup's store is judged as `init`'s is.** Its value is type checked at scope 0,
 but it runs in a function, so `borrowTempScope` gives a borrow of a temporary the
@@ -2180,38 +2176,21 @@ refuses a borrow of a temporary carried inside a struct value (`ErrorEscape`,
 1064). A borrow of another global is scope 0 and stays legal.
 What is not followed passes until `trust` is built, as in `init`'s check.
 
-**The module's finalizer** mirrors a type's ([struct](struct.md), step 8).
-Where any global the module declares has anything to do as it dies
-(`modGlobalFinalized`: `itypeNeedsFinal`, the question a local's death asks),
-`modGiveDrop` gives the module a `drop` — owned by it, so its symbol is spelled
-after it (`middle.drop`, `_CNvC6middle4drop`), appended to its `nodes` after name
-resolution, built pre-lowered and never type checked or flow analyzed — calling
-the module's own `final`, if it has one, and then finalizing each such global
-**in the reverse of the order they are set** (rule 6). The setup order is
-built in `modGiveDrop`: first the globals `init` never assigns that hold a constant,
-in declaration order, then the module's setups in the order they run
-(`mod->setups`, ordered by `modSetupBuild`; below), then those `init` assigns, in
-the order the flow pass first met an assignment to each (`modInitNoteSet`,
-called from `assignlvalrtype` while `init` is walked; kept in `mod->setorder`).
-Flow walks text order, so a branch whose arms set the same globals in different
-orders takes the first written, and a global's direct reads were assigned
-earlier in the text. A global with a value that `init` also assigns is one
-`init` sets. The globals are its
-return's release list, built as flow builds a scope's for its locals
-(`flowVarRelease`): a struct or an enum listed as a call to its drop function
-over `&uni` the global, anything else — an owning reference, plain or virtual,
-single or counted, or a tuple or an array — listed as the global itself, which
-generation finalizes in place (`genlDealiasNode`, `genlFinalizeAt` on the
-global's storage). Its finalizer (`finalfn`) is that `drop`, else its own
-`final`. A C-named global is C's storage and is not finalized. Nor is a
-thread-local, whose copies are each thread's and which the module's `drop`,
-running on one thread, could not all reach: one whose type needs finalizing is
-`ErrorThreadLocalFinal`, asked in the same walk. Nor is a `@workgroup` global,
-a copy for each workgroup on a GPU, whose type may need nothing finalized
-(`ErrorWorkgroupData`, asked by type check). A global is finalized whether
-it was given a literal or assigned by `init`, since either way it holds a value
-by then. A module that needs a `drop` and declares one
-of its own is `ErrorModLifecycle`: both would be one symbol.
+**The module's finalizer is its own `final`** (`finalfn`), and NULL where it
+declares none. **No global is finalized** (Jon, 27 November 2026): what a global
+holds when the program ends is left as it is, no type's `final` run and no owning
+reference released, and the process ends with it, the OS taking back memory,
+descriptors and mappings. An actor still running, a behaviour still paused and a
+detached thread may each use a global up to the end of the process, and the
+actors package's workers are stopped by one module's `final` among the others, so
+no point before that end is safe to free what a global holds. So the generated
+program has no release of a global at its end; the one release of a global's
+value is an assignment over it. What must happen outside the process is the
+module's `final`'s to do. A thread-local whose type needs finalizing is refused
+all the same (`ErrorThreadLocalFinal`, `modThreadLocalCheck`): each thread's
+copy would need finalizing as its thread ends, which nothing does. A
+`@workgroup` global, a copy for each workgroup on a GPU, may hold nothing that
+needs finalizing (`ErrorWorkgroupData`, asked by type check).
 
 **The stitched pair** (`genlStitch`, `genllvm/genllvm.c`) is two functions of the
 object being generated: `cone.initAll`, calling `initfn` of each module in
@@ -2261,25 +2240,21 @@ ahead of every stitched `init`, a C-named module's `init` may not depend on a
 module with a Cone-named `init` (`pgmCInitCheck`, `ErrorModLifecycle`); one that
 depends on another C-named module with an `init` is fine, that one running first
 in the same function. Where the two are in separately compiled objects, their
-constructors' order is the linker's. **A module's `init`, `final` and `drop` are
+constructors' order is the linker's. **A module's `init` and `final` are
 Cone-named whatever its naming** (`modLifecycleCone`): a C-named module spells the
 functions it owns by their bare names, which would make every such module's `init`
-the one symbol `init`, so these three are spelled after the module and called in
+the one symbol `init`, so these two are spelled after the module and called in
 Cone's convention.
 
-**Across separately compiled packages**, a package's `init`, `final` and `drop`
-keep the package's Cone names (`lib.init`, `lib.drop`), and a library compile
+**Across separately compiled packages**, a package's `init` and `final`
+keep the package's Cone names (`lib.init`, `lib.final`), and a library compile
 exports each whatever its visibility (`DclLifecycle` in `dclIsExported`). The
 program's compile sees the package through its include file, which declares
 them: `extern fn @initpure init();` where the package has an `init`,
-`extern fn final();` where it has a `final`, and each global the package's
-finalizer drops. The program then derives the package's finalizer from the
-include file exactly as the package's compile derives it from its source — a
-`drop` where a declared global finalizes, else `final` — and its stitched pair
-calls the declared symbols (`module_init_link`). An include file that declares
-less than its package has leaks rather than misbehaves: an `init` it omits is not
-run, and where it omits the global a `drop` finalizes, the program calls
-`final` alone; one that declares more fails to link. **A type's `final` and
+`extern fn final();` where it has a `final`. Its stitched pair calls the declared
+symbols (`module_init_link`). An include file that declares less than its package
+has leaks rather than misbehaves: an `init` or a `final` it omits is not run; one
+that declares more fails to link. **A type's `final` and
 `clone` are exported the same way** when an importer can reach the type, public
 or not (`fnIsTypeLifecycle`): a program that drops or copies a value of the type
 calls them without naming them (`module_init_link` drops a `lib.Handle`).
@@ -3168,8 +3143,8 @@ a reference names is a type, and that is what is built.
   `modNameRes` walks only the nodes before them, since the copies arrived
   resolved in the trait's scope and a second walk would bind their names again
   in the module's. Anything appended to `nodes` between `modTraitConform` and
-  `modNameRes` would be taken for a copy and left unresolved. The module's
-  `drop` is appended after name resolution, where nothing reads the count.
+  `modNameRes` would be taken for a copy and left unresolved. A module's
+  `-setups` is appended after name resolution, where nothing reads the count.
 - **A `pub` `init` or `final` is folded like any public name**, so an importer's
   `use *` of a module whose `init` is public collides with the importer's own
   `init` (`ErrorDupName`). Written private, as the scenarios write them, neither

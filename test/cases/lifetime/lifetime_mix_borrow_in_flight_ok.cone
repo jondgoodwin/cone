@@ -1,0 +1,139 @@
+// A variable is borrowed and given another borrow while the first borrow is
+// still waiting for its call, literal or place, in ways that stay safe: the new
+// borrow lives as long as everything that reads it, another variable is the one
+// stored into, the waiting value is a copy of what the variable held rather
+// than a borrow of it, or it is used up before the shorter-lived local ends.
+//
+// Verdict: accept, and run.
+// Basis: the lifetime invariant (references-and-regions.md).
+
+mod lifetime_mix_borrow_in_flight_ok;
+
+import stdio use *;
+
+struct P {
+  pub r: &mut &i64;
+  pub n: i64;
+}
+
+fn pick(x: &mut &i64, n: i64) &mut &i64 {
+  x
+}
+
+fn first(x: &i64, n: i64) &i64 {
+  x
+}
+
+fn show(v: i64) {
+  printInt(v);
+  printStr("\n");
+}
+
+fn longer() {
+  var a = 1i64;
+  var c = 3i64;
+  var h = &a;
+  var out = [&a];
+  {
+    var p = pick(&mut h, {h = &c; 1i64});
+    out[0usize] = *p;
+  }
+  show(*out[0usize]);         // 3: what 'h' was given
+}
+
+fn longerField() {
+  var a = 4i64;
+  var c = 5i64;
+  var h = &a;
+  var out = [&a];
+  {
+    var p = P(&mut h, {h = &c; 1i64});
+    out[0usize] = *p.r;
+  }
+  show(*out[0usize]);         // 5
+}
+
+fn otherVariable() {
+  var a = 6i64;
+  var h = &a;
+  var out = [&a];
+  {
+    var b = 7i64;
+    var g = &a;
+    var p = pick(&mut h, {g = &b; 1i64});
+    out[0usize] = *p;
+    show(*g);                 // 7
+  }
+  show(*out[0usize]);         // 6
+}
+
+// The first argument is a copy of what 'h' held, no borrow of 'h'
+fn copiedValue() {
+  var a = 8i64;
+  var h = &a;
+  var out = [&a];
+  {
+    var b = 9i64;
+    out[0usize] = first(h, {h = &b; 1i64});
+    show(*h);                 // 9
+  }
+  show(*out[0usize]);         // 8
+}
+
+fn usedWithin() {
+  var a = 10i64;
+  var h = &a;
+  {
+    var b = 11i64;
+    var p = pick(&mut h, {h = &b; 1i64});
+    show(**p);                // 11
+  }
+}
+
+fn assigned() {
+  var a = 12i64;
+  var c = 13i64;
+  var h = &a;
+  var x = &a;
+  var ps = [&mut x];
+  var out = [&a];
+  ps[{h = &c; 0usize}] = &mut h;
+  out[0usize] = *ps[0usize];
+  show(*out[0usize]);         // 13
+}
+
+fn parallelAssigned() {
+  var a = 14i64;
+  var c = 15i64;
+  var h = &a;
+  var x = &a;
+  var p = &mut x;
+  var out = [&a];
+  h, p = (&c, &mut h);
+  out[0usize] = *p;
+  show(*out[0usize]);         // 15
+}
+
+fn indexBase() {
+  var a = 16i64;
+  var c = 17i64;
+  var harr = [&a];
+  var rr = &mut harr;
+  var out = [&a];
+  {
+    var p = &mut (*rr)[{harr[0usize] = &c; 0usize}];
+    out[0usize] = *p;
+  }
+  show(*out[0usize]);         // 17
+}
+
+fn main() {
+  longer();
+  longerField();
+  otherVariable();
+  copiedValue();
+  usedWithin();
+  assigned();
+  parallelAssigned();
+  indexBase();
+}

@@ -88,9 +88,10 @@ at least 1002 messages handled so far
 		panic.</p>
 	<p>The <span class="pre">actors</span> module's finalizer, which the program's entry runs after
 		<span class="pre">main</span> returns, waits until the runtime is <i>quiescent</i> (no actor queued or running, so no
-		message in any mailbox), then stops the workers and joins them. The final finalizes the program's own module first,
-		so the handles its globals hold are let go before the wait; handles in <span class="pre">main</span>'s locals go when
-		it returns, before the final begins. An actor paused on I/O is neither queued nor running, so it does not hold the
+		message in any mailbox), then stops the workers and joins them. Handles in <span class="pre">main</span>'s locals go when
+		it returns, before the final begins; a handle a global holds is never let go
+		(<a href="mod-globals.html#globalend">A global is never finalized</a>), though the messages its actor was sent are run
+		before the workers stop, as any actor's are. An actor paused on I/O is neither queued nor running, so it does not hold the
 		program open (<a href="conc-ioloop.html#io-thread">The I/O thread, and the program's end</a>), unless
 		<span class="pre">main</span> ends by calling <span class="pre">actors.waitUntilIdle()</span>, which waits for that I/O too
 		(interim; the same section). A program that uses <span class="pre">aio</span> and ends with awaited operations still
@@ -142,7 +143,9 @@ at least 1002 messages handled so far
 	<p>The final runs when <span class="pre">main</span> returns
 		(<a href="mod-globals.html#initall">Running every module's initializer and finalizer</a>). A program that panics or
 		calls the C library's <span class="pre">exit</span> ends whatever its actors are doing: messages still in flight are
-		silently dropped, and no actor still alive is finalized.</p>
+		silently dropped, and no actor still alive is finalized. At a normal end an actor whose handle a global holds,
+		directly or inside a value, is not finalized either: what it must do outside the process is done in a module's
+		<span class="pre">final</span>.</p>
 
 	<h3 id="how-it-works">How the scheduler works</h3>
 	<p>A mailbox is a ring of fixed-size slots for many senders and one receiver, grown in linked segments: a send claims

@@ -70,11 +70,11 @@ the enum has, the enum's use finds, so a method declared on the enum and a field
 shares are reached exactly as they were. Then:
 
 - a value held by name, or a reference no other reference can change the variant under (`uni`,
-  `imm`, `mut1`, `MayIntRefSum`): the name use is retyped as the variant, a reference to it
+  `imm`, `MayIntRefSum`): the name use is retyped as the variant, a reference to it
   for a reference, and flagged `FlagNarrowed`. A variant is a prefix of its enum's bytes, so a
   field is read with the variant's layout from the variable's own storage; generation loads
   and addresses a flagged use as the variant (`genlTerm`, `genlAddrType`);
-- a reference others may share (`ro`, `mut`): the receiver becomes a use of a hidden local
+- a reference others may share (`ro`, `mut`, `mut1`): the receiver becomes a use of a hidden local
   `-narrow` that holds the narrowed reference, a recast marked `FlagVariantNarrow`
   (`castNarrowRef`), which the loan walk follows as it follows any reference narrowed into a
   variant (flow.md, "A change through another name"). The local is made when a use first needs
@@ -112,8 +112,8 @@ change made in the loop is noted, and at the loop's end a use a change reaches i
 
 ## A name narrowed beside a `mut` borrow
 
-A live borrow freezes a narrowed name. For a name held by value or through `uni`, `imm` or
-`mut1`, an exclusive borrow live at the test keeps the test from reading it, and a read-only
+A live borrow freezes a narrowed name. For a name held by value or through `uni` or
+`imm`, an exclusive borrow live at the test keeps the test from reading it, and a read-only
 one changes nothing. A `mut` borrow of a local, or of what a `uni` reference points at, is an
 alias loan: it freezes nothing, and may store another variant while the name is read as the one
 tested. There the rule is kept by the loan walk, as for a reference narrowed into a variant.
@@ -182,7 +182,7 @@ side is held the same way while the right side is made (flow.md, "What is not he
 
 ## What it does not do
 
-- **It never proves a call harmless for a name held by value or through `uni`, `imm`, `mut1`,
+- **It never proves a call harmless for a name held by value or through `uni` or `imm`,
   in type check.** Only the name's own assignments, writable borrows of the whole enum and
   swaps end the narrowing there; what another name may change is the loan walk's, above.
 - **It does not retype the name.** Only a member of the variant named on it sees the variant.

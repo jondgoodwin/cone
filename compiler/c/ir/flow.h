@@ -196,12 +196,15 @@ struct NameUseNode *flowCompoundLocal(VarDclNode *tmp);
 // Walk the value of an assignment, refusing a compound one whose right side
 // moves the variable holding its place
 void flowAssignValue(FlowState *fstate, INode *lval, INode **rvalp);
+// A call is lent what an owner a 'var' global may also hold points at
+void flowGateGlobalOwner(FlowState *fstate, Nodes *args);
 // A store, which may be the one that ends a compound assignment through a temporary
 void flowGateCompound(FlowState *fstate, INode *lval, INode *rval);
 // An index of a place, whose address is made before the index is
 void flowGateIndex(FlowState *fstate, INode *index);
 // Walk the indexes of a place read or borrowed, refusing one that moves the
 // variable holding what it indexes
+struct FnCallNode;
 void flowIndexArgs(FlowState *fstate, struct FnCallNode *index);
 // A swap, whose left side's address is made before the right side is
 void flowGateSwap(FlowState *fstate, INode *lval, INode *rval);

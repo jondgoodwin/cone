@@ -317,6 +317,12 @@ Six permissions, each a bit set:
 | `mut1` | ● | ● | ● | | | ● | ● |
 | `opaq` | | | | | | | |
 
+**`mut1` is checked as `mut` for now, pending its design.** Its row is what the table
+holds, but every question "may another name write?" reads `MayAliasWrite` and
+`MayIntRefSum` through `permWriterFlags`, which answers for `mut1` with `mut`'s
+flags: a `mut1` reference may be copied, and a copy writes. Coercion is still
+`mut1`'s own.
+
 **`uni` is the interesting one, and it is not `&mut`.** It permits reading and
 writing but **not aliasing** — and lacking `MayAlias` is precisely what makes a
 reference carrying it a move type. It is the default for a managed reference

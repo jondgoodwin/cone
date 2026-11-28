@@ -1,0 +1,58 @@
+// A global outlives a paused behaviour: one paused on a sleep, holding a value
+// whose 'final' reads a global List, is abandoned as the program ends, after
+// this module's finalizer has run. The module's wait for quiet does not help,
+// since a paused behaviour is neither queued nor running. A global is never
+// finalized, so the List is still there.
+mod globalexitsleep;
+
+import stdio use *;
+import collections use *;
+import actors;
+import aio;
+import time use Duration;
+
+const items = 4000000usize;
+
+fn makeTable() List[u64] {
+  var l = List[u64]();
+  var i = 0usize;
+  while i < items {
+    l.push(7u64);
+    i = i + 1usize;
+  }
+  l
+}
+
+let table = makeTable();
+
+fn final() {
+  actors.waitQuiet();
+  printStr("root final: quiet\n");
+}
+
+struct Guard {
+  pub n: u64;
+  fn final(self: &uni) {
+    printStr("guard final: reading the table\n");
+    let v = table[usize.from(n)];
+    printStr("guard final: table[n] (expected 7) ");
+    print <- v;
+    printStr("\n");
+  }
+}
+
+actor Waiter {
+  n: u64 = 0u64;
+
+  pub async fn park(self) {
+    let g = Guard(100u64);
+    let r = await aio.sleep(Duration.fromHours(1i64));
+    printStr("not reached\n");
+  }
+}
+
+fn main() {
+  let w = Waiter();
+  w.park();
+  printStr("main returns\n");
+}
