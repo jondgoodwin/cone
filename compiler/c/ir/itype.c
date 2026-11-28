@@ -521,7 +521,11 @@ static int insideHolds(InsideSet *set, INode *type) {
             if (!isTypeNode(referent))
                 return 1;
             INode *refdcl = itypeGetTypeDcl(referent);
-            if (!slotshut && (refdcl == NULL || (refdcl->tag == StructTag && (refdcl->flags & TraitType))
+            // An open trait's slot may hold a borrow of any type; asked of owned storage, a
+            // closed enum's ('&Option[Font]') holds only one of that enum, found by name
+            if (!slotshut && (refdcl == NULL
+                    || (refdcl->tag == StructTag && (refdcl->flags & TraitType)
+                        && !(set->owned && (refdcl->flags & EnumType)))
                     || insideIsReached(set, refdcl)))
                 return 1;
             // What a borrow points at is a way to store only if it holds

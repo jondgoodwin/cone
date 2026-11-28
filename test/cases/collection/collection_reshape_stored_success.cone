@@ -90,6 +90,45 @@ fn receiver(b: &mut Box) {
   b.items.push(9i32);
 }
 
+// A UI measured by a callback that captures an optional font: the callback's state holds no
+// borrow into the UI, so the UI handed to a call beside it is not lent to it
+struct Font { pub w: i32; }
+struct Ui {
+  pub texts: List[i32];
+  pub fn first(self: &) &i32 { return &self.texts[0usize]; }
+}
+fn grow(ui: &mut Ui) { ui.texts.push(0i32); }
+fn measureNode[F: fn(n: i32) i32](ui: &mut Ui, m: &mut F) i32 { grow(ui); (*m)(1i32) }
+fn measureOuter[F: fn(n: i32) i32](ui: &mut Ui, m: &mut F) i32 { measureNode(ui, m) }
+fn content[F: fn(n: i32) i32](ui: &mut Ui, m: &mut F) i32 {
+  var total = 0i32;
+  var c = 0i32;
+  while c < 3i32 {
+    total = total + measureOuter(ui, m);
+    c = c + 1i32;
+  }
+  total + measureNode(ui, m)
+}
+fn layoutNow(ui: &mut Ui, font: &Option[Font], calls: &mut i64) i32 {
+  var m = fn(n: i32) [font, calls] i32 {
+    *calls = *calls + 1i64;
+    var w = 0i32;
+    if let Some(f) = font { w = f.w; }
+    w * n
+  };
+  content(ui, &mut m)
+}
+
+fn measured() {
+  var ui = Ui(List[i32]());
+  let font = Some[Font](Font(3i32));
+  var calls = 0i64;
+  printInt(i64.from(layoutNow(&mut ui, &font, &mut calls)));    // 4 calls of width 3: 12
+  print <- "\n";
+  printInt(calls);                                               // 4
+  print <- "\n";
+}
+
 fn main() {
   var a = List[i32]();
   a.push(1i32);
@@ -104,4 +143,5 @@ fn main() {
   receiver(&mut b);         // 10, leaves [9]
   printInt(i64.from(b.items[0usize]));    // 9
   print <- "\n";
+  measured();               // 12, 4
 }
