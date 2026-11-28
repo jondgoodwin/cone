@@ -1,0 +1,618 @@
+// The sculpt package's blendSeamWidths (a per-vertex seam width, 0 keeping a stretch crisp), checked with the
+// testing package. Only a failure prints, so seamwidths.out holds the summary alone.
+//
+// The meshes are blendseams.cone's: the slab [-2, 2] x [-2, 2] x [-1, 0] and the post [-0.5, 0.5]^2 x [0, 2],
+// grids of 0.05, their union's square seam of 80 edges at z = 0 (crease marker 2). widths[i] is the width at
+// seamVertices(u, seam)[i].
+//
+// 1. "Crisp sides": width 0 on the post's +x and -x sides (every seam vertex with |x| = 0.5, the four corners
+//    included), 0.3 on every other seam vertex.
+//    - Held vertices: 21 on each of the two sides' lines (the corners are among them): 42. Edges that keep
+//      crease 2 are those with an end held: the 2 x 20 = 40 on the two sides and the 4 beside the corners on
+//      the +-y sides: 44 (of the seam's 80); blendSeam at 0.3 leaves none.
+//    - Every held vertex is in the result bit for bit; the 44 edges still carry crease 2; no band face has a
+//      held vertex; heightAt on the +x and -x sides is -1 (no fillet: the wall rises from the slab at a crease);
+//      the +-y sides are rounded (mean fillet height 0.04 to 0.08 out from the wall: 0.056 and 0.057 against
+//      blendSeam at 0.3's 0.120 and 0.116; at the middle 0.073 against 0.120, the 0.3-to-0 step at the held
+//      corners pinning the fair surface flat so the round falls to the ends; the check is: above 0.05, not
+//      above blendSeam's, and over half of it at the middle); the volume is 18.012 (full blend 18.069):
+//      above 18 and below the full blend's.
+// 2. "A ramp": width 0.3 (x + 0.5) at every seam vertex (0 at x = -0.5, 0.3 at x = 0.5). The band tapers:
+//    - its reach out over the slab at x = -0.1 (width 0.12) is 0.15 (checked under 0.2) and at x = 0.3 (width
+//      0.24) is 0.30 (over 0.25); offsets ignored would give 0.30 at both;
+//    - no step where the width changes: the band's outer edge (the post's corner lines skipped, as the
+//      unmarked sharp corner is a feature blendSeam is not told about; edges at x under -0.2, where the band
+//      is a ring of faces, not counted) has its largest angle 0.020 degrees (the full blend: 0.028), under 10;
+//    - the fillet 0.04 to 0.08 out from the wall is higher at x = 0.3 (0.056) than at -0.1 (0.010);
+//    - the volume 18.027 is above 18 and below the full blend's 18.069.
+// 3. "Equal widths are blendSeam": for 0.3 on the 0.05 grids and 0.2 on the 0.25 grids, blendSeamWidths with
+//    equal widths, blendSeam, and an inline copy of blendSeam as #1733 wrote it (before this change) all give
+//    the same bits, band faces and free vertices.
+// 4. Refusals: widths of the wrong length; a negative width; all widths 0: one problem line each, an unchanged
+//    copy.
+
+mod seamwidths;
+
+import testing use *;
+import collections use *;
+import geomath use *;
+import mesh use *;
+import sculpt use *;
+import stdio use *;
+
+let show = false;
+let slabWidth = 0.3f32;
+
+// A box lo..hi, a grid of n quads along each axis, outward faces, the points shared
+fn gridBox(lo: Vec3, hi: Vec3, nx: u32, ny: u32, nz: u32, rot: usize) PolyMesh {
+  let n: Array[u32, 3] = [nx, ny, nz];
+  let lov: Array[f32, 3] = [lo.x, lo.y, lo.z];
+  let hiv: Array[f32, 3] = [hi.x, hi.y, hi.z];
+  var ids = List[u32]();
+  let total = usize.from((nx + 1u32) * (ny + 1u32) * (nz + 1u32));
+  var i = 0usize;
+  while i < total { ids.push(NoIndex); i = i + 1usize; }
+  var pts = List[Vec3]();
+  var counts = List[u32]();
+  var idx = List[u32]();
+  var axis = 0u32;
+  while axis < 3u32 {
+    var s = 0u32;
+    while s < 2u32 {
+      let b = (axis + 1u32) % 3u32;
+      let c = (axis + 2u32) % 3u32;
+      var u = 0u32;
+      while u < n[usize.from(b)] {
+        var v = 0u32;
+        while v < n[usize.from(c)] {
+          var corner: Array[u32, 4] = [0u32, 0u32, 0u32, 0u32];
+          var q = 0usize;
+          while q < 4usize {
+            let du = if q == 1usize || q == 2usize {1u32} else {0u32};
+            let dv = if q >= 2usize {1u32} else {0u32};
+            var ijk: Array[u32, 3] = [0u32, 0u32, 0u32];
+            ijk[usize.from(axis)] = if s == 0u32 {0u32} else {n[usize.from(axis)]};
+            ijk[usize.from(b)] = u + du;
+            ijk[usize.from(c)] = v + dv;
+            let key = usize.from(ijk[0usize] + (nx + 1u32) * (ijk[1usize] + (ny + 1u32) * ijk[2usize]));
+            if *ids[key] == NoIndex {
+              ids.set(key, u32.from(pts.len()));
+              var xyz: Array[f32, 3] = [0., 0., 0.];
+              var a = 0usize;
+              while a < 3usize {
+                let t = f32.from(ijk[a]) / f32.from(n[a]);
+                xyz[a] = lov[a] + (hiv[a] - lov[a]) * t;
+                a = a + 1usize;
+              }
+              pts.push(Vec3(xyz[0usize], xyz[1usize], xyz[2usize]));
+            }
+            corner[q] = *ids[key];
+            q = q + 1usize;
+          }
+          counts.push(4u32);
+          if s == 1u32 {
+            idx.push(corner[rot % 4usize]); idx.push(corner[(rot + 1usize) % 4usize]); idx.push(corner[(rot + 2usize) % 4usize]); idx.push(corner[(rot + 3usize) % 4usize]);
+          } else {
+            idx.push(corner[(rot + 3usize) % 4usize]); idx.push(corner[(rot + 2usize) % 4usize]); idx.push(corner[(rot + 1usize) % 4usize]); idx.push(corner[rot % 4usize]);
+          }
+          v = v + 1u32;
+        }
+        u = u + 1u32;
+      }
+      s = s + 1u32;
+    }
+    axis = axis + 1u32;
+  }
+  var problems = List[String]();
+  PolyMesh.fromPolygons(pts.view(), counts.view(), idx.view(), &mut problems)
+}
+
+fn volume(m: &PolyMesh) f64 {
+  var sum = 0.0;
+  var f = 0usize;
+  while f < m.faceCount() {
+    let pts = m.facePositions(u32.from(f));
+    var i = 1usize;
+    while i + 1usize < pts.len() {
+      let a = DVec3.from(*pts[0usize]);
+      let b = DVec3.from(*pts[i]);
+      let c = DVec3.from(*pts[i + 1usize]);
+      sum = sum + a.x * (b.y * c.z - b.z * c.y) + a.y * (b.z * c.x - b.x * c.z) + a.z * (b.x * c.y - b.y * c.x);
+      i = i + 1usize;
+    }
+    f = f + 1usize;
+  }
+  sum / 6.0
+}
+
+// The grids: f = 1 is quads of 0.25, f = 5 quads of 0.05
+fn slabR(f: u32, rot: usize) PolyMesh {gridBox(Vec3(-2., -2., -1.), Vec3(2., 2., 0.), 16u32 * f, 16u32 * f, 4u32 * f, rot)}
+fn postR(f: u32, rot: usize) PolyMesh {gridBox(Vec3(-0.5, -0.5, 0.), Vec3(0.5, 0.5, 2.), 4u32 * f, 4u32 * f, 8u32 * f, rot)}
+fn slab(f: u32) PolyMesh {slabR(f, 0usize)}
+fn post(f: u32) PolyMesh {postR(f, 0usize)}
+
+fn seamOf(m: &PolyMesh, marker: f32) List[u32] {
+  var seam = List[u32]();
+  let ch = m.findFloatChannel(EdgeDomain, "crease");
+  if ch == NoIndex { return seam; }
+  var e = 0usize;
+  while e < m.edgeCount() {
+    if m.float(ch, u32.from(e)) == marker { seam.push(u32.from(e)); }
+    e = e + 1usize;
+  }
+  seam
+}
+
+// Distance from the square loop |x|, |y| = 0.5 at z = 0 (the post's foot)
+fn toSquare(p: Vec3) f32 {
+  let ax = p.x.abs();
+  let ay = p.y.abs();
+  if ax <= 0.5 && ay <= 0.5 {
+    let d = if 0.5 - ax < 0.5 - ay {0.5 - ax} else {0.5 - ay};
+    return (d * d + p.z * p.z).sqrt();
+  }
+  let ex = if ax > 0.5 {ax - 0.5} else {0.};
+  let ey = if ay > 0.5 {ay - 0.5} else {0.};
+  (ex * ex + ey * ey + p.z * p.z).sqrt()
+}
+
+fn sameBits(a: &PolyMesh, b: &PolyMesh) bool {
+  if a.vertexCount() != b.vertexCount() || a.faceCount() != b.faceCount() { return false; }
+  var i = 0usize;
+  while i < a.vertexCount() {
+    let p = *a.positions[i];
+    let q = *b.positions[i];
+    if p.x != q.x || p.y != q.y || p.z != q.z { return false; }
+    i = i + 1usize;
+  }
+  var f = 0usize;
+  while f < a.faceCount() {
+    let va = a.faceVertices(u32.from(f));
+    let vb = b.faceVertices(u32.from(f));
+    if va.len() != vb.len() { return false; }
+    var k = 0usize;
+    while k < va.len() {
+      if *va[k] != *vb[k] { return false; }
+      k = k + 1usize;
+    }
+    f = f + 1usize;
+  }
+  true
+}
+
+// Largest angle (degrees) between the normals of the two faces beside an edge, over the edges where
+// 'pick' is 1 (both faces in the band) or 2 (a band face beside one outside it)
+// With 'skipCorner', an edge with an end on one of the post's vertical corner lines (|x| = |y| = 0.5) is not counted
+// (the sharp corner is a feature the blend is not told about: blendseams.cone measures 17 to 21 degrees beside it)
+fn onCorner(p: Vec3) bool {
+  let ax = p.x.abs();
+  let ay = p.y.abs();
+  ax > 0.4999 && ax < 0.5001 && ay > 0.4999 && ay < 0.5001
+}
+
+// An edge whose middle has x below 'xmin' is not counted either
+fn angles(m: &PolyMesh, bandFaces: &List[u32], pick: u32, skipCorner: bool, xmin: f32) f64 {
+  var inBand = List[bool]();
+  var f = 0usize;
+  while f < m.faceCount() { inBand.push(false); f = f + 1usize; }
+  var i = 0usize;
+  while i < bandFaces.len() { inBand.set(usize.from(*bandFaces[i]), true); i = i + 1usize; }
+  var worst = 0.0;
+  var at = Vec3(0., 0., 0.);
+  var count = 0i64;
+  var total = 0.0;
+  var over5 = 0i64;
+  var e = 0usize;
+  while e < m.edgeCount() {
+    let h0 = m.edgeHalfedge(u32.from(e), 0u32);
+    let h1 = m.edgeHalfedge(u32.from(e), 1u32);
+    let f0 = *m.hFace[usize.from(h0)];
+    let f1 = *m.hFace[usize.from(h1)];
+    if f0 != NoIndex && f1 != NoIndex {
+      let b0 = *inBand[usize.from(f0)];
+      let b1 = *inBand[usize.from(f1)];
+      var want = if pick == 1u32 {b0 && b1} else {b0 != b1};
+      let pa = *m.positions[usize.from(m.fromVertex(h0))];
+      let pb = *m.positions[usize.from(m.toVertex(h0))];
+      if skipCorner && (onCorner(pa) || onCorner(pb)) { want = false; }
+      if (pa.x + pb.x) * 0.5 < xmin { want = false; }
+      if want { count = count + 1; }
+      if want {
+        let n0 = m.faceNormal(f0);
+        let n1 = m.faceNormal(f1);
+        var c = f64.from(n0.dot(n1));
+        if c > 1.0 { c = 1.0; }
+        if c < -1.0 { c = -1.0; }
+        let a = c.acos() * 57.29577951308232;
+        if a > worst {
+          worst = a;
+          at = Vec3((pa.x + pb.x) * 0.5, (pa.y + pb.y) * 0.5, (pa.z + pb.z) * 0.5);
+        }
+        total = total + a;
+        if a > 5.0 { over5 = over5 + 1; }
+      }
+    }
+    e = e + 1usize;
+  }
+  if show && count > 0 { print <- "  edges ", count, " mean angle ", total / f64.from(count), " over 5 degrees: ", over5, " worst ", worst, " at ", at.x, " ", at.y, " ", at.z, "\n"; }
+  worst
+}
+
+// The height up the post of the fillet at the middle of side 's' (0 +x, 1 -x, 2 +y, 3 -y): the mean z of the
+// result's vertices lying 0.04 to 0.08 outside that side's wall, within 0.3 of its middle
+fn heightAt(m: &PolyMesh, s: u32) f64 {
+  var sum = 0.0;
+  var n = 0i64;
+  var v = 0usize;
+  while v < m.vertexCount() {
+    let p = *m.positions[v];
+    var out = 0.;
+    var along = 0.;
+    if s == 0u32 { out = p.x - 0.5; along = p.y; }
+    else if s == 1u32 { out = -0.5 - p.x; along = p.y; }
+    else if s == 2u32 { out = p.y - 0.5; along = p.x; }
+    else { out = -0.5 - p.y; along = p.x; }
+    if out >= 0.04 && out <= 0.08 && along.abs() <= 0.3 && p.z > 0.0001 {
+      sum = sum + f64.from(p.z);
+      n = n + 1;
+    }
+    v = v + 1usize;
+  }
+  if n == 0 { return -1.0; }
+  sum / f64.from(n)
+}
+
+
+// blendSeam as #1733 wrote it, before it became blendSeamWidths with equal widths (the public pieces only)
+fn legacyDropOuterRing(m: &PolyMesh, free: &List[u32]) List[u32] {
+  var isFree = List[bool]();
+  var v = 0usize;
+  while v < m.vertexCount() { isFree.push(false); v = v + 1usize; }
+  var i = 0usize;
+  while i < free.len() { isFree.set(usize.from(*free[i]), true); i = i + 1usize; }
+  var outer = isFree.clone();
+  var f = 0usize;
+  while f < m.faceCount() {
+    let vs = m.faceVertices(u32.from(f));
+    var anyHeld = false;
+    var k = 0usize;
+    while k < vs.len() {
+      if !*isFree[usize.from(*vs[k])] { anyHeld = true; }
+      k = k + 1usize;
+    }
+    if anyHeld {
+      k = 0usize;
+      while k < vs.len() {
+        outer.set(usize.from(*vs[k]), false);
+        k = k + 1usize;
+      }
+    }
+    f = f + 1usize;
+  }
+  var kept = List[u32]();
+  i = 0usize;
+  while i < free.len() {
+    if *outer[usize.from(*free[i])] { kept.push(*free[i]); }
+    i = i + 1usize;
+  }
+  kept
+}
+
+fn legacyBlendSeam(m: &PolyMesh, seam: &Array[u32], width: f32, problems: &mut List[String]) BlendedSeam {
+  var seeds = List[u32]();
+  var i = 0usize;
+  while i < seam.len() {
+    let h = m.edgeHalfedge(seam[i], 0u32);
+    seeds.push(m.toVertex(h));
+    seeds.push(m.fromVertex(h));
+    i = i + 1usize;
+  }
+  let dist = surfaceDistances(m, &seeds, &List[f32](), width);
+  var band = List[u32]();
+  var f = 0usize;
+  var edgeSum: f64 = 0.;
+  var edgeCount = 0usize;
+  while f < m.faceCount() {
+    let vs = m.faceVertices(u32.from(f));
+    var near = false;
+    var k = 0usize;
+    while k < vs.len() {
+      if *dist[usize.from(*vs[k])] <= width { near = true; }
+      k = k + 1usize;
+    }
+    if near {
+      band.push(u32.from(f));
+      let pts = m.facePositions(u32.from(f));
+      k = 0usize;
+      while k < pts.len() {
+        let d = *pts[(k + 1usize) % pts.len()] - *pts[k];
+        edgeSum = edgeSum + f64.from(d.length());
+        edgeCount = edgeCount + 1usize;
+        k = k + 1usize;
+      }
+    }
+    f = f + 1usize;
+  }
+  let meanEdge = f32.from(edgeSum / f64.from(edgeCount));
+  if width < 2. * meanEdge {
+    var s = String.from("blendSeam: the band is narrower than two input edge lengths; it has less than an edge of well-shaped triangles");
+    problems.push(s);
+  }
+  let edgeLength = if width / 4. < meanEdge {width / 4.} else {meanEdge};
+  var work = m.clone();
+  let cc = work.findFloatChannel(EdgeDomain, "crease");
+  if cc != NoIndex {
+    i = 0usize;
+    while i < seam.len() {
+      work.setFloat(cc, seam[i], 0.);
+      i = i + 1usize;
+    }
+  }
+  let rr = remeshRegion(&work, band.view(), edgeLength, 5u32, problems);
+  var free = rr.vertices.clone();
+  free = legacyDropOuterRing(&rr.mesh, &free);
+  let faired = fairRegion(&rr.mesh, free.view(), 2u32, problems);
+  BlendedSeam(faired, rr.faces.clone(), rr.vertices.clone())
+}
+
+fn unionOf(f: u32) PolyMesh {
+  let a = slabR(f, 0usize);
+  let b = postR(f, 0usize);
+  var problems = List[String]();
+  booleanWith(&a, &b, BooleanUnion, 2., &mut problems)
+}
+
+fn sameList(a: &List[u32], b: &List[u32]) bool {
+  if a.len() != b.len() { return false; }
+  var i = 0usize;
+  while i < a.len() {
+    if *a[i] != *b[i] { return false; }
+    i = i + 1usize;
+  }
+  true
+}
+
+fn samePoint(p: Vec3, q: Vec3) bool { p.x == q.x && p.y == q.y && p.z == q.z }
+
+fn hasPoint(m: &PolyMesh, p: Vec3) bool {
+  var j = 0usize;
+  while j < m.vertexCount() {
+    if samePoint(p, *m.positions[j]) { return true; }
+    j = j + 1usize;
+  }
+  false
+}
+
+// widths: 0 on the +-x sides' lines, 0.3 elsewhere
+fn crispWidths(u: &PolyMesh, sv: &List[u32]) List[f32] {
+  var w = List[f32]();
+  var i = 0usize;
+  while i < sv.len() {
+    let p = *u.positions[usize.from(*sv[i])];
+    w.push(if p.x.abs() > 0.4999 {0.} else {0.3});
+    i = i + 1usize;
+  }
+  w
+}
+
+// The edges of 'm' whose crease is exactly 2
+fn creaseTwo(m: &PolyMesh) usize {
+  let ch = m.findFloatChannel(EdgeDomain, "crease");
+  var n = 0usize;
+  var e = 0usize;
+  while ch != NoIndex && e < m.edgeCount() {
+    if m.float(ch, u32.from(e)) == 2. { n = n + 1usize; }
+    e = e + 1usize;
+  }
+  n
+}
+
+// How far out over the slab's top (z = 0) from the +y wall the band's faces reach, within 0.05 of x = xc
+fn bandReach(m: &PolyMesh, faces: &List[u32], xc: f32) f32 {
+  var far = 0.0f32;
+  var k = 0usize;
+  while k < faces.len() {
+    let pts = m.facePositions(*faces[k]);
+    var c = 0usize;
+    while c < pts.len() {
+      let p = *pts[c];
+      if p.z.abs() < 0.0001 && (p.x - xc).abs() <= 0.05 && p.y - 0.5 > far { far = p.y - 0.5; }
+      c = c + 1usize;
+    }
+    k = k + 1usize;
+  }
+  far
+}
+
+// The mean z of the result's vertices 0.04 to 0.08 outside the +y wall, within 0.1 of x = xc
+fn heightNearX(m: &PolyMesh, xc: f32) f64 {
+  var sum = 0.0;
+  var n = 0i64;
+  var v = 0usize;
+  while v < m.vertexCount() {
+    let p = *m.positions[v];
+    let out = p.y - 0.5;
+    if out >= 0.04 && out <= 0.08 && (p.x - xc).abs() <= 0.1 && p.z > 0.0001 {
+      sum = sum + f64.from(p.z);
+      n = n + 1;
+    }
+    v = v + 1usize;
+  }
+  if n == 0 { return -1.0; }
+  sum / f64.from(n)
+}
+
+fn main() i32 {
+  crisp();
+  ramp();
+  equal();
+  refusals();
+  done()
+}
+
+fn crisp() {
+  let u = unionOf(5u32);
+  let seam = seamOf(&u, 2.);
+  let sv = seamVertices(&u, seam.view());
+  expect(sv.len() >= 80usize, "the seam has at least 80 vertices");
+  let widths = crispWidths(&u, &sv);
+  var held = 0i64;
+  var i = 0usize;
+  while i < widths.len() { if *widths[i] == 0. { held = held + 1; } i = i + 1usize; }
+  expect(held > 40 && held < i64.from(sv.len()), "some seam vertices held (the two sides' lines), not all");
+  var problems = List[String]();
+  let r = blendSeamWidths(&u, seam.view(), widths.view(), &mut problems);
+  let full = blendSeam(&u, seam.view(), slabWidth, &mut problems);
+  expectInt(i64.from(problems.len()), 0, "crisp sides: no problem line");
+  expectInt(i64.from(r.mesh.validate().len()), 0, "crisp sides: validate");
+  // every held vertex is in the result, bit for bit
+  var lost = 0i64;
+  i = 0usize;
+  while i < widths.len() {
+    if *widths[i] == 0. && !hasPoint(&r.mesh, *u.positions[usize.from(*sv[i])]) { lost = lost + 1; }
+    i = i + 1usize;
+  }
+  expectInt(lost, 0, "crisp sides: every held vertex is in the result bit for bit");
+  // the held edges keep their crease: 40 on the two sides and the 4 beside the corners on the +-y sides
+  var withHeld = 0i64;
+  var se = 0usize;
+  while se < seam.len() {
+    let h = u.edgeHalfedge(*seam[se], 0u32);
+    let pa = *u.positions[usize.from(u.toVertex(h))];
+    let pb = *u.positions[usize.from(u.fromVertex(h))];
+    if pa.x.abs() > 0.4999 || pb.x.abs() > 0.4999 { withHeld = withHeld + 1; }
+    se = se + 1usize;
+  }
+  expectInt(i64.from(creaseTwo(&u)), i64.from(seam.len()), "crisp sides: the union's seam is all crease 2");
+  expectInt(i64.from(creaseTwo(&r.mesh)), withHeld, "crisp sides: the edges with a held end keep crease 2");
+  expectInt(i64.from(creaseTwo(&full.mesh)), 0, "blendSeam at 0.3: none do");
+  // the crisp sides have no fillet; the +-y sides do
+  expectFloat(heightAt(&r.mesh, 0u32), -1.0, 0.0001, "crisp sides: no fillet on +x");
+  expectFloat(heightAt(&r.mesh, 1u32), -1.0, 0.0001, "crisp sides: no fillet on -x");
+  let hf2 = heightAt(&full.mesh, 2u32);
+  let hf3 = heightAt(&full.mesh, 3u32);
+  let h2 = heightAt(&r.mesh, 2u32);
+  let h3 = heightAt(&r.mesh, 3u32);
+  if show { print <- "crisp: +y ", h2, " (full ", hf2, ") -y ", h3, " (full ", hf3, ")\n"; }
+  var px = -0.4f32;
+  while show && px < 0.45 {
+    print <- "  profile x ", px, ": crisp ", heightNearX(&r.mesh, px), " full ", heightNearX(&full.mesh, px), "\n";
+    px = px + 0.1;
+  }
+  expect(hf2 > 0.0 && hf3 > 0.0, "blendSeam at 0.3: a fillet on +-y");
+  // The fillet stops short of the held corners, where the fair surface is pinned flat, so its middle is lower
+  // than the full blend's (0.073 against 0.120 at the middle) and falls to the ends
+  expect(h2 > 0.05 && h2 <= hf2 + 0.02, "crisp sides: the +y side is rounded, no higher than blendSeam at 0.3");
+  expect(h3 > 0.05 && h3 <= hf3 + 0.02, "crisp sides: the -y side is rounded, no higher than blendSeam at 0.3");
+  expect(heightNearX(&r.mesh, 0.) > 0.5 * heightNearX(&full.mesh, 0.), "crisp sides: at the middle the fillet is over half of blendSeam's");
+  // no band face has a held vertex
+  var touched = 0i64;
+  var k = 0usize;
+  while k < r.faces.len() {
+    let pts = r.mesh.facePositions(*r.faces[k]);
+    var c = 0usize;
+    while c < pts.len() {
+      let p = *pts[c];
+      var q = 0usize;
+      while q < sv.len() {
+        if *widths[q] == 0. && samePoint(p, *u.positions[usize.from(*sv[q])]) { touched = touched + 1; }
+        q = q + 1usize;
+      }
+      c = c + 1usize;
+    }
+    k = k + 1usize;
+  }
+  expectInt(touched, 0, "crisp sides: no band face has a vertex of the held lines");
+  let v = volume(&r.mesh);
+  let vf = volume(&full.mesh);
+  if show { print <- "crisp: volume ", v, " full ", vf, "\n"; }
+  expect(v > 18.0 && v < vf, "crisp sides: volume above 18 and below the full blend's");
+}
+
+fn ramp() {
+  let u = unionOf(5u32);
+  let seam = seamOf(&u, 2.);
+  let sv = seamVertices(&u, seam.view());
+  var widths = List[f32]();
+  var i = 0usize;
+  while i < sv.len() {
+    let p = *u.positions[usize.from(*sv[i])];
+    var w = 0.3 * (p.x + 0.5);
+    if w < 0. { w = 0.; }
+    widths.push(w);
+    i = i + 1usize;
+  }
+  var problems = List[String]();
+  let r = blendSeamWidths(&u, seam.view(), widths.view(), &mut problems);
+  let full = blendSeam(&u, seam.view(), slabWidth, &mut problems);
+  expectInt(i64.from(r.mesh.validate().len()), 0, "ramp: validate");
+  // Where the width is under 0.09 (x under -0.2) the band is a face ring and rounds nothing: not counted
+  let outerAll = angles(&r.mesh, &r.faces, 2u32, true, -10.);
+  let outer = angles(&r.mesh, &r.faces, 2u32, true, -0.2);
+  let outerFull = angles(&full.mesh, &full.faces, 2u32, true, -10.);
+  if show { print <- "ramp: outer edge angle from x = -0.2 ", outer, " all ", outerAll, " (full blend ", outerFull, ")\n"; }
+  expect(outer < 10.0, "ramp: the band's outer edge under 10 degrees (no step where the width changes)");
+  // The band's reach out over the slab, at x = -0.1 (width 0.12) and at 0.3 (width 0.24)
+  let reachLow = bandReach(&r.mesh, &r.faces, -0.1);
+  let reachHigh = bandReach(&r.mesh, &r.faces, 0.3);
+  if show { print <- "ramp: band reach at x = -0.1 ", reachLow, " at 0.3 ", reachHigh, "\n"; }
+  expect(reachLow < 0.2, "ramp: where the width is 0.12 the band reaches under 0.2 from the post");
+  expect(reachHigh > 0.25, "ramp: where the width is 0.24 the band reaches over 0.25 from the post");
+  let hLow = heightNearX(&r.mesh, -0.1);
+  let hHigh = heightNearX(&r.mesh, 0.3);
+  if show { print <- "ramp: height at x = -0.3 ", hLow, " at 0.3 ", hHigh, "\n"; }
+  expect(hHigh > hLow, "ramp: the fillet is higher where the width is more");
+  let v = volume(&r.mesh);
+  let vf = volume(&full.mesh);
+  if show { print <- "ramp: volume ", v, " full ", vf, "\n"; }
+  expect(v > 18.0 && v < vf, "ramp: volume above 18 and below the full blend's");
+}
+
+fn equal() {
+  var c = 0u32;
+  while c < 2u32 {
+    let f = if c == 0u32 {5u32} else {1u32};
+    let w = if c == 0u32 {0.3f32} else {0.2f32};
+    let u = unionOf(f);
+    let seam = seamOf(&u, 2.);
+    let sv = seamVertices(&u, seam.view());
+    var widths = List[f32]();
+    var i = 0usize;
+    while i < sv.len() { widths.push(w); i = i + 1usize; }
+    var p1 = List[String]();
+    var p2 = List[String]();
+    var p3 = List[String]();
+    let a = blendSeamWidths(&u, seam.view(), widths.view(), &mut p1);
+    let b = blendSeam(&u, seam.view(), w, &mut p2);
+    let old = legacyBlendSeam(&u, seam.view(), w, &mut p3);
+    expect(a.mesh.faceCount() > u.faceCount() / 2usize, "equal widths: a mesh");
+    expect(sameBits(&a.mesh, &b.mesh) && sameList(&a.faces, &b.faces) && sameList(&a.vertices, &b.vertices), "equal widths are blendSeam, bit for bit");
+    expect(sameBits(&a.mesh, &old.mesh) && sameList(&a.faces, &old.faces) && sameList(&a.vertices, &old.vertices), "equal widths are blendSeam as #1733 wrote it, bit for bit");
+    expectInt(i64.from(p1.len()), i64.from(p3.len()), "equal widths: the same problem lines as #1733's");
+    c = c + 1u32;
+  }
+}
+
+fn refusals() {
+  let u = unionOf(1u32);
+  let seam = seamOf(&u, 2.);
+  let sv = seamVertices(&u, seam.view());
+  var short = List[f32]();
+  short.push(0.3);
+  var p = List[String]();
+  let a = blendSeamWidths(&u, seam.view(), short.view(), &mut p);
+  expectInt(i64.from(p.len()), 1, "widths of the wrong length: one problem line");
+  expect(sameBits(&a.mesh, &u) && a.faces.len() == 0usize, "widths of the wrong length: an unchanged copy");
+  var neg = List[f32]();
+  var zero = List[f32]();
+  var i = 0usize;
+  while i < sv.len() { neg.push(if i == 3usize {-0.1} else {0.3}); zero.push(0.); i = i + 1usize; }
+  var p2 = List[String]();
+  let b = blendSeamWidths(&u, seam.view(), neg.view(), &mut p2);
+  expectInt(i64.from(p2.len()), 1, "a negative width: one problem line");
+  expect(sameBits(&b.mesh, &u) && b.faces.len() == 0usize, "a negative width: an unchanged copy");
+  var p3 = List[String]();
+  let c = blendSeamWidths(&u, seam.view(), zero.view(), &mut p3);
+  expectInt(i64.from(p3.len()), 1, "all widths 0: one problem line");
+  expect(sameBits(&c.mesh, &u) && c.faces.len() == 0usize, "all widths 0: an unchanged copy");
+}
