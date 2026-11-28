@@ -443,7 +443,8 @@ void loanShapeRefViews(PathSet *holds, INode *container);
 void loanShapeRefLent(uint32_t var);
 // The write of a compound assignment, a use of its stand-in 'var' (flowpath.c,
 // pwCompoundPlace): reports a pending change of shape or variant, and a move or a
-// replacement of what the place was borrowed from
+// replacement of what the place was borrowed from (the move alone for a stand-in
+// made for a plain borrow, PathVar.compound 2)
 void loanUseCompound(uint32_t var, INode *usenode);
 uint32_t loanShapeCount();
 uint32_t loanShapeId(uint32_t i);

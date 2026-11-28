@@ -1,0 +1,309 @@
+// Owners of one region differing only in permission meet, with no type wanted of
+// them, as the closest permission both coerce to. An owner whose coercion moves
+// it ('uni') is moved on its path alone, and one that copies is counted, so each
+// value is finalized once whichever arm ran. Each call prints what it reads,
+// then how many values it finalized and the sum of their numbers.
+
+mod move_permission_meet;
+
+import stdio use *;
+import sync use Arc;
+
+var @threadlocal finals: i32 = 0;
+var @threadlocal sum: i32 = 0;
+
+struct N {
+  pub n: i32;
+  pub fn get(self: &) i32 { self.n }
+  fn final(self: &uni) { finals += 1; sum += n; }
+}
+struct Louder extends N {}
+trait Shown { pub fn get(self: &) i32; }
+
+fn show(n: i32) { printInt(n); printStr("\n"); }
+fn tally(what: &str) {
+  printStr(what); printStr(": "); printInt(finals); printStr(" "); printInt(sum); printStr("\n");
+  finals = 0;
+  sum = 0;
+}
+fn pass[T](x: T) T { x }
+
+fn letIf(c: bool) {
+  let a = Rc[N](N(1));
+  let b = Rc[mut, N](N(10));
+  let r = if c {a} else {b};
+  r.n += 1000;
+  show(r.n);
+  show(b.n);
+}
+
+fn matched(c: bool) {
+  let a = Rc[N](N(1));
+  let b = Rc[mut, N](N(10));
+  let r = match c { case true {b} else {a} };
+  show(r.n);
+}
+
+fn broke(c: bool) {
+  let a = Rc[N](N(1));
+  let b = Rc[mut, N](N(10));
+  let r = while { if c { break a; } if !c { break b; } };
+  show(r.n);
+}
+
+fn blockValue(c: bool) {
+  let a = Rc[N](N(1));
+  let b = Rc[mut, N](N(10));
+  let r = { show(0); if c {a} else {b} };
+  show(r.n);
+}
+
+fn blockOwns(c: bool) {
+  let r = {
+    let a = Rc[N](N(1));
+    let b = Rc[mut, N](N(10));
+    if c {a} else {b}
+  };
+  show(r.n);
+}
+
+fn temporaryArm(c: bool) {
+  let b = Rc[mut, N](N(10));
+  let r = if c {Rc[N](N(1))} else {b};
+  show(r.n);
+}
+
+// The inner meet is 'mut', and meeting it with 'imm' is 'ro'
+fn nested(c: bool) {
+  let a = Rc[N](N(1));
+  let b = Rc[mut, N](N(10));
+  let d = Rc[imm, N](N(100));
+  let r = if c { if c {a} else {b} } else {d};
+  show(r.n);
+  show(d.n);
+}
+
+fn three(k: i32) {
+  let a = Rc[N](N(1));
+  let b = Rc[imm, N](N(10));
+  let d = Rc[mut, N](N(100));
+  let r = if k == 0 {a} else if k == 1 {b} else {d};
+  show(r.n);
+}
+
+// A meet read where it stands, by a field and by a method's receiver
+fn field(c: bool) {
+  let a = Rc[imm, N](N(1));
+  let b = Rc[mut, N](N(10));
+  show((if c {a} else {b}).n);
+  show((if c {b} else {Rc[N](N(100))}).get());
+  show(a.n + b.n);
+}
+
+fn generic(c: bool) {
+  let a = Rc[N](N(1));
+  let b = Rc[mut, N](N(10));
+  let r = pass(if c {a} else {b});
+  show(r.n);
+}
+
+fn heldInValues(c: bool) {
+  let a = Rc[N](N(1));
+  let b = Rc[mut, N](N(10));
+  let d = Rc[N](N(100));
+  let e = Rc[mut, N](N(1000));
+  let o = Some(if c {a} else {b});
+  let t = (if c {d} else {e}, 7);
+  show(b.n + e.n);
+}
+
+fn reassigned(c: bool) {
+  let a = Rc[N](N(1));
+  let b = Rc[mut, N](N(10));
+  var r = if c {a} else {b};
+  show(r.n);
+  r = Rc[mut, N](N(100));
+  show(r.n);
+}
+
+fn loser(c: bool) Rc[mut, N] {
+  let a = Rc[N](N(1));
+  let b = Rc[mut, N](N(10));
+  let r = if c {a} else {b};
+  r
+}
+
+fn returned(c: bool) {
+  let r = loser(c);
+  show(r.n);
+}
+
+fn iterated() {
+  var i = 0;
+  while i < 3 {
+    let a = Rc[N](N(1));
+    let b = Rc[mut, N](N(10));
+    let r = if i == 1 {a} else {b};
+    show(r.n);
+    i += 1;
+  }
+}
+
+fn armReturns(c: bool, d: bool) {
+  let a = Rc[N](N(1));
+  let b = Rc[mut, N](N(10));
+  let r = if c {a} else if d {return;} else {b};
+  show(r.n);
+}
+
+// An arm recast to the value type's base, at another permission, still moves
+fn recastRo(c: bool) {
+  let e = Rc[Louder](Louder(1));
+  let b = Rc[ro, N](N(10));
+  let r = if c {e as Rc[mut, N]} else {b};
+  show(r.n);
+}
+
+fn recastUni(c: bool) {
+  let e = Rc[Louder](Louder(1));
+  let a = Rc[N](N(10));
+  let r = if c {e as Rc[mut, N]} else {a};
+  show(r.n);
+}
+
+fn recastElements() {
+  let e = Rc[Louder](Louder(1));
+  let b = Rc[imm, N](N(10));
+  let l = [e as Rc[mut, N], b];
+  show(l[0u].n + l[1u].n);
+}
+
+fn virtuals(c: bool) {
+  let a: Rc[uni, Shown] = Rc[Louder](Louder(1));
+  let b: Rc[mut, Shown] = Rc[Louder](Louder(10));
+  let r = if c {a} else {b};
+  show(r.get());
+}
+
+fn soleVirtuals(c: bool) {
+  let a: Uni[uni, Shown] = Uni[Louder](Louder(1));
+  let b: Uni[imm, Shown] = Uni[Louder](Louder(10));
+  let r = if c {a} else {b};
+  show(r.get());
+}
+
+fn bodies(c: bool) {
+  var fixed = [3, 4];
+  var other = [5, 6];
+  let a = Uni[Array[i32]](&fixed);
+  let b = Uni[imm, Array[i32]](&other);
+  let r = if c {a} else {b};
+  show(r[1u]);
+  let d = Rc[Array[i32]](&fixed);
+  let e = Rc[mut, Array[i32]](&other);
+  let s = if c {d} else {e};
+  s[0u] += 100;
+  show(s[0u]);
+}
+
+fn sole(c: bool) {
+  let a = Uni[N](N(1));
+  let b = Uni[imm, N](N(10));
+  let r = if c {a} else {b};
+  show(r.n);
+}
+
+fn atomic(c: bool) {
+  let a = Arc[N](N(1));
+  let b = Arc[mut, N](N(10));
+  let r = if c {a} else {b};
+  show(r.n);
+  show(b.n);
+}
+
+// Met and read where it stands, the 'uni' owner moves into the temporary on its
+// path, and the 'mut' one is counted into it and stays usable
+fn standsField(c: bool) {
+  let a = Rc[N](N(1));
+  let b = Rc[mut, N](N(10));
+  show((if c {a} else {b}).n);
+  show(b.n);
+}
+
+fn standsMethod(c: bool) {
+  let b = Rc[mut, N](N(10));
+  show((if c {b} else {Rc[N](N(100))}).get());
+  show(b.n);
+}
+
+// The same by a 'match', a loop's breaks, a block and a compound assignment
+fn standsOthers(c: bool) {
+  let a = Rc[N](N(1));
+  let b = Rc[mut, N](N(10));
+  show((match c { case true {a} else {b} }).n);
+  let d = Rc[N](N(100));
+  let e = Rc[mut, N](N(1000));
+  show((while { if c { break d; } if !c { break e; } }).get());
+  let f = Uni[N](N(2));
+  let g = Uni[imm, N](N(20));
+  show({ show(0); if c {f} else {g} }.n);
+  let h = Rc[N](N(3));
+  let i = Rc[mut, N](N(30));
+  (if c {h} else {i}).n += 1;
+  show(i.n);
+}
+
+fn main() {
+  letIf(true); tally("letIf true");
+  letIf(false); tally("letIf false");
+  matched(true); tally("matched true");
+  matched(false); tally("matched false");
+  broke(true); tally("broke true");
+  broke(false); tally("broke false");
+  blockValue(true); tally("blockValue true");
+  blockValue(false); tally("blockValue false");
+  blockOwns(true); tally("blockOwns true");
+  blockOwns(false); tally("blockOwns false");
+  temporaryArm(true); tally("temporaryArm true");
+  temporaryArm(false); tally("temporaryArm false");
+  nested(true); tally("nested true");
+  nested(false); tally("nested false");
+  three(0); tally("three 0");
+  three(1); tally("three 1");
+  three(2); tally("three 2");
+  field(true); tally("field true");
+  field(false); tally("field false");
+  generic(true); tally("generic true");
+  generic(false); tally("generic false");
+  heldInValues(true); tally("heldInValues true");
+  heldInValues(false); tally("heldInValues false");
+  reassigned(true); tally("reassigned true");
+  reassigned(false); tally("reassigned false");
+  returned(true); tally("returned true");
+  returned(false); tally("returned false");
+  iterated(); tally("iterated");
+  armReturns(true, false); tally("armReturns taken");
+  armReturns(false, true); tally("armReturns returned");
+  armReturns(false, false); tally("armReturns else");
+  recastRo(true); tally("recastRo true");
+  recastRo(false); tally("recastRo false");
+  recastUni(true); tally("recastUni true");
+  recastUni(false); tally("recastUni false");
+  recastElements(); tally("recastElements");
+  virtuals(true); tally("virtuals true");
+  virtuals(false); tally("virtuals false");
+  soleVirtuals(true); tally("soleVirtuals true");
+  soleVirtuals(false); tally("soleVirtuals false");
+  bodies(true); tally("bodies true");
+  bodies(false); tally("bodies false");
+  sole(true); tally("sole true");
+  sole(false); tally("sole false");
+  atomic(true); tally("atomic true");
+  atomic(false); tally("atomic false");
+  standsField(true); tally("standsField true");
+  standsField(false); tally("standsField false");
+  standsMethod(true); tally("standsMethod true");
+  standsMethod(false); tally("standsMethod false");
+  standsOthers(true); tally("standsOthers true");
+  standsOthers(false); tally("standsOthers false");
+}

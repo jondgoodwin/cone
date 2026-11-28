@@ -2,12 +2,13 @@
 // The join only weakens: a '&mut' met with a '&' may not be written through.
 // A difference in anything but permission is not joined, though the
 // permissions differ too: what is pointed at, a slice's element, the region.
-// A lock permission converts to no other, so none is common with it. Owners
-// that differ in permission are not joined: only borrows are.
+// A lock permission converts to no other, so none is common with it, whether
+// the other is a permission or another lock. Owners of two regions, or of two
+// types, are not joined either, though their permissions differ too.
 
 mod typemgmt_ref_join_refuse;
 
-import sync use Arc, Mutex;
+import sync use Arc, Mutex, Rwlock;
 
 struct Point {pub x: i32;}
 
@@ -17,9 +18,27 @@ fn locked(c: bool) {
   let r = if c {a} else {b};               //~ ErrorInvType:25
 }
 
-fn owners(c: bool) {
+fn locks(c: bool) {
+  let a = Arc[Mutex, Point](Point(1));
+  let b = Arc[Rwlock, Point](Point(2));
+  let r = if c {a} else {b};               //~ ErrorInvType:25
+}
+
+fn lockedOnOneThread(c: bool) {
   let a = Rc[Point](Point(1));
-  let b = Rc[mut, Point](Point(2));
+  let b = Rc[Rwcell, Point](Point(2));
+  let r = if c {a} else {b};               //~ ErrorInvType:25
+}
+
+fn ownerRegions(c: bool) {
+  let a = Rc[Point](Point(1));
+  let b = Uni[imm, Point](Point(2));
+  let r = if c {a} else {b};               //~ ErrorInvType:25
+}
+
+fn ownerPointees(c: bool) {
+  let a = Rc[i32](1);
+  let b = Rc[mut, i64](2i64);
   let r = if c {a} else {b};               //~ ErrorInvType:25
 }
 

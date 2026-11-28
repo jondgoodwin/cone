@@ -375,11 +375,15 @@ int itypeHoldsBorrowOf(INode *type, INode *want) {
 // and to reach anything, in x, so the answer is conservative. Both are type
 // declarations. Not remembered.
 #define InsideMax 48
+// What itypeMayHoldBorrowOwned collects: asked of a whole program's state (a UI's every
+// table), and a limit met is a call refused
+#define InsideOwnedMax 512
 typedef struct InsideSet {
-    INode *types[InsideMax];
+    INode *types[InsideOwnedMax];
     int cnt;
     int unseen;
     int readonly;   // the loan is a read-only one
+    int owned;      // follow no borrowed reference in 'x' (itypeMayHoldBorrowOwned)
     INode *asking[HoldsBorrowMaxDepth];
     int askcnt;
 } InsideSet;
@@ -412,7 +416,7 @@ static void insideCollect(InsideSet *set, INode *type) {
         if (set->types[i] == type)
             return;
     }
-    if (set->cnt == InsideMax) {
+    if (set->cnt == (set->owned ? InsideOwnedMax : InsideMax)) {
         set->unseen = 1;
         return;
     }
@@ -433,7 +437,8 @@ static void insideCollect(InsideSet *set, INode *type) {
         // ('&held' for a 'held: &Shape' is no borrow of the 'Shape'); only a way through a
         // writable one is a reborrow that lasts no longer than the borrow of the place
         if (itypeGetTypeDcl(((RefNode *)type)->region) == borrowRef
-                && !(permGetFlags(((RefNode *)type)->perm) & MayWrite) && !permIsLock(((RefNode *)type)->perm))
+                && (set->owned
+                    || (!(permGetFlags(((RefNode *)type)->perm) & MayWrite) && !permIsLock(((RefNode *)type)->perm))))
             return;
         insideCollect(set, ((RefNode *)type)->vtexp);
         return;
@@ -516,7 +521,11 @@ static int insideHolds(InsideSet *set, INode *type) {
             if (!isTypeNode(referent))
                 return 1;
             INode *refdcl = itypeGetTypeDcl(referent);
-            if (!slotshut && (refdcl == NULL || (refdcl->tag == StructTag && (refdcl->flags & TraitType))
+            // An open trait's slot may hold a borrow of any type; asked of owned storage, a
+            // closed enum's ('&Option[Font]') holds only one of that enum, found by name
+            if (!slotshut && (refdcl == NULL
+                    || (refdcl->tag == StructTag && (refdcl->flags & TraitType)
+                        && !(set->owned && (refdcl->flags & EnumType)))
                     || insideIsReached(set, refdcl)))
                 return 1;
             // What a borrow points at is a way to store only if it holds
@@ -581,11 +590,12 @@ static int insideHolds(InsideSet *set, INode *type) {
     }
 }
 
-int itypeMayHoldBorrowInside(INode *holder, INode *x, int readonly) {
+static int insideAsk(INode *holder, INode *x, int readonly, int owned) {
     if (itypeHoldsNoBorrow(holder))
         return 0;
     InsideSet set;
     set.readonly = readonly;
+    set.owned = owned;
     set.cnt = 0;
     set.unseen = 0;
     set.askcnt = 0;
@@ -593,6 +603,14 @@ int itypeMayHoldBorrowInside(INode *holder, INode *x, int readonly) {
     if (set.unseen)
         return 1;
     return insideHolds(&set, holder);
+}
+
+int itypeMayHoldBorrowInside(INode *holder, INode *x, int readonly) {
+    return insideAsk(holder, x, readonly, 0);
+}
+
+int itypeMayHoldBorrowOwned(INode *holder, INode *x, int readonly) {
+    return insideAsk(holder, x, readonly, 1);
 }
 
 // How many writable borrows deep a store into a value of this type can reach,

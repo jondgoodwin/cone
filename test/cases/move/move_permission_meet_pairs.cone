@@ -1,0 +1,1381 @@
+// Two owners of one region that differ only in permission meet as the closest
+// permission both coerce to, for every pair of static permissions: 'Rc', 'Uni'
+// (which takes no 'mut') and a few of 'Arc', in an 'if', a 'match' (its arms the
+// other way round), a loop's breaks, a closure's return and an array literal.
+// Each case checks the value of the arm taken, that a source whose coercion
+// copies it is still usable, and that the two values were finalized once each.
+// A line per pair gives the joined permission and 'ok'; a failed check prints
+// 'BAD' before it. ('opaq' reaches no value, so only the releases are checked.)
+
+mod move_permission_meet_pairs;
+
+import stdio use *;
+import sync use Arc;
+
+var @threadlocal finals: i32 = 0;
+var @threadlocal sum: i32 = 0;
+var @threadlocal bad: i32 = 0;
+
+struct N {
+  pub n: i32;
+  fn final(self: &uni) { finals += 1; sum += n; }
+}
+
+fn want(what: &str, got: i32, expect: i32) {
+  if got != expect {
+    printStr("BAD value "); printStr(what); printStr(" "); printInt(got); printStr("\n");
+    bad += 1;
+  }
+}
+
+fn done(what: &str) {
+  if finals != 2 || sum != 11 {
+    printStr("BAD release "); printStr(what); printStr(" "); printInt(finals);
+    printStr(" "); printInt(sum); printStr("\n");
+    bad += 1;
+  }
+  finals = 0;
+  sum = 0;
+}
+
+fn report(what: &str) {
+  printStr(what);
+  printStr(if bad == 0 {" ok\n"} else {" BAD\n"});
+  bad = 0;
+}
+
+fn if_Rc_uni_mut(c: bool) {
+  let a = Rc[uni, N](N(1));
+  let b = Rc[mut, N](N(10));
+  let r = if c {a} else {b};
+  want("Rc_uni_mut", r.n, if c {1} else {10});
+  want("Rc_uni_mut kept", b.n, 10);
+}
+fn match_Rc_uni_mut(c: bool) {
+  let a = Rc[uni, N](N(1));
+  let b = Rc[mut, N](N(10));
+  let r = match c { case true {b} else {a} };
+  want("Rc_uni_mut", r.n, if c {10} else {1});
+  want("Rc_uni_mut kept", b.n, 10);
+}
+fn break_Rc_uni_mut(c: bool) {
+  let a = Rc[uni, N](N(1));
+  let b = Rc[mut, N](N(10));
+  let r = while { if c { break a; } if !c { break b; } };
+  want("Rc_uni_mut", r.n, if c {1} else {10});
+  want("Rc_uni_mut kept", b.n, 10);
+}
+fn closure_Rc_uni_mut(c: bool) {
+  let pick = fn(c: bool) {
+    let a = Rc[uni, N](N(1));
+    let b = Rc[mut, N](N(10));
+    if c {b} else {a}
+  };
+  let r = pick(c);
+  want("Rc_uni_mut", r.n, if c {10} else {1});
+}
+fn array_Rc_uni_mut() {
+  let a = Rc[uni, N](N(1));
+  let b = Rc[mut, N](N(10));
+  let l = [a, b];
+  want("Rc_uni_mut", l[0u].n, 1);
+  want("Rc_uni_mut", l[1u].n, 10);
+  want("Rc_uni_mut kept", b.n, 10);
+}
+fn if_Rc_uni_imm(c: bool) {
+  let a = Rc[uni, N](N(1));
+  let b = Rc[imm, N](N(10));
+  let r = if c {a} else {b};
+  want("Rc_uni_imm", r.n, if c {1} else {10});
+  want("Rc_uni_imm kept", b.n, 10);
+}
+fn match_Rc_uni_imm(c: bool) {
+  let a = Rc[uni, N](N(1));
+  let b = Rc[imm, N](N(10));
+  let r = match c { case true {b} else {a} };
+  want("Rc_uni_imm", r.n, if c {10} else {1});
+  want("Rc_uni_imm kept", b.n, 10);
+}
+fn break_Rc_uni_imm(c: bool) {
+  let a = Rc[uni, N](N(1));
+  let b = Rc[imm, N](N(10));
+  let r = while { if c { break a; } if !c { break b; } };
+  want("Rc_uni_imm", r.n, if c {1} else {10});
+  want("Rc_uni_imm kept", b.n, 10);
+}
+fn closure_Rc_uni_imm(c: bool) {
+  let pick = fn(c: bool) {
+    let a = Rc[uni, N](N(1));
+    let b = Rc[imm, N](N(10));
+    if c {b} else {a}
+  };
+  let r = pick(c);
+  want("Rc_uni_imm", r.n, if c {10} else {1});
+}
+fn array_Rc_uni_imm() {
+  let a = Rc[uni, N](N(1));
+  let b = Rc[imm, N](N(10));
+  let l = [a, b];
+  want("Rc_uni_imm", l[0u].n, 1);
+  want("Rc_uni_imm", l[1u].n, 10);
+  want("Rc_uni_imm kept", b.n, 10);
+}
+fn if_Rc_uni_mut1(c: bool) {
+  let a = Rc[uni, N](N(1));
+  let b = Rc[mut1, N](N(10));
+  let r = if c {a} else {b};
+  want("Rc_uni_mut1", r.n, if c {1} else {10});
+  want("Rc_uni_mut1 kept", b.n, 10);
+}
+fn match_Rc_uni_mut1(c: bool) {
+  let a = Rc[uni, N](N(1));
+  let b = Rc[mut1, N](N(10));
+  let r = match c { case true {b} else {a} };
+  want("Rc_uni_mut1", r.n, if c {10} else {1});
+  want("Rc_uni_mut1 kept", b.n, 10);
+}
+fn break_Rc_uni_mut1(c: bool) {
+  let a = Rc[uni, N](N(1));
+  let b = Rc[mut1, N](N(10));
+  let r = while { if c { break a; } if !c { break b; } };
+  want("Rc_uni_mut1", r.n, if c {1} else {10});
+  want("Rc_uni_mut1 kept", b.n, 10);
+}
+fn closure_Rc_uni_mut1(c: bool) {
+  let pick = fn(c: bool) {
+    let a = Rc[uni, N](N(1));
+    let b = Rc[mut1, N](N(10));
+    if c {b} else {a}
+  };
+  let r = pick(c);
+  want("Rc_uni_mut1", r.n, if c {10} else {1});
+}
+fn array_Rc_uni_mut1() {
+  let a = Rc[uni, N](N(1));
+  let b = Rc[mut1, N](N(10));
+  let l = [a, b];
+  want("Rc_uni_mut1", l[0u].n, 1);
+  want("Rc_uni_mut1", l[1u].n, 10);
+  want("Rc_uni_mut1 kept", b.n, 10);
+}
+fn if_Rc_uni_ro(c: bool) {
+  let a = Rc[uni, N](N(1));
+  let b = Rc[ro, N](N(10));
+  let r = if c {a} else {b};
+  want("Rc_uni_ro", r.n, if c {1} else {10});
+  want("Rc_uni_ro kept", b.n, 10);
+}
+fn match_Rc_uni_ro(c: bool) {
+  let a = Rc[uni, N](N(1));
+  let b = Rc[ro, N](N(10));
+  let r = match c { case true {b} else {a} };
+  want("Rc_uni_ro", r.n, if c {10} else {1});
+  want("Rc_uni_ro kept", b.n, 10);
+}
+fn break_Rc_uni_ro(c: bool) {
+  let a = Rc[uni, N](N(1));
+  let b = Rc[ro, N](N(10));
+  let r = while { if c { break a; } if !c { break b; } };
+  want("Rc_uni_ro", r.n, if c {1} else {10});
+  want("Rc_uni_ro kept", b.n, 10);
+}
+fn closure_Rc_uni_ro(c: bool) {
+  let pick = fn(c: bool) {
+    let a = Rc[uni, N](N(1));
+    let b = Rc[ro, N](N(10));
+    if c {b} else {a}
+  };
+  let r = pick(c);
+  want("Rc_uni_ro", r.n, if c {10} else {1});
+}
+fn array_Rc_uni_ro() {
+  let a = Rc[uni, N](N(1));
+  let b = Rc[ro, N](N(10));
+  let l = [a, b];
+  want("Rc_uni_ro", l[0u].n, 1);
+  want("Rc_uni_ro", l[1u].n, 10);
+  want("Rc_uni_ro kept", b.n, 10);
+}
+fn if_Rc_uni_opaq(c: bool) {
+  let a = Rc[uni, N](N(1));
+  let b = Rc[opaq, N](N(10));
+  let r = if c {a} else {b};
+}
+fn match_Rc_uni_opaq(c: bool) {
+  let a = Rc[uni, N](N(1));
+  let b = Rc[opaq, N](N(10));
+  let r = match c { case true {b} else {a} };
+}
+fn break_Rc_uni_opaq(c: bool) {
+  let a = Rc[uni, N](N(1));
+  let b = Rc[opaq, N](N(10));
+  let r = while { if c { break a; } if !c { break b; } };
+}
+fn closure_Rc_uni_opaq(c: bool) {
+  let pick = fn(c: bool) {
+    let a = Rc[uni, N](N(1));
+    let b = Rc[opaq, N](N(10));
+    if c {b} else {a}
+  };
+  let r = pick(c);
+}
+fn array_Rc_uni_opaq() {
+  let a = Rc[uni, N](N(1));
+  let b = Rc[opaq, N](N(10));
+  let l = [a, b];
+}
+fn if_Rc_mut_imm(c: bool) {
+  let a = Rc[mut, N](N(1));
+  let b = Rc[imm, N](N(10));
+  let r = if c {a} else {b};
+  want("Rc_mut_imm", r.n, if c {1} else {10});
+  want("Rc_mut_imm kept", a.n, 1);
+  want("Rc_mut_imm kept", b.n, 10);
+}
+fn match_Rc_mut_imm(c: bool) {
+  let a = Rc[mut, N](N(1));
+  let b = Rc[imm, N](N(10));
+  let r = match c { case true {b} else {a} };
+  want("Rc_mut_imm", r.n, if c {10} else {1});
+  want("Rc_mut_imm kept", a.n, 1);
+  want("Rc_mut_imm kept", b.n, 10);
+}
+fn break_Rc_mut_imm(c: bool) {
+  let a = Rc[mut, N](N(1));
+  let b = Rc[imm, N](N(10));
+  let r = while { if c { break a; } if !c { break b; } };
+  want("Rc_mut_imm", r.n, if c {1} else {10});
+  want("Rc_mut_imm kept", a.n, 1);
+  want("Rc_mut_imm kept", b.n, 10);
+}
+fn closure_Rc_mut_imm(c: bool) {
+  let pick = fn(c: bool) {
+    let a = Rc[mut, N](N(1));
+    let b = Rc[imm, N](N(10));
+    if c {b} else {a}
+  };
+  let r = pick(c);
+  want("Rc_mut_imm", r.n, if c {10} else {1});
+}
+fn array_Rc_mut_imm() {
+  let a = Rc[mut, N](N(1));
+  let b = Rc[imm, N](N(10));
+  let l = [a, b];
+  want("Rc_mut_imm", l[0u].n, 1);
+  want("Rc_mut_imm", l[1u].n, 10);
+  want("Rc_mut_imm kept", a.n, 1);
+  want("Rc_mut_imm kept", b.n, 10);
+}
+fn if_Rc_mut_mut1(c: bool) {
+  let a = Rc[mut, N](N(1));
+  let b = Rc[mut1, N](N(10));
+  let r = if c {a} else {b};
+  want("Rc_mut_mut1", r.n, if c {1} else {10});
+  want("Rc_mut_mut1 kept", a.n, 1);
+  want("Rc_mut_mut1 kept", b.n, 10);
+}
+fn match_Rc_mut_mut1(c: bool) {
+  let a = Rc[mut, N](N(1));
+  let b = Rc[mut1, N](N(10));
+  let r = match c { case true {b} else {a} };
+  want("Rc_mut_mut1", r.n, if c {10} else {1});
+  want("Rc_mut_mut1 kept", a.n, 1);
+  want("Rc_mut_mut1 kept", b.n, 10);
+}
+fn break_Rc_mut_mut1(c: bool) {
+  let a = Rc[mut, N](N(1));
+  let b = Rc[mut1, N](N(10));
+  let r = while { if c { break a; } if !c { break b; } };
+  want("Rc_mut_mut1", r.n, if c {1} else {10});
+  want("Rc_mut_mut1 kept", a.n, 1);
+  want("Rc_mut_mut1 kept", b.n, 10);
+}
+fn closure_Rc_mut_mut1(c: bool) {
+  let pick = fn(c: bool) {
+    let a = Rc[mut, N](N(1));
+    let b = Rc[mut1, N](N(10));
+    if c {b} else {a}
+  };
+  let r = pick(c);
+  want("Rc_mut_mut1", r.n, if c {10} else {1});
+}
+fn array_Rc_mut_mut1() {
+  let a = Rc[mut, N](N(1));
+  let b = Rc[mut1, N](N(10));
+  let l = [a, b];
+  want("Rc_mut_mut1", l[0u].n, 1);
+  want("Rc_mut_mut1", l[1u].n, 10);
+  want("Rc_mut_mut1 kept", a.n, 1);
+  want("Rc_mut_mut1 kept", b.n, 10);
+}
+fn if_Rc_mut_ro(c: bool) {
+  let a = Rc[mut, N](N(1));
+  let b = Rc[ro, N](N(10));
+  let r = if c {a} else {b};
+  want("Rc_mut_ro", r.n, if c {1} else {10});
+  want("Rc_mut_ro kept", a.n, 1);
+  want("Rc_mut_ro kept", b.n, 10);
+}
+fn match_Rc_mut_ro(c: bool) {
+  let a = Rc[mut, N](N(1));
+  let b = Rc[ro, N](N(10));
+  let r = match c { case true {b} else {a} };
+  want("Rc_mut_ro", r.n, if c {10} else {1});
+  want("Rc_mut_ro kept", a.n, 1);
+  want("Rc_mut_ro kept", b.n, 10);
+}
+fn break_Rc_mut_ro(c: bool) {
+  let a = Rc[mut, N](N(1));
+  let b = Rc[ro, N](N(10));
+  let r = while { if c { break a; } if !c { break b; } };
+  want("Rc_mut_ro", r.n, if c {1} else {10});
+  want("Rc_mut_ro kept", a.n, 1);
+  want("Rc_mut_ro kept", b.n, 10);
+}
+fn closure_Rc_mut_ro(c: bool) {
+  let pick = fn(c: bool) {
+    let a = Rc[mut, N](N(1));
+    let b = Rc[ro, N](N(10));
+    if c {b} else {a}
+  };
+  let r = pick(c);
+  want("Rc_mut_ro", r.n, if c {10} else {1});
+}
+fn array_Rc_mut_ro() {
+  let a = Rc[mut, N](N(1));
+  let b = Rc[ro, N](N(10));
+  let l = [a, b];
+  want("Rc_mut_ro", l[0u].n, 1);
+  want("Rc_mut_ro", l[1u].n, 10);
+  want("Rc_mut_ro kept", a.n, 1);
+  want("Rc_mut_ro kept", b.n, 10);
+}
+fn if_Rc_mut_opaq(c: bool) {
+  let a = Rc[mut, N](N(1));
+  let b = Rc[opaq, N](N(10));
+  let r = if c {a} else {b};
+  want("Rc_mut_opaq kept", a.n, 1);
+}
+fn match_Rc_mut_opaq(c: bool) {
+  let a = Rc[mut, N](N(1));
+  let b = Rc[opaq, N](N(10));
+  let r = match c { case true {b} else {a} };
+  want("Rc_mut_opaq kept", a.n, 1);
+}
+fn break_Rc_mut_opaq(c: bool) {
+  let a = Rc[mut, N](N(1));
+  let b = Rc[opaq, N](N(10));
+  let r = while { if c { break a; } if !c { break b; } };
+  want("Rc_mut_opaq kept", a.n, 1);
+}
+fn closure_Rc_mut_opaq(c: bool) {
+  let pick = fn(c: bool) {
+    let a = Rc[mut, N](N(1));
+    let b = Rc[opaq, N](N(10));
+    if c {b} else {a}
+  };
+  let r = pick(c);
+}
+fn array_Rc_mut_opaq() {
+  let a = Rc[mut, N](N(1));
+  let b = Rc[opaq, N](N(10));
+  let l = [a, b];
+  want("Rc_mut_opaq kept", a.n, 1);
+}
+fn if_Rc_imm_mut1(c: bool) {
+  let a = Rc[imm, N](N(1));
+  let b = Rc[mut1, N](N(10));
+  let r = if c {a} else {b};
+  want("Rc_imm_mut1", r.n, if c {1} else {10});
+  want("Rc_imm_mut1 kept", a.n, 1);
+  want("Rc_imm_mut1 kept", b.n, 10);
+}
+fn match_Rc_imm_mut1(c: bool) {
+  let a = Rc[imm, N](N(1));
+  let b = Rc[mut1, N](N(10));
+  let r = match c { case true {b} else {a} };
+  want("Rc_imm_mut1", r.n, if c {10} else {1});
+  want("Rc_imm_mut1 kept", a.n, 1);
+  want("Rc_imm_mut1 kept", b.n, 10);
+}
+fn break_Rc_imm_mut1(c: bool) {
+  let a = Rc[imm, N](N(1));
+  let b = Rc[mut1, N](N(10));
+  let r = while { if c { break a; } if !c { break b; } };
+  want("Rc_imm_mut1", r.n, if c {1} else {10});
+  want("Rc_imm_mut1 kept", a.n, 1);
+  want("Rc_imm_mut1 kept", b.n, 10);
+}
+fn closure_Rc_imm_mut1(c: bool) {
+  let pick = fn(c: bool) {
+    let a = Rc[imm, N](N(1));
+    let b = Rc[mut1, N](N(10));
+    if c {b} else {a}
+  };
+  let r = pick(c);
+  want("Rc_imm_mut1", r.n, if c {10} else {1});
+}
+fn array_Rc_imm_mut1() {
+  let a = Rc[imm, N](N(1));
+  let b = Rc[mut1, N](N(10));
+  let l = [a, b];
+  want("Rc_imm_mut1", l[0u].n, 1);
+  want("Rc_imm_mut1", l[1u].n, 10);
+  want("Rc_imm_mut1 kept", a.n, 1);
+  want("Rc_imm_mut1 kept", b.n, 10);
+}
+fn if_Rc_imm_ro(c: bool) {
+  let a = Rc[imm, N](N(1));
+  let b = Rc[ro, N](N(10));
+  let r = if c {a} else {b};
+  want("Rc_imm_ro", r.n, if c {1} else {10});
+  want("Rc_imm_ro kept", a.n, 1);
+  want("Rc_imm_ro kept", b.n, 10);
+}
+fn match_Rc_imm_ro(c: bool) {
+  let a = Rc[imm, N](N(1));
+  let b = Rc[ro, N](N(10));
+  let r = match c { case true {b} else {a} };
+  want("Rc_imm_ro", r.n, if c {10} else {1});
+  want("Rc_imm_ro kept", a.n, 1);
+  want("Rc_imm_ro kept", b.n, 10);
+}
+fn break_Rc_imm_ro(c: bool) {
+  let a = Rc[imm, N](N(1));
+  let b = Rc[ro, N](N(10));
+  let r = while { if c { break a; } if !c { break b; } };
+  want("Rc_imm_ro", r.n, if c {1} else {10});
+  want("Rc_imm_ro kept", a.n, 1);
+  want("Rc_imm_ro kept", b.n, 10);
+}
+fn closure_Rc_imm_ro(c: bool) {
+  let pick = fn(c: bool) {
+    let a = Rc[imm, N](N(1));
+    let b = Rc[ro, N](N(10));
+    if c {b} else {a}
+  };
+  let r = pick(c);
+  want("Rc_imm_ro", r.n, if c {10} else {1});
+}
+fn array_Rc_imm_ro() {
+  let a = Rc[imm, N](N(1));
+  let b = Rc[ro, N](N(10));
+  let l = [a, b];
+  want("Rc_imm_ro", l[0u].n, 1);
+  want("Rc_imm_ro", l[1u].n, 10);
+  want("Rc_imm_ro kept", a.n, 1);
+  want("Rc_imm_ro kept", b.n, 10);
+}
+fn if_Rc_imm_opaq(c: bool) {
+  let a = Rc[imm, N](N(1));
+  let b = Rc[opaq, N](N(10));
+  let r = if c {a} else {b};
+  want("Rc_imm_opaq kept", a.n, 1);
+}
+fn match_Rc_imm_opaq(c: bool) {
+  let a = Rc[imm, N](N(1));
+  let b = Rc[opaq, N](N(10));
+  let r = match c { case true {b} else {a} };
+  want("Rc_imm_opaq kept", a.n, 1);
+}
+fn break_Rc_imm_opaq(c: bool) {
+  let a = Rc[imm, N](N(1));
+  let b = Rc[opaq, N](N(10));
+  let r = while { if c { break a; } if !c { break b; } };
+  want("Rc_imm_opaq kept", a.n, 1);
+}
+fn closure_Rc_imm_opaq(c: bool) {
+  let pick = fn(c: bool) {
+    let a = Rc[imm, N](N(1));
+    let b = Rc[opaq, N](N(10));
+    if c {b} else {a}
+  };
+  let r = pick(c);
+}
+fn array_Rc_imm_opaq() {
+  let a = Rc[imm, N](N(1));
+  let b = Rc[opaq, N](N(10));
+  let l = [a, b];
+  want("Rc_imm_opaq kept", a.n, 1);
+}
+fn if_Rc_mut1_ro(c: bool) {
+  let a = Rc[mut1, N](N(1));
+  let b = Rc[ro, N](N(10));
+  let r = if c {a} else {b};
+  want("Rc_mut1_ro", r.n, if c {1} else {10});
+  want("Rc_mut1_ro kept", a.n, 1);
+  want("Rc_mut1_ro kept", b.n, 10);
+}
+fn match_Rc_mut1_ro(c: bool) {
+  let a = Rc[mut1, N](N(1));
+  let b = Rc[ro, N](N(10));
+  let r = match c { case true {b} else {a} };
+  want("Rc_mut1_ro", r.n, if c {10} else {1});
+  want("Rc_mut1_ro kept", a.n, 1);
+  want("Rc_mut1_ro kept", b.n, 10);
+}
+fn break_Rc_mut1_ro(c: bool) {
+  let a = Rc[mut1, N](N(1));
+  let b = Rc[ro, N](N(10));
+  let r = while { if c { break a; } if !c { break b; } };
+  want("Rc_mut1_ro", r.n, if c {1} else {10});
+  want("Rc_mut1_ro kept", a.n, 1);
+  want("Rc_mut1_ro kept", b.n, 10);
+}
+fn closure_Rc_mut1_ro(c: bool) {
+  let pick = fn(c: bool) {
+    let a = Rc[mut1, N](N(1));
+    let b = Rc[ro, N](N(10));
+    if c {b} else {a}
+  };
+  let r = pick(c);
+  want("Rc_mut1_ro", r.n, if c {10} else {1});
+}
+fn array_Rc_mut1_ro() {
+  let a = Rc[mut1, N](N(1));
+  let b = Rc[ro, N](N(10));
+  let l = [a, b];
+  want("Rc_mut1_ro", l[0u].n, 1);
+  want("Rc_mut1_ro", l[1u].n, 10);
+  want("Rc_mut1_ro kept", a.n, 1);
+  want("Rc_mut1_ro kept", b.n, 10);
+}
+fn if_Rc_mut1_opaq(c: bool) {
+  let a = Rc[mut1, N](N(1));
+  let b = Rc[opaq, N](N(10));
+  let r = if c {a} else {b};
+  want("Rc_mut1_opaq kept", a.n, 1);
+}
+fn match_Rc_mut1_opaq(c: bool) {
+  let a = Rc[mut1, N](N(1));
+  let b = Rc[opaq, N](N(10));
+  let r = match c { case true {b} else {a} };
+  want("Rc_mut1_opaq kept", a.n, 1);
+}
+fn break_Rc_mut1_opaq(c: bool) {
+  let a = Rc[mut1, N](N(1));
+  let b = Rc[opaq, N](N(10));
+  let r = while { if c { break a; } if !c { break b; } };
+  want("Rc_mut1_opaq kept", a.n, 1);
+}
+fn closure_Rc_mut1_opaq(c: bool) {
+  let pick = fn(c: bool) {
+    let a = Rc[mut1, N](N(1));
+    let b = Rc[opaq, N](N(10));
+    if c {b} else {a}
+  };
+  let r = pick(c);
+}
+fn array_Rc_mut1_opaq() {
+  let a = Rc[mut1, N](N(1));
+  let b = Rc[opaq, N](N(10));
+  let l = [a, b];
+  want("Rc_mut1_opaq kept", a.n, 1);
+}
+fn if_Rc_ro_opaq(c: bool) {
+  let a = Rc[ro, N](N(1));
+  let b = Rc[opaq, N](N(10));
+  let r = if c {a} else {b};
+  want("Rc_ro_opaq kept", a.n, 1);
+}
+fn match_Rc_ro_opaq(c: bool) {
+  let a = Rc[ro, N](N(1));
+  let b = Rc[opaq, N](N(10));
+  let r = match c { case true {b} else {a} };
+  want("Rc_ro_opaq kept", a.n, 1);
+}
+fn break_Rc_ro_opaq(c: bool) {
+  let a = Rc[ro, N](N(1));
+  let b = Rc[opaq, N](N(10));
+  let r = while { if c { break a; } if !c { break b; } };
+  want("Rc_ro_opaq kept", a.n, 1);
+}
+fn closure_Rc_ro_opaq(c: bool) {
+  let pick = fn(c: bool) {
+    let a = Rc[ro, N](N(1));
+    let b = Rc[opaq, N](N(10));
+    if c {b} else {a}
+  };
+  let r = pick(c);
+}
+fn array_Rc_ro_opaq() {
+  let a = Rc[ro, N](N(1));
+  let b = Rc[opaq, N](N(10));
+  let l = [a, b];
+  want("Rc_ro_opaq kept", a.n, 1);
+}
+fn if_Uni_uni_imm(c: bool) {
+  let a = Uni[uni, N](N(1));
+  let b = Uni[imm, N](N(10));
+  let r = if c {a} else {b};
+  want("Uni_uni_imm", r.n, if c {1} else {10});
+}
+fn match_Uni_uni_imm(c: bool) {
+  let a = Uni[uni, N](N(1));
+  let b = Uni[imm, N](N(10));
+  let r = match c { case true {b} else {a} };
+  want("Uni_uni_imm", r.n, if c {10} else {1});
+}
+fn break_Uni_uni_imm(c: bool) {
+  let a = Uni[uni, N](N(1));
+  let b = Uni[imm, N](N(10));
+  let r = while { if c { break a; } if !c { break b; } };
+  want("Uni_uni_imm", r.n, if c {1} else {10});
+}
+fn closure_Uni_uni_imm(c: bool) {
+  let pick = fn(c: bool) {
+    let a = Uni[uni, N](N(1));
+    let b = Uni[imm, N](N(10));
+    if c {b} else {a}
+  };
+  let r = pick(c);
+  want("Uni_uni_imm", r.n, if c {10} else {1});
+}
+fn array_Uni_uni_imm() {
+  let a = Uni[uni, N](N(1));
+  let b = Uni[imm, N](N(10));
+  let l = [a, b];
+  want("Uni_uni_imm", l[0u].n, 1);
+  want("Uni_uni_imm", l[1u].n, 10);
+}
+fn if_Uni_uni_mut1(c: bool) {
+  let a = Uni[uni, N](N(1));
+  let b = Uni[mut1, N](N(10));
+  let r = if c {a} else {b};
+  want("Uni_uni_mut1", r.n, if c {1} else {10});
+}
+fn match_Uni_uni_mut1(c: bool) {
+  let a = Uni[uni, N](N(1));
+  let b = Uni[mut1, N](N(10));
+  let r = match c { case true {b} else {a} };
+  want("Uni_uni_mut1", r.n, if c {10} else {1});
+}
+fn break_Uni_uni_mut1(c: bool) {
+  let a = Uni[uni, N](N(1));
+  let b = Uni[mut1, N](N(10));
+  let r = while { if c { break a; } if !c { break b; } };
+  want("Uni_uni_mut1", r.n, if c {1} else {10});
+}
+fn closure_Uni_uni_mut1(c: bool) {
+  let pick = fn(c: bool) {
+    let a = Uni[uni, N](N(1));
+    let b = Uni[mut1, N](N(10));
+    if c {b} else {a}
+  };
+  let r = pick(c);
+  want("Uni_uni_mut1", r.n, if c {10} else {1});
+}
+fn array_Uni_uni_mut1() {
+  let a = Uni[uni, N](N(1));
+  let b = Uni[mut1, N](N(10));
+  let l = [a, b];
+  want("Uni_uni_mut1", l[0u].n, 1);
+  want("Uni_uni_mut1", l[1u].n, 10);
+}
+fn if_Uni_uni_ro(c: bool) {
+  let a = Uni[uni, N](N(1));
+  let b = Uni[ro, N](N(10));
+  let r = if c {a} else {b};
+  want("Uni_uni_ro", r.n, if c {1} else {10});
+}
+fn match_Uni_uni_ro(c: bool) {
+  let a = Uni[uni, N](N(1));
+  let b = Uni[ro, N](N(10));
+  let r = match c { case true {b} else {a} };
+  want("Uni_uni_ro", r.n, if c {10} else {1});
+}
+fn break_Uni_uni_ro(c: bool) {
+  let a = Uni[uni, N](N(1));
+  let b = Uni[ro, N](N(10));
+  let r = while { if c { break a; } if !c { break b; } };
+  want("Uni_uni_ro", r.n, if c {1} else {10});
+}
+fn closure_Uni_uni_ro(c: bool) {
+  let pick = fn(c: bool) {
+    let a = Uni[uni, N](N(1));
+    let b = Uni[ro, N](N(10));
+    if c {b} else {a}
+  };
+  let r = pick(c);
+  want("Uni_uni_ro", r.n, if c {10} else {1});
+}
+fn array_Uni_uni_ro() {
+  let a = Uni[uni, N](N(1));
+  let b = Uni[ro, N](N(10));
+  let l = [a, b];
+  want("Uni_uni_ro", l[0u].n, 1);
+  want("Uni_uni_ro", l[1u].n, 10);
+}
+fn if_Uni_uni_opaq(c: bool) {
+  let a = Uni[uni, N](N(1));
+  let b = Uni[opaq, N](N(10));
+  let r = if c {a} else {b};
+}
+fn match_Uni_uni_opaq(c: bool) {
+  let a = Uni[uni, N](N(1));
+  let b = Uni[opaq, N](N(10));
+  let r = match c { case true {b} else {a} };
+}
+fn break_Uni_uni_opaq(c: bool) {
+  let a = Uni[uni, N](N(1));
+  let b = Uni[opaq, N](N(10));
+  let r = while { if c { break a; } if !c { break b; } };
+}
+fn closure_Uni_uni_opaq(c: bool) {
+  let pick = fn(c: bool) {
+    let a = Uni[uni, N](N(1));
+    let b = Uni[opaq, N](N(10));
+    if c {b} else {a}
+  };
+  let r = pick(c);
+}
+fn array_Uni_uni_opaq() {
+  let a = Uni[uni, N](N(1));
+  let b = Uni[opaq, N](N(10));
+  let l = [a, b];
+}
+fn if_Uni_imm_mut1(c: bool) {
+  let a = Uni[imm, N](N(1));
+  let b = Uni[mut1, N](N(10));
+  let r = if c {a} else {b};
+  want("Uni_imm_mut1", r.n, if c {1} else {10});
+}
+fn match_Uni_imm_mut1(c: bool) {
+  let a = Uni[imm, N](N(1));
+  let b = Uni[mut1, N](N(10));
+  let r = match c { case true {b} else {a} };
+  want("Uni_imm_mut1", r.n, if c {10} else {1});
+}
+fn break_Uni_imm_mut1(c: bool) {
+  let a = Uni[imm, N](N(1));
+  let b = Uni[mut1, N](N(10));
+  let r = while { if c { break a; } if !c { break b; } };
+  want("Uni_imm_mut1", r.n, if c {1} else {10});
+}
+fn closure_Uni_imm_mut1(c: bool) {
+  let pick = fn(c: bool) {
+    let a = Uni[imm, N](N(1));
+    let b = Uni[mut1, N](N(10));
+    if c {b} else {a}
+  };
+  let r = pick(c);
+  want("Uni_imm_mut1", r.n, if c {10} else {1});
+}
+fn array_Uni_imm_mut1() {
+  let a = Uni[imm, N](N(1));
+  let b = Uni[mut1, N](N(10));
+  let l = [a, b];
+  want("Uni_imm_mut1", l[0u].n, 1);
+  want("Uni_imm_mut1", l[1u].n, 10);
+}
+fn if_Uni_imm_ro(c: bool) {
+  let a = Uni[imm, N](N(1));
+  let b = Uni[ro, N](N(10));
+  let r = if c {a} else {b};
+  want("Uni_imm_ro", r.n, if c {1} else {10});
+}
+fn match_Uni_imm_ro(c: bool) {
+  let a = Uni[imm, N](N(1));
+  let b = Uni[ro, N](N(10));
+  let r = match c { case true {b} else {a} };
+  want("Uni_imm_ro", r.n, if c {10} else {1});
+}
+fn break_Uni_imm_ro(c: bool) {
+  let a = Uni[imm, N](N(1));
+  let b = Uni[ro, N](N(10));
+  let r = while { if c { break a; } if !c { break b; } };
+  want("Uni_imm_ro", r.n, if c {1} else {10});
+}
+fn closure_Uni_imm_ro(c: bool) {
+  let pick = fn(c: bool) {
+    let a = Uni[imm, N](N(1));
+    let b = Uni[ro, N](N(10));
+    if c {b} else {a}
+  };
+  let r = pick(c);
+  want("Uni_imm_ro", r.n, if c {10} else {1});
+}
+fn array_Uni_imm_ro() {
+  let a = Uni[imm, N](N(1));
+  let b = Uni[ro, N](N(10));
+  let l = [a, b];
+  want("Uni_imm_ro", l[0u].n, 1);
+  want("Uni_imm_ro", l[1u].n, 10);
+}
+fn if_Uni_imm_opaq(c: bool) {
+  let a = Uni[imm, N](N(1));
+  let b = Uni[opaq, N](N(10));
+  let r = if c {a} else {b};
+}
+fn match_Uni_imm_opaq(c: bool) {
+  let a = Uni[imm, N](N(1));
+  let b = Uni[opaq, N](N(10));
+  let r = match c { case true {b} else {a} };
+}
+fn break_Uni_imm_opaq(c: bool) {
+  let a = Uni[imm, N](N(1));
+  let b = Uni[opaq, N](N(10));
+  let r = while { if c { break a; } if !c { break b; } };
+}
+fn closure_Uni_imm_opaq(c: bool) {
+  let pick = fn(c: bool) {
+    let a = Uni[imm, N](N(1));
+    let b = Uni[opaq, N](N(10));
+    if c {b} else {a}
+  };
+  let r = pick(c);
+}
+fn array_Uni_imm_opaq() {
+  let a = Uni[imm, N](N(1));
+  let b = Uni[opaq, N](N(10));
+  let l = [a, b];
+}
+fn if_Uni_mut1_ro(c: bool) {
+  let a = Uni[mut1, N](N(1));
+  let b = Uni[ro, N](N(10));
+  let r = if c {a} else {b};
+  want("Uni_mut1_ro", r.n, if c {1} else {10});
+}
+fn match_Uni_mut1_ro(c: bool) {
+  let a = Uni[mut1, N](N(1));
+  let b = Uni[ro, N](N(10));
+  let r = match c { case true {b} else {a} };
+  want("Uni_mut1_ro", r.n, if c {10} else {1});
+}
+fn break_Uni_mut1_ro(c: bool) {
+  let a = Uni[mut1, N](N(1));
+  let b = Uni[ro, N](N(10));
+  let r = while { if c { break a; } if !c { break b; } };
+  want("Uni_mut1_ro", r.n, if c {1} else {10});
+}
+fn closure_Uni_mut1_ro(c: bool) {
+  let pick = fn(c: bool) {
+    let a = Uni[mut1, N](N(1));
+    let b = Uni[ro, N](N(10));
+    if c {b} else {a}
+  };
+  let r = pick(c);
+  want("Uni_mut1_ro", r.n, if c {10} else {1});
+}
+fn array_Uni_mut1_ro() {
+  let a = Uni[mut1, N](N(1));
+  let b = Uni[ro, N](N(10));
+  let l = [a, b];
+  want("Uni_mut1_ro", l[0u].n, 1);
+  want("Uni_mut1_ro", l[1u].n, 10);
+}
+fn if_Uni_mut1_opaq(c: bool) {
+  let a = Uni[mut1, N](N(1));
+  let b = Uni[opaq, N](N(10));
+  let r = if c {a} else {b};
+}
+fn match_Uni_mut1_opaq(c: bool) {
+  let a = Uni[mut1, N](N(1));
+  let b = Uni[opaq, N](N(10));
+  let r = match c { case true {b} else {a} };
+}
+fn break_Uni_mut1_opaq(c: bool) {
+  let a = Uni[mut1, N](N(1));
+  let b = Uni[opaq, N](N(10));
+  let r = while { if c { break a; } if !c { break b; } };
+}
+fn closure_Uni_mut1_opaq(c: bool) {
+  let pick = fn(c: bool) {
+    let a = Uni[mut1, N](N(1));
+    let b = Uni[opaq, N](N(10));
+    if c {b} else {a}
+  };
+  let r = pick(c);
+}
+fn array_Uni_mut1_opaq() {
+  let a = Uni[mut1, N](N(1));
+  let b = Uni[opaq, N](N(10));
+  let l = [a, b];
+}
+fn if_Uni_ro_opaq(c: bool) {
+  let a = Uni[ro, N](N(1));
+  let b = Uni[opaq, N](N(10));
+  let r = if c {a} else {b};
+}
+fn match_Uni_ro_opaq(c: bool) {
+  let a = Uni[ro, N](N(1));
+  let b = Uni[opaq, N](N(10));
+  let r = match c { case true {b} else {a} };
+}
+fn break_Uni_ro_opaq(c: bool) {
+  let a = Uni[ro, N](N(1));
+  let b = Uni[opaq, N](N(10));
+  let r = while { if c { break a; } if !c { break b; } };
+}
+fn closure_Uni_ro_opaq(c: bool) {
+  let pick = fn(c: bool) {
+    let a = Uni[ro, N](N(1));
+    let b = Uni[opaq, N](N(10));
+    if c {b} else {a}
+  };
+  let r = pick(c);
+}
+fn array_Uni_ro_opaq() {
+  let a = Uni[ro, N](N(1));
+  let b = Uni[opaq, N](N(10));
+  let l = [a, b];
+}
+fn if_Arc_uni_mut(c: bool) {
+  let a = Arc[uni, N](N(1));
+  let b = Arc[mut, N](N(10));
+  let r = if c {a} else {b};
+  want("Arc_uni_mut", r.n, if c {1} else {10});
+  want("Arc_uni_mut kept", b.n, 10);
+}
+fn match_Arc_uni_mut(c: bool) {
+  let a = Arc[uni, N](N(1));
+  let b = Arc[mut, N](N(10));
+  let r = match c { case true {b} else {a} };
+  want("Arc_uni_mut", r.n, if c {10} else {1});
+  want("Arc_uni_mut kept", b.n, 10);
+}
+fn break_Arc_uni_mut(c: bool) {
+  let a = Arc[uni, N](N(1));
+  let b = Arc[mut, N](N(10));
+  let r = while { if c { break a; } if !c { break b; } };
+  want("Arc_uni_mut", r.n, if c {1} else {10});
+  want("Arc_uni_mut kept", b.n, 10);
+}
+fn closure_Arc_uni_mut(c: bool) {
+  let pick = fn(c: bool) {
+    let a = Arc[uni, N](N(1));
+    let b = Arc[mut, N](N(10));
+    if c {b} else {a}
+  };
+  let r = pick(c);
+  want("Arc_uni_mut", r.n, if c {10} else {1});
+}
+fn array_Arc_uni_mut() {
+  let a = Arc[uni, N](N(1));
+  let b = Arc[mut, N](N(10));
+  let l = [a, b];
+  want("Arc_uni_mut", l[0u].n, 1);
+  want("Arc_uni_mut", l[1u].n, 10);
+  want("Arc_uni_mut kept", b.n, 10);
+}
+fn if_Arc_uni_imm(c: bool) {
+  let a = Arc[uni, N](N(1));
+  let b = Arc[imm, N](N(10));
+  let r = if c {a} else {b};
+  want("Arc_uni_imm", r.n, if c {1} else {10});
+  want("Arc_uni_imm kept", b.n, 10);
+}
+fn match_Arc_uni_imm(c: bool) {
+  let a = Arc[uni, N](N(1));
+  let b = Arc[imm, N](N(10));
+  let r = match c { case true {b} else {a} };
+  want("Arc_uni_imm", r.n, if c {10} else {1});
+  want("Arc_uni_imm kept", b.n, 10);
+}
+fn break_Arc_uni_imm(c: bool) {
+  let a = Arc[uni, N](N(1));
+  let b = Arc[imm, N](N(10));
+  let r = while { if c { break a; } if !c { break b; } };
+  want("Arc_uni_imm", r.n, if c {1} else {10});
+  want("Arc_uni_imm kept", b.n, 10);
+}
+fn closure_Arc_uni_imm(c: bool) {
+  let pick = fn(c: bool) {
+    let a = Arc[uni, N](N(1));
+    let b = Arc[imm, N](N(10));
+    if c {b} else {a}
+  };
+  let r = pick(c);
+  want("Arc_uni_imm", r.n, if c {10} else {1});
+}
+fn array_Arc_uni_imm() {
+  let a = Arc[uni, N](N(1));
+  let b = Arc[imm, N](N(10));
+  let l = [a, b];
+  want("Arc_uni_imm", l[0u].n, 1);
+  want("Arc_uni_imm", l[1u].n, 10);
+  want("Arc_uni_imm kept", b.n, 10);
+}
+fn if_Arc_mut_imm(c: bool) {
+  let a = Arc[mut, N](N(1));
+  let b = Arc[imm, N](N(10));
+  let r = if c {a} else {b};
+  want("Arc_mut_imm", r.n, if c {1} else {10});
+  want("Arc_mut_imm kept", a.n, 1);
+  want("Arc_mut_imm kept", b.n, 10);
+}
+fn match_Arc_mut_imm(c: bool) {
+  let a = Arc[mut, N](N(1));
+  let b = Arc[imm, N](N(10));
+  let r = match c { case true {b} else {a} };
+  want("Arc_mut_imm", r.n, if c {10} else {1});
+  want("Arc_mut_imm kept", a.n, 1);
+  want("Arc_mut_imm kept", b.n, 10);
+}
+fn break_Arc_mut_imm(c: bool) {
+  let a = Arc[mut, N](N(1));
+  let b = Arc[imm, N](N(10));
+  let r = while { if c { break a; } if !c { break b; } };
+  want("Arc_mut_imm", r.n, if c {1} else {10});
+  want("Arc_mut_imm kept", a.n, 1);
+  want("Arc_mut_imm kept", b.n, 10);
+}
+fn closure_Arc_mut_imm(c: bool) {
+  let pick = fn(c: bool) {
+    let a = Arc[mut, N](N(1));
+    let b = Arc[imm, N](N(10));
+    if c {b} else {a}
+  };
+  let r = pick(c);
+  want("Arc_mut_imm", r.n, if c {10} else {1});
+}
+fn array_Arc_mut_imm() {
+  let a = Arc[mut, N](N(1));
+  let b = Arc[imm, N](N(10));
+  let l = [a, b];
+  want("Arc_mut_imm", l[0u].n, 1);
+  want("Arc_mut_imm", l[1u].n, 10);
+  want("Arc_mut_imm kept", a.n, 1);
+  want("Arc_mut_imm kept", b.n, 10);
+}
+fn if_Arc_imm_opaq(c: bool) {
+  let a = Arc[imm, N](N(1));
+  let b = Arc[opaq, N](N(10));
+  let r = if c {a} else {b};
+  want("Arc_imm_opaq kept", a.n, 1);
+}
+fn match_Arc_imm_opaq(c: bool) {
+  let a = Arc[imm, N](N(1));
+  let b = Arc[opaq, N](N(10));
+  let r = match c { case true {b} else {a} };
+  want("Arc_imm_opaq kept", a.n, 1);
+}
+fn break_Arc_imm_opaq(c: bool) {
+  let a = Arc[imm, N](N(1));
+  let b = Arc[opaq, N](N(10));
+  let r = while { if c { break a; } if !c { break b; } };
+  want("Arc_imm_opaq kept", a.n, 1);
+}
+fn closure_Arc_imm_opaq(c: bool) {
+  let pick = fn(c: bool) {
+    let a = Arc[imm, N](N(1));
+    let b = Arc[opaq, N](N(10));
+    if c {b} else {a}
+  };
+  let r = pick(c);
+}
+fn array_Arc_imm_opaq() {
+  let a = Arc[imm, N](N(1));
+  let b = Arc[opaq, N](N(10));
+  let l = [a, b];
+  want("Arc_imm_opaq kept", a.n, 1);
+}
+
+fn run0() {
+  if_Rc_uni_mut(true); done("if Rc_uni_mut true");
+  if_Rc_uni_mut(false); done("if Rc_uni_mut false");
+  match_Rc_uni_mut(true); done("match Rc_uni_mut true");
+  match_Rc_uni_mut(false); done("match Rc_uni_mut false");
+  break_Rc_uni_mut(true); done("break Rc_uni_mut true");
+  break_Rc_uni_mut(false); done("break Rc_uni_mut false");
+  closure_Rc_uni_mut(true); done("closure Rc_uni_mut true");
+  closure_Rc_uni_mut(false); done("closure Rc_uni_mut false");
+  array_Rc_uni_mut(); done("array Rc_uni_mut");
+  report("Rc uni mut: mut");
+  if_Rc_uni_imm(true); done("if Rc_uni_imm true");
+  if_Rc_uni_imm(false); done("if Rc_uni_imm false");
+  match_Rc_uni_imm(true); done("match Rc_uni_imm true");
+  match_Rc_uni_imm(false); done("match Rc_uni_imm false");
+  break_Rc_uni_imm(true); done("break Rc_uni_imm true");
+  break_Rc_uni_imm(false); done("break Rc_uni_imm false");
+  closure_Rc_uni_imm(true); done("closure Rc_uni_imm true");
+  closure_Rc_uni_imm(false); done("closure Rc_uni_imm false");
+  array_Rc_uni_imm(); done("array Rc_uni_imm");
+  report("Rc uni imm: imm");
+  if_Rc_uni_mut1(true); done("if Rc_uni_mut1 true");
+  if_Rc_uni_mut1(false); done("if Rc_uni_mut1 false");
+  match_Rc_uni_mut1(true); done("match Rc_uni_mut1 true");
+  match_Rc_uni_mut1(false); done("match Rc_uni_mut1 false");
+  break_Rc_uni_mut1(true); done("break Rc_uni_mut1 true");
+  break_Rc_uni_mut1(false); done("break Rc_uni_mut1 false");
+  closure_Rc_uni_mut1(true); done("closure Rc_uni_mut1 true");
+  closure_Rc_uni_mut1(false); done("closure Rc_uni_mut1 false");
+  array_Rc_uni_mut1(); done("array Rc_uni_mut1");
+  report("Rc uni mut1: mut1");
+  if_Rc_uni_ro(true); done("if Rc_uni_ro true");
+  if_Rc_uni_ro(false); done("if Rc_uni_ro false");
+  match_Rc_uni_ro(true); done("match Rc_uni_ro true");
+  match_Rc_uni_ro(false); done("match Rc_uni_ro false");
+  break_Rc_uni_ro(true); done("break Rc_uni_ro true");
+  break_Rc_uni_ro(false); done("break Rc_uni_ro false");
+  closure_Rc_uni_ro(true); done("closure Rc_uni_ro true");
+  closure_Rc_uni_ro(false); done("closure Rc_uni_ro false");
+  array_Rc_uni_ro(); done("array Rc_uni_ro");
+  report("Rc uni ro: ro");
+  if_Rc_uni_opaq(true); done("if Rc_uni_opaq true");
+  if_Rc_uni_opaq(false); done("if Rc_uni_opaq false");
+  match_Rc_uni_opaq(true); done("match Rc_uni_opaq true");
+  match_Rc_uni_opaq(false); done("match Rc_uni_opaq false");
+  break_Rc_uni_opaq(true); done("break Rc_uni_opaq true");
+  break_Rc_uni_opaq(false); done("break Rc_uni_opaq false");
+  closure_Rc_uni_opaq(true); done("closure Rc_uni_opaq true");
+  closure_Rc_uni_opaq(false); done("closure Rc_uni_opaq false");
+  array_Rc_uni_opaq(); done("array Rc_uni_opaq");
+  report("Rc uni opaq: opaq");
+  if_Rc_mut_imm(true); done("if Rc_mut_imm true");
+  if_Rc_mut_imm(false); done("if Rc_mut_imm false");
+  match_Rc_mut_imm(true); done("match Rc_mut_imm true");
+  match_Rc_mut_imm(false); done("match Rc_mut_imm false");
+  break_Rc_mut_imm(true); done("break Rc_mut_imm true");
+  break_Rc_mut_imm(false); done("break Rc_mut_imm false");
+  closure_Rc_mut_imm(true); done("closure Rc_mut_imm true");
+  closure_Rc_mut_imm(false); done("closure Rc_mut_imm false");
+  array_Rc_mut_imm(); done("array Rc_mut_imm");
+  report("Rc mut imm: ro");
+  if_Rc_mut_mut1(true); done("if Rc_mut_mut1 true");
+  if_Rc_mut_mut1(false); done("if Rc_mut_mut1 false");
+  match_Rc_mut_mut1(true); done("match Rc_mut_mut1 true");
+  match_Rc_mut_mut1(false); done("match Rc_mut_mut1 false");
+  break_Rc_mut_mut1(true); done("break Rc_mut_mut1 true");
+  break_Rc_mut_mut1(false); done("break Rc_mut_mut1 false");
+  closure_Rc_mut_mut1(true); done("closure Rc_mut_mut1 true");
+  closure_Rc_mut_mut1(false); done("closure Rc_mut_mut1 false");
+  array_Rc_mut_mut1(); done("array Rc_mut_mut1");
+  report("Rc mut mut1: ro");
+  if_Rc_mut_ro(true); done("if Rc_mut_ro true");
+  if_Rc_mut_ro(false); done("if Rc_mut_ro false");
+  match_Rc_mut_ro(true); done("match Rc_mut_ro true");
+  match_Rc_mut_ro(false); done("match Rc_mut_ro false");
+  break_Rc_mut_ro(true); done("break Rc_mut_ro true");
+  break_Rc_mut_ro(false); done("break Rc_mut_ro false");
+  closure_Rc_mut_ro(true); done("closure Rc_mut_ro true");
+  closure_Rc_mut_ro(false); done("closure Rc_mut_ro false");
+  array_Rc_mut_ro(); done("array Rc_mut_ro");
+  report("Rc mut ro: ro");
+  if_Rc_mut_opaq(true); done("if Rc_mut_opaq true");
+  if_Rc_mut_opaq(false); done("if Rc_mut_opaq false");
+  match_Rc_mut_opaq(true); done("match Rc_mut_opaq true");
+  match_Rc_mut_opaq(false); done("match Rc_mut_opaq false");
+  break_Rc_mut_opaq(true); done("break Rc_mut_opaq true");
+  break_Rc_mut_opaq(false); done("break Rc_mut_opaq false");
+  closure_Rc_mut_opaq(true); done("closure Rc_mut_opaq true");
+  closure_Rc_mut_opaq(false); done("closure Rc_mut_opaq false");
+  array_Rc_mut_opaq(); done("array Rc_mut_opaq");
+  report("Rc mut opaq: opaq");
+}
+
+fn run1() {
+  if_Rc_imm_mut1(true); done("if Rc_imm_mut1 true");
+  if_Rc_imm_mut1(false); done("if Rc_imm_mut1 false");
+  match_Rc_imm_mut1(true); done("match Rc_imm_mut1 true");
+  match_Rc_imm_mut1(false); done("match Rc_imm_mut1 false");
+  break_Rc_imm_mut1(true); done("break Rc_imm_mut1 true");
+  break_Rc_imm_mut1(false); done("break Rc_imm_mut1 false");
+  closure_Rc_imm_mut1(true); done("closure Rc_imm_mut1 true");
+  closure_Rc_imm_mut1(false); done("closure Rc_imm_mut1 false");
+  array_Rc_imm_mut1(); done("array Rc_imm_mut1");
+  report("Rc imm mut1: ro");
+  if_Rc_imm_ro(true); done("if Rc_imm_ro true");
+  if_Rc_imm_ro(false); done("if Rc_imm_ro false");
+  match_Rc_imm_ro(true); done("match Rc_imm_ro true");
+  match_Rc_imm_ro(false); done("match Rc_imm_ro false");
+  break_Rc_imm_ro(true); done("break Rc_imm_ro true");
+  break_Rc_imm_ro(false); done("break Rc_imm_ro false");
+  closure_Rc_imm_ro(true); done("closure Rc_imm_ro true");
+  closure_Rc_imm_ro(false); done("closure Rc_imm_ro false");
+  array_Rc_imm_ro(); done("array Rc_imm_ro");
+  report("Rc imm ro: ro");
+  if_Rc_imm_opaq(true); done("if Rc_imm_opaq true");
+  if_Rc_imm_opaq(false); done("if Rc_imm_opaq false");
+  match_Rc_imm_opaq(true); done("match Rc_imm_opaq true");
+  match_Rc_imm_opaq(false); done("match Rc_imm_opaq false");
+  break_Rc_imm_opaq(true); done("break Rc_imm_opaq true");
+  break_Rc_imm_opaq(false); done("break Rc_imm_opaq false");
+  closure_Rc_imm_opaq(true); done("closure Rc_imm_opaq true");
+  closure_Rc_imm_opaq(false); done("closure Rc_imm_opaq false");
+  array_Rc_imm_opaq(); done("array Rc_imm_opaq");
+  report("Rc imm opaq: opaq");
+  if_Rc_mut1_ro(true); done("if Rc_mut1_ro true");
+  if_Rc_mut1_ro(false); done("if Rc_mut1_ro false");
+  match_Rc_mut1_ro(true); done("match Rc_mut1_ro true");
+  match_Rc_mut1_ro(false); done("match Rc_mut1_ro false");
+  break_Rc_mut1_ro(true); done("break Rc_mut1_ro true");
+  break_Rc_mut1_ro(false); done("break Rc_mut1_ro false");
+  closure_Rc_mut1_ro(true); done("closure Rc_mut1_ro true");
+  closure_Rc_mut1_ro(false); done("closure Rc_mut1_ro false");
+  array_Rc_mut1_ro(); done("array Rc_mut1_ro");
+  report("Rc mut1 ro: ro");
+  if_Rc_mut1_opaq(true); done("if Rc_mut1_opaq true");
+  if_Rc_mut1_opaq(false); done("if Rc_mut1_opaq false");
+  match_Rc_mut1_opaq(true); done("match Rc_mut1_opaq true");
+  match_Rc_mut1_opaq(false); done("match Rc_mut1_opaq false");
+  break_Rc_mut1_opaq(true); done("break Rc_mut1_opaq true");
+  break_Rc_mut1_opaq(false); done("break Rc_mut1_opaq false");
+  closure_Rc_mut1_opaq(true); done("closure Rc_mut1_opaq true");
+  closure_Rc_mut1_opaq(false); done("closure Rc_mut1_opaq false");
+  array_Rc_mut1_opaq(); done("array Rc_mut1_opaq");
+  report("Rc mut1 opaq: opaq");
+  if_Rc_ro_opaq(true); done("if Rc_ro_opaq true");
+  if_Rc_ro_opaq(false); done("if Rc_ro_opaq false");
+  match_Rc_ro_opaq(true); done("match Rc_ro_opaq true");
+  match_Rc_ro_opaq(false); done("match Rc_ro_opaq false");
+  break_Rc_ro_opaq(true); done("break Rc_ro_opaq true");
+  break_Rc_ro_opaq(false); done("break Rc_ro_opaq false");
+  closure_Rc_ro_opaq(true); done("closure Rc_ro_opaq true");
+  closure_Rc_ro_opaq(false); done("closure Rc_ro_opaq false");
+  array_Rc_ro_opaq(); done("array Rc_ro_opaq");
+  report("Rc ro opaq: opaq");
+  if_Uni_uni_imm(true); done("if Uni_uni_imm true");
+  if_Uni_uni_imm(false); done("if Uni_uni_imm false");
+  match_Uni_uni_imm(true); done("match Uni_uni_imm true");
+  match_Uni_uni_imm(false); done("match Uni_uni_imm false");
+  break_Uni_uni_imm(true); done("break Uni_uni_imm true");
+  break_Uni_uni_imm(false); done("break Uni_uni_imm false");
+  closure_Uni_uni_imm(true); done("closure Uni_uni_imm true");
+  closure_Uni_uni_imm(false); done("closure Uni_uni_imm false");
+  array_Uni_uni_imm(); done("array Uni_uni_imm");
+  report("Uni uni imm: imm");
+  if_Uni_uni_mut1(true); done("if Uni_uni_mut1 true");
+  if_Uni_uni_mut1(false); done("if Uni_uni_mut1 false");
+  match_Uni_uni_mut1(true); done("match Uni_uni_mut1 true");
+  match_Uni_uni_mut1(false); done("match Uni_uni_mut1 false");
+  break_Uni_uni_mut1(true); done("break Uni_uni_mut1 true");
+  break_Uni_uni_mut1(false); done("break Uni_uni_mut1 false");
+  closure_Uni_uni_mut1(true); done("closure Uni_uni_mut1 true");
+  closure_Uni_uni_mut1(false); done("closure Uni_uni_mut1 false");
+  array_Uni_uni_mut1(); done("array Uni_uni_mut1");
+  report("Uni uni mut1: mut1");
+  if_Uni_uni_ro(true); done("if Uni_uni_ro true");
+  if_Uni_uni_ro(false); done("if Uni_uni_ro false");
+  match_Uni_uni_ro(true); done("match Uni_uni_ro true");
+  match_Uni_uni_ro(false); done("match Uni_uni_ro false");
+  break_Uni_uni_ro(true); done("break Uni_uni_ro true");
+  break_Uni_uni_ro(false); done("break Uni_uni_ro false");
+  closure_Uni_uni_ro(true); done("closure Uni_uni_ro true");
+  closure_Uni_uni_ro(false); done("closure Uni_uni_ro false");
+  array_Uni_uni_ro(); done("array Uni_uni_ro");
+  report("Uni uni ro: ro");
+}
+
+fn run2() {
+  if_Uni_uni_opaq(true); done("if Uni_uni_opaq true");
+  if_Uni_uni_opaq(false); done("if Uni_uni_opaq false");
+  match_Uni_uni_opaq(true); done("match Uni_uni_opaq true");
+  match_Uni_uni_opaq(false); done("match Uni_uni_opaq false");
+  break_Uni_uni_opaq(true); done("break Uni_uni_opaq true");
+  break_Uni_uni_opaq(false); done("break Uni_uni_opaq false");
+  closure_Uni_uni_opaq(true); done("closure Uni_uni_opaq true");
+  closure_Uni_uni_opaq(false); done("closure Uni_uni_opaq false");
+  array_Uni_uni_opaq(); done("array Uni_uni_opaq");
+  report("Uni uni opaq: opaq");
+  if_Uni_imm_mut1(true); done("if Uni_imm_mut1 true");
+  if_Uni_imm_mut1(false); done("if Uni_imm_mut1 false");
+  match_Uni_imm_mut1(true); done("match Uni_imm_mut1 true");
+  match_Uni_imm_mut1(false); done("match Uni_imm_mut1 false");
+  break_Uni_imm_mut1(true); done("break Uni_imm_mut1 true");
+  break_Uni_imm_mut1(false); done("break Uni_imm_mut1 false");
+  closure_Uni_imm_mut1(true); done("closure Uni_imm_mut1 true");
+  closure_Uni_imm_mut1(false); done("closure Uni_imm_mut1 false");
+  array_Uni_imm_mut1(); done("array Uni_imm_mut1");
+  report("Uni imm mut1: ro");
+  if_Uni_imm_ro(true); done("if Uni_imm_ro true");
+  if_Uni_imm_ro(false); done("if Uni_imm_ro false");
+  match_Uni_imm_ro(true); done("match Uni_imm_ro true");
+  match_Uni_imm_ro(false); done("match Uni_imm_ro false");
+  break_Uni_imm_ro(true); done("break Uni_imm_ro true");
+  break_Uni_imm_ro(false); done("break Uni_imm_ro false");
+  closure_Uni_imm_ro(true); done("closure Uni_imm_ro true");
+  closure_Uni_imm_ro(false); done("closure Uni_imm_ro false");
+  array_Uni_imm_ro(); done("array Uni_imm_ro");
+  report("Uni imm ro: ro");
+  if_Uni_imm_opaq(true); done("if Uni_imm_opaq true");
+  if_Uni_imm_opaq(false); done("if Uni_imm_opaq false");
+  match_Uni_imm_opaq(true); done("match Uni_imm_opaq true");
+  match_Uni_imm_opaq(false); done("match Uni_imm_opaq false");
+  break_Uni_imm_opaq(true); done("break Uni_imm_opaq true");
+  break_Uni_imm_opaq(false); done("break Uni_imm_opaq false");
+  closure_Uni_imm_opaq(true); done("closure Uni_imm_opaq true");
+  closure_Uni_imm_opaq(false); done("closure Uni_imm_opaq false");
+  array_Uni_imm_opaq(); done("array Uni_imm_opaq");
+  report("Uni imm opaq: opaq");
+  if_Uni_mut1_ro(true); done("if Uni_mut1_ro true");
+  if_Uni_mut1_ro(false); done("if Uni_mut1_ro false");
+  match_Uni_mut1_ro(true); done("match Uni_mut1_ro true");
+  match_Uni_mut1_ro(false); done("match Uni_mut1_ro false");
+  break_Uni_mut1_ro(true); done("break Uni_mut1_ro true");
+  break_Uni_mut1_ro(false); done("break Uni_mut1_ro false");
+  closure_Uni_mut1_ro(true); done("closure Uni_mut1_ro true");
+  closure_Uni_mut1_ro(false); done("closure Uni_mut1_ro false");
+  array_Uni_mut1_ro(); done("array Uni_mut1_ro");
+  report("Uni mut1 ro: ro");
+  if_Uni_mut1_opaq(true); done("if Uni_mut1_opaq true");
+  if_Uni_mut1_opaq(false); done("if Uni_mut1_opaq false");
+  match_Uni_mut1_opaq(true); done("match Uni_mut1_opaq true");
+  match_Uni_mut1_opaq(false); done("match Uni_mut1_opaq false");
+  break_Uni_mut1_opaq(true); done("break Uni_mut1_opaq true");
+  break_Uni_mut1_opaq(false); done("break Uni_mut1_opaq false");
+  closure_Uni_mut1_opaq(true); done("closure Uni_mut1_opaq true");
+  closure_Uni_mut1_opaq(false); done("closure Uni_mut1_opaq false");
+  array_Uni_mut1_opaq(); done("array Uni_mut1_opaq");
+  report("Uni mut1 opaq: opaq");
+  if_Uni_ro_opaq(true); done("if Uni_ro_opaq true");
+  if_Uni_ro_opaq(false); done("if Uni_ro_opaq false");
+  match_Uni_ro_opaq(true); done("match Uni_ro_opaq true");
+  match_Uni_ro_opaq(false); done("match Uni_ro_opaq false");
+  break_Uni_ro_opaq(true); done("break Uni_ro_opaq true");
+  break_Uni_ro_opaq(false); done("break Uni_ro_opaq false");
+  closure_Uni_ro_opaq(true); done("closure Uni_ro_opaq true");
+  closure_Uni_ro_opaq(false); done("closure Uni_ro_opaq false");
+  array_Uni_ro_opaq(); done("array Uni_ro_opaq");
+  report("Uni ro opaq: opaq");
+  if_Arc_uni_mut(true); done("if Arc_uni_mut true");
+  if_Arc_uni_mut(false); done("if Arc_uni_mut false");
+  match_Arc_uni_mut(true); done("match Arc_uni_mut true");
+  match_Arc_uni_mut(false); done("match Arc_uni_mut false");
+  break_Arc_uni_mut(true); done("break Arc_uni_mut true");
+  break_Arc_uni_mut(false); done("break Arc_uni_mut false");
+  closure_Arc_uni_mut(true); done("closure Arc_uni_mut true");
+  closure_Arc_uni_mut(false); done("closure Arc_uni_mut false");
+  array_Arc_uni_mut(); done("array Arc_uni_mut");
+  report("Arc uni mut: mut");
+  if_Arc_uni_imm(true); done("if Arc_uni_imm true");
+  if_Arc_uni_imm(false); done("if Arc_uni_imm false");
+  match_Arc_uni_imm(true); done("match Arc_uni_imm true");
+  match_Arc_uni_imm(false); done("match Arc_uni_imm false");
+  break_Arc_uni_imm(true); done("break Arc_uni_imm true");
+  break_Arc_uni_imm(false); done("break Arc_uni_imm false");
+  closure_Arc_uni_imm(true); done("closure Arc_uni_imm true");
+  closure_Arc_uni_imm(false); done("closure Arc_uni_imm false");
+  array_Arc_uni_imm(); done("array Arc_uni_imm");
+  report("Arc uni imm: imm");
+}
+
+fn run3() {
+  if_Arc_mut_imm(true); done("if Arc_mut_imm true");
+  if_Arc_mut_imm(false); done("if Arc_mut_imm false");
+  match_Arc_mut_imm(true); done("match Arc_mut_imm true");
+  match_Arc_mut_imm(false); done("match Arc_mut_imm false");
+  break_Arc_mut_imm(true); done("break Arc_mut_imm true");
+  break_Arc_mut_imm(false); done("break Arc_mut_imm false");
+  closure_Arc_mut_imm(true); done("closure Arc_mut_imm true");
+  closure_Arc_mut_imm(false); done("closure Arc_mut_imm false");
+  array_Arc_mut_imm(); done("array Arc_mut_imm");
+  report("Arc mut imm: ro");
+  if_Arc_imm_opaq(true); done("if Arc_imm_opaq true");
+  if_Arc_imm_opaq(false); done("if Arc_imm_opaq false");
+  match_Arc_imm_opaq(true); done("match Arc_imm_opaq true");
+  match_Arc_imm_opaq(false); done("match Arc_imm_opaq false");
+  break_Arc_imm_opaq(true); done("break Arc_imm_opaq true");
+  break_Arc_imm_opaq(false); done("break Arc_imm_opaq false");
+  closure_Arc_imm_opaq(true); done("closure Arc_imm_opaq true");
+  closure_Arc_imm_opaq(false); done("closure Arc_imm_opaq false");
+  array_Arc_imm_opaq(); done("array Arc_imm_opaq");
+  report("Arc imm opaq: opaq");
+}
+
+fn main() {
+  run0();
+  run1();
+  run2();
+  run3();
+}

@@ -1,0 +1,430 @@
+// The sculpt package's loftTaggedFramed, TaggedCurve (startCurve, endCurve) and SweepSpec's normal, startCurve and
+// endCurve, checked with the testing package against values worked out by hand; only a failure prints, so
+// framedlofts.out holds the summary alone. Frame Z(z) is origin (0, 0, z), tangent (0, 0, 1), profile x on world x, y on
+// world y. SQ is the square (1,1) (-1,1) (-1,-1) (1,-1), tags 0 1 2 3. c = s = 0.70710678.
+//
+// - Equal to loftTagged, bit for bit: SQ at stations 0, 0.25 and 1 along the path (0,0,0)-(0,0,4), frames Z(0), Z(1),
+//   Z(4), between 0: the same positions, "along", "around", uvs and faces.
+// - A tilted frame: SQ in Z(0), then in the frame at (0,0,2) with tangent (s, 0, c), x on (c, 0, -s), y on (0, 1, 0)
+//   (x cross y = tangent), then Z(4), between 0: ring 1 is the square tilted about y: vertex 4 (1, 1) at
+//   (c, 1, 2 - s) = (0.7071068, 1, 1.2928932), vertex 5 (-1, 1) at (-c, 1, 2 + s) = (-0.7071068, 1, 2.7071068), vertex 6
+//   (-c, -1, 2.7071068), vertex 7 (c, -1, 1.2928932). A loft that placed ring 1 in the path's frame would put them at
+//   (+-1, +-1, 2). No crossing line: plane 0 (z = 0) meets the tilted plane (z = 2 - x) at x = 2, outside the
+//   square's world x range +-0.7071; plane 2 (z = 4) at x = -2, outside likewise.
+// - A crossing: frames Z(0), the tilted frame at (0,0,0.5), Z(4), SQ: the tilted plane is z = 0.5 - x and meets z = 0 at
+//   x = 0.5, y free: inside the square at z = 0 (x in +-1) and inside the tilted ring (its world x is +-0.7071), so
+//   sections 0-1 cross, 1 line; planes 1 and 2 meet at x = -3.5, outside, so it is the only one.
+// - Between rings: SQ at Z(0), Z(2), Z(4), between 1: 5 rings of 4, ring r at z = r, every ring SQ (a spline
+//   through three equal points is that point), "along" r / 4, 20 vertices, 16 quads.
+// - An end curve: A and B are the square with side midpoints (8 points, tags 0 2 4 6) at Z(0), Z(4); the end curve the
+//   rectangle (2,1) (-2,1) (-2,-1) (2,-1) at z = 4, tags 0 1 2 3 (sides 4, 2, 4, 2, perimeter 12). Columns: each stretch
+//   at 0 and 0.5, so 8 columns, and the curve's ring is (2,1,4) (0,1,4) (-2,1,4) (-2,0,4) (-2,-1,4) (0,-1,4) (2,-1,4)
+//   (2,0,4) exactly (the tags are the corners; the middle of each side). By the whole ring's fraction column 2 would
+//   be 3 along the perimeter, (-1, 1, 4), not the tag (-2, 1, 4). Between 1: 3 rings of 8 = 24 vertices, 16 quads;
+//   ring 1 is the halfway ring, vertex 10 (column 2) at ((-1 + -2) / 2, 1, 2) = (-1.5, 1, 2). With caps the start is
+//   closed and the curve's end is not: 17 faces.
+// - Two parts on one curve: the square with side midpoints at Z(-4) and Z(0) with the same rectangle (at z = 0) as its
+//   end curve, and at Z(0), Z(4) with the rectangle as its start curve, caps on; joined and welded at distance 0: 24
+//   vertices (16 + 16 less the 8 shared), 18 faces, validates, no boundary edge.
+// - SweepSpec: 4 constant tracks the square, spine (0,0,0)-(0,0,4), up y, 3 rings; with normal (0, 0, 1) it equals the
+//   plain mesh to 1e-6 (the frame is the path's own); with normal (1, 0, 1) (made unit when read) ring 1 is the tilted
+//   one: vertex 4 (c, 1, 2 - s), vertex 5 (-c, 1, 2 + s); with a start curve (the rectangle with midpoints at z = 0,
+//   tags 0 2 4 6 of its 8 points, SweepSpec's 4 tracks) the first ring is the rectangle's corners, bit for bit.
+// - Refusals: a curve with the wrong tag count; a curve of fewer points than tags; frames and sections of different
+//   counts; a normal of 2 curves; a normal along 'up'.
+
+mod framedlofts;
+
+import testing use *;
+import collections use *;
+import geomath use *;
+import mesh use *;
+import sculpt use *;
+
+let near = 0.00001;
+let rt: f32 = 0.70710678;
+
+fn f1(a: f32) List[f32] { var v = List[f32](); v.push(a); v }
+fn f2(a: f32, b: f32) List[f32] { var v = List[f32](); v.push(a); v.push(b); v }
+
+fn clean(m: &PolyMesh, label: &Array[u8]) {
+  let problems = m.validate();
+  expectInt(i64.from(problems.len()), 0, label);
+}
+
+fn floatAt(m: &PolyMesh, name: &str, v: u32) f32 {m.float(m.findFloatChannel(VertexDomain, name), v)}
+
+fn at(m: &PolyMesh, v: u32, x: f32, y: f32, z: f32, label: &Array[u8]) {
+  let p = *m.positions[usize.from(v)];
+  expectFloat(p.x, x, near, label);
+  expectFloat(p.y, y, near, label);
+  expectFloat(p.z, z, near, label);
+}
+
+// The vertex is exactly this point (bit for bit)
+fn exactAt(m: &PolyMesh, v: u32, x: f32, y: f32, z: f32, label: &Array[u8]) {
+  let p = *m.positions[usize.from(v)];
+  expect(p.x == x && p.y == y && p.z == z, label);
+}
+
+fn sameMesh(a: &PolyMesh, b: &PolyMesh, exact: bool, label: &Array[u8]) {
+  var same = a.vertexCount() == b.vertexCount() && a.faceCount() == b.faceCount()
+    && a.halfedgeCount() == b.halfedgeCount();
+  var v = 0usize;
+  while same && v < a.vertexCount() {
+    let p = *a.positions[v];
+    let q = *b.positions[v];
+    if exact {
+      if p.x != q.x || p.y != q.y || p.z != q.z { same = false; }
+      if floatAt(a, "along", u32.from(v)) != floatAt(b, "along", u32.from(v)) { same = false; }
+      if floatAt(a, "around", u32.from(v)) != floatAt(b, "around", u32.from(v)) { same = false; }
+    } else {
+      if (p.x - q.x).abs() > 0.000001 || (p.y - q.y).abs() > 0.000001 || (p.z - q.z).abs() > 0.000001 { same = false; }
+    }
+    v = v + 1usize;
+  }
+  var f = 0usize;
+  let ua = a.findVec2Channel(CornerDomain, "uv");
+  let ub = b.findVec2Channel(CornerDomain, "uv");
+  while same && f < a.faceCount() {
+    let ha = a.faceHalfedges(u32.from(f));
+    let hb = b.faceHalfedges(u32.from(f));
+    if ha.len() != hb.len() { same = false; }
+    var k = 0usize;
+    while same && k < ha.len() {
+      if a.toVertex(*ha[k]) != b.toVertex(*hb[k]) { same = false; }
+      if exact {
+        let x = a.vec2(ua, *ha[k]);
+        let y = b.vec2(ub, *hb[k]);
+        if x.x != y.x || x.y != y.y { same = false; }
+      }
+      k = k + 1usize;
+    }
+    f = f + 1usize;
+  }
+  expect(same, label);
+}
+
+fn boundaryEdges(m: &PolyMesh) i64 {
+  var n = 0i64;
+  var e = 0u32;
+  while usize.from(e) < m.edgeCount() {
+    if m.isBoundaryEdge(e) { n = n + 1i64; }
+    e = e + 1u32;
+  }
+  n
+}
+
+fn squareFrom(h: f32) Profile {
+  let pts = List[Vec2](4) <- Vec2(h, h), Vec2(-h, h), Vec2(-h, -h), Vec2(h, -h);
+  Profile(pts, true)
+}
+
+// The square with its side midpoints, 8 points from (1, 1) counterclockwise
+fn midSquare() Profile {
+  let pts = List[Vec2](8) <- Vec2(1., 1.), Vec2(0., 1.), Vec2(-1., 1.), Vec2(-1., 0.), Vec2(-1., -1.), Vec2(0., -1.),
+    Vec2(1., -1.), Vec2(1., 0.);
+  Profile(pts, true)
+}
+
+fn fourTags() List[u32] {List[u32](4) <- 0u32, 1u32, 2u32, 3u32}
+fn evenTags() List[u32] {List[u32](4) <- 0u32, 2u32, 4u32, 6u32}
+
+fn tagged(p: &Profile, tags: &List[u32]) TaggedProfile {TaggedProfile.of(p, tags.view())}
+
+fn threeSquares() List[TaggedProfile] {
+  var s = List[TaggedProfile]();
+  let a = squareFrom(1.);
+  let t = fourTags();
+  s.push(tagged(&a, &t));
+  s.push(tagged(&a, &t));
+  s.push(tagged(&a, &t));
+  s
+}
+
+fn twoMid() List[TaggedProfile] {
+  var s = List[TaggedProfile]();
+  let a = midSquare();
+  let t = evenTags();
+  s.push(tagged(&a, &t));
+  s.push(tagged(&a, &t));
+  s
+}
+
+// The frame at (0, 0, z)
+fn zFrame(z: f32) Frame {Frame(Vec3(0., 0., z), Vec3(0., 0., 1.), Vec3(1., 0., 0.), Vec3(0., 1., 0.))}
+
+// The frame at (0, 0, z) with tangent (s, 0, c): x on (c, 0, -s), y on y
+fn tilted(z: f32) Frame {Frame(Vec3(0., 0., z), Vec3(rt, 0., rt), Vec3(rt, 0., -rt), Vec3(0., 1., 0.))}
+
+fn frames3(a: Frame, b: Frame, c: Frame) List[Frame] {
+  var f = List[Frame]();
+  f.push(a);
+  f.push(b);
+  f.push(c);
+  f
+}
+
+fn frames2(a: Frame, b: Frame) List[Frame] {
+  var f = List[Frame]();
+  f.push(a);
+  f.push(b);
+  f
+}
+
+// The rectangle (2,1) (-2,1) (-2,-1) (2,-1) at z, as 4 points (tags 0 1 2 3) or with side midpoints (8 points)
+fn rectangle(z: f32, mids: bool) TaggedCurve {
+  if mids {
+    let pts = List[Vec3](8) <- Vec3(2., 1., z), Vec3(0., 1., z), Vec3(-2., 1., z), Vec3(-2., 0., z), Vec3(-2., -1., z),
+      Vec3(0., -1., z), Vec3(2., -1., z), Vec3(2., 0., z);
+    let tg = evenTags();
+    return TaggedCurve.of(pts.view(), tg.view());
+  }
+  let pts = List[Vec3](4) <- Vec3(2., 1., z), Vec3(-2., 1., z), Vec3(-2., -1., z), Vec3(2., -1., z);
+  let tg = fourTags();
+  TaggedCurve.of(pts.view(), tg.view())
+}
+
+fn line4() Path {Path.line(Vec3(0., 0., 0.), Vec3(0., 0., 4.), 4u32)}
+
+fn equalsLoftTagged() {
+  var st = List[f32]();
+  st.push(0.);
+  st.push(0.25);
+  st.push(1.);
+  let sec = threeSquares();
+  var problems = List[String]();
+  let plain = loftTagged(&sec, &line4(), st.view(), 0u32, false, false, &mut problems);
+  let fr = frames3(zFrame(0.), zFrame(1.), zFrame(4.));
+  let framed = loftTaggedFramed(&sec, &fr, &None[TaggedCurve], &None[TaggedCurve], 0u32, false, false, &mut problems);
+  expectInt(i64.from(problems.len()), 0, "equal: no problem line");
+  expectInt(i64.from(framed.vertexCount()), 12, "equal: 12 vertices");
+  sameMesh(&plain, &framed, true, "equal: loftTaggedFramed with the path's frames is loftTagged, bit for bit");
+  // By length too
+  let plainL = loftTagged(&sec, &line4(), st.view(), 0u32, true, true, &mut problems);
+  let framedL = loftTaggedFramed(&sec, &fr, &None[TaggedCurve], &None[TaggedCurve], 0u32, true, true, &mut problems);
+  sameMesh(&plainL, &framedL, true, "equal: by length with caps, bit for bit");
+}
+
+fn tiltedFrame() {
+  let sec = threeSquares();
+  var problems = List[String]();
+  let fr = frames3(zFrame(0.), tilted(2.), zFrame(4.));
+  let m = loftTaggedFramed(&sec, &fr, &None[TaggedCurve], &None[TaggedCurve], 0u32, false, false, &mut problems);
+  expectInt(i64.from(problems.len()), 0, "tilted: no crossing, no problem line");
+  clean(&m, "tilted: validates");
+  at(&m, 4u32, rt, 1., 2. - rt, "tilted: ring 1 corner 0");
+  at(&m, 5u32, -rt, 1., 2. + rt, "tilted: ring 1 corner 1");
+  at(&m, 6u32, -rt, -1., 2. + rt, "tilted: ring 1 corner 2");
+  at(&m, 7u32, rt, -1., 2. - rt, "tilted: ring 1 corner 3");
+  at(&m, 0u32, 1., 1., 0., "tilted: ring 0 corner 0");
+  at(&m, 8u32, 1., 1., 4., "tilted: ring 2 corner 0");
+}
+
+fn crossing() {
+  let sec = threeSquares();
+  var problems = List[String]();
+  let fr = frames3(zFrame(0.), tilted(0.5), zFrame(4.));
+  let m = loftTaggedFramed(&sec, &fr, &None[TaggedCurve], &None[TaggedCurve], 0u32, false, false, &mut problems);
+  expectInt(i64.from(problems.len()), 1, "crossing: one problem line");
+  expectInt(i64.from(m.vertexCount()), 12, "crossing: the mesh is still built");
+  let want = String.from("loftTaggedFramed: 1 neighbouring sections cross inside the part (0-1)");
+  expect(problems[0usize].view() == want.view(), "crossing: the line names 0-1");
+}
+
+fn betweenRings() {
+  let sec = threeSquares();
+  var problems = List[String]();
+  let fr = frames3(zFrame(0.), zFrame(2.), zFrame(4.));
+  let m = loftTaggedFramed(&sec, &fr, &None[TaggedCurve], &None[TaggedCurve], 1u32, false, false, &mut problems);
+  expectInt(i64.from(problems.len()), 0, "between: no problem line");
+  clean(&m, "between: validates");
+  expectInt(i64.from(m.vertexCount()), 20, "between: 20 vertices");
+  expectInt(i64.from(m.faceCount()), 16, "between: 16 quads");
+  var r = 0u32;
+  while r < 5u32 {
+    at(&m, r * 4u32, 1., 1., f32.from(r), "between: column 0");
+    at(&m, r * 4u32 + 2u32, -1., -1., f32.from(r), "between: column 2");
+    expectFloat(floatAt(&m, "along", r * 4u32), f32.from(r) / 4., near, "between: along");
+    r = r + 1u32;
+  }
+}
+
+fn endCurve() {
+  let sec = twoMid();
+  var problems = List[String]();
+  let fr = frames2(zFrame(0.), zFrame(4.));
+  let rect = Some[TaggedCurve](rectangle(4., false));
+  let rect2 = Some[TaggedCurve](rectangle(4., false));
+  let rect3 = Some[TaggedCurve](rectangle(4., false));
+  let rect0 = Some[TaggedCurve](rectangle(0., false));
+  let m = loftTaggedFramed(&sec, &fr, &None[TaggedCurve], &rect, 1u32, false, false, &mut problems);
+  expectInt(i64.from(problems.len()), 0, "end curve: no problem line");
+  clean(&m, "end curve: validates");
+  expectInt(i64.from(m.vertexCount()), 24, "end curve: 24 vertices");
+  expectInt(i64.from(m.faceCount()), 16, "end curve: 16 quads");
+  // The curve's ring, exactly: the corners are columns 0, 2, 4, 6 and the side middles the odd ones
+  exactAt(&m, 16u32, 2., 1., 4., "end curve: column 0 is the corner");
+  exactAt(&m, 17u32, 0., 1., 4., "end curve: column 1 is the middle of the side");
+  exactAt(&m, 18u32, -2., 1., 4., "end curve: column 2 is the tag, not 3 along the perimeter");
+  exactAt(&m, 19u32, -2., 0., 4., "end curve: column 3");
+  exactAt(&m, 20u32, -2., -1., 4., "end curve: column 4 is the tag");
+  exactAt(&m, 21u32, 0., -1., 4., "end curve: column 5");
+  exactAt(&m, 22u32, 2., -1., 4., "end curve: column 6 is the tag");
+  exactAt(&m, 23u32, 2., 0., 4., "end curve: column 7");
+  at(&m, 10u32, -1.5, 1., 2., "end curve: the halfway ring, column 2");
+  at(&m, 0u32, 1., 1., 0., "end curve: ring 0 is the section");
+  // Caps: the start closed, the curve's end open
+  let mc = loftTaggedFramed(&sec, &fr, &None[TaggedCurve], &rect2, 1u32, false, true, &mut problems);
+  expectInt(i64.from(mc.faceCount()), 17, "end curve: caps: 17 faces");
+  // A start curve too
+  let both = loftTaggedFramed(&sec, &fr, &rect0, &rect3, 0u32, false, true, &mut problems);
+  expectInt(i64.from(both.faceCount()), 8, "both curves: 8 quads, no caps");
+  exactAt(&both, 2u32, -2., 1., 0., "both curves: start column 2");
+  exactAt(&both, 10u32, -2., 1., 4., "both curves: end column 2");
+  // Creases of the curve's tags
+  var cv = rectangle(4., false);
+  cv.creases = List[f32](4) <- 0., 3., 0., 0.;
+  var ts = twoMid();
+  ts[0usize].creases = List[f32](4) <- 0., 1., 0., 0.;
+  let mk = loftTaggedFramed(&ts, &fr, &None[TaggedCurve], &Some[TaggedCurve](cv), 1u32, false, false, &mut problems);
+  // The column of tag 1 is column 2; band 0 at its middle 1/4 of the way from 1 to 3 (a ring between)
+  let e0 = creaseEdge(&mk, 2u32, 10u32);
+  let e1 = creaseEdge(&mk, 10u32, 18u32);
+  expectFloat(e0, 1.5, near, "end curve: crease blends to the curve's, band 0");
+  expectFloat(e1, 2.5, near, "end curve: crease blends to the curve's, band 1");
+}
+
+// The "crease" of the edge between two vertices, or -1
+fn creaseEdge(m: &PolyMesh, a: u32, b: u32) f32 {
+  let hs = m.vertexOutgoing(a);
+  var k = 0usize;
+  while k < hs.len() {
+    if m.toVertex(*hs[k]) == b { return m.float(m.findFloatChannel(EdgeDomain, "crease"), *hs[k] / 2u32); }
+    k = k + 1usize;
+  }
+  -1.
+}
+
+fn twoPartsOneCurve() {
+  var problems = List[String]();
+  let endOfA = Some[TaggedCurve](rectangle(0., true));
+  let startOfB = Some[TaggedCurve](rectangle(0., true));
+  let secA = twoMid();
+  let secB = twoMid();
+  let frA = frames2(zFrame(-4.), zFrame(0.));
+  let frB = frames2(zFrame(0.), zFrame(4.));
+  let a = loftTaggedFramed(&secA, &frA, &None[TaggedCurve], &endOfA, 0u32, false, true, &mut problems);
+  let b = loftTaggedFramed(&secB, &frB, &startOfB, &None[TaggedCurve], 0u32, false, true, &mut problems);
+  expectInt(i64.from(problems.len()), 0, "two parts: no problem line");
+  expectInt(boundaryEdges(&a), 8, "two parts: part A is open at the curve");
+  var parts = List[PolyMesh]();
+  parts.push(a);
+  parts.push(b);
+  let both = join(&parts, &mut problems);
+  let w = weld(&both, 0.);
+  clean(&w, "two parts: validates");
+  expectInt(i64.from(w.vertexCount()), 24, "two parts: 24 vertices");
+  expectInt(i64.from(w.faceCount()), 18, "two parts: 18 faces");
+  expectInt(boundaryEdges(&w), 0, "two parts: welded at distance 0, no open edge");
+}
+
+fn barSpec(normal: RunCurves, start: Option[TaggedCurve]) SweepSpec {
+  var tracks = SweepTracks();
+  let cs = List[f32](1) <- 1.;
+  let cm = List[f32](1) <- -1.;
+  let z = List[f32]();
+  tracks.push(SweepTrack(RunCurve.of(copyF(&cs)), RunCurve.of(copyF(&cs)), RunCurve.of(copyF(&z))));
+  tracks.push(SweepTrack(RunCurve.of(copyF(&cm)), RunCurve.of(copyF(&cs)), RunCurve.of(copyF(&z))));
+  tracks.push(SweepTrack(RunCurve.of(copyF(&cm)), RunCurve.of(copyF(&cm)), RunCurve.of(copyF(&z))));
+  tracks.push(SweepTrack(RunCurve.of(copyF(&cs)), RunCurve.of(copyF(&cm)), RunCurve.of(copyF(&z))));
+  var spine = RunCurves();
+  spine.push(RunCurve.of(f2(0., 0.)));
+  spine.push(RunCurve.of(f2(0., 0.)));
+  spine.push(RunCurve.of(f2(0., 4.)));
+  SweepSpec(spine, Vec3(0., 1., 0.), 0., tracks, normal, start, None[TaggedCurve], List[RunCurve]())
+}
+
+fn copyF(l: &List[f32]) List[f32] {
+  var o = List[f32]();
+  var i = 0usize;
+  while i < l.len() { o.push(*l[i]); i = i + 1usize; }
+  o
+}
+
+fn normalOf(x: f32, y: f32, z: f32) RunCurves {
+  var n = RunCurves();
+  n.push(RunCurve.of(f1(x)));
+  n.push(RunCurve.of(f1(y)));
+  n.push(RunCurve.of(f1(z)));
+  n
+}
+
+fn sweepSpecs() {
+  var problems = List[String]();
+  let plain = barSpec(RunCurves(), None[TaggedCurve]).mesh(3u32, 0u32, false, false, &mut problems);
+  let straight = barSpec(normalOf(0., 0., 1.), None[TaggedCurve]).mesh(3u32, 0u32, false, false, &mut problems);
+  expectInt(i64.from(problems.len()), 0, "sweep: no problem line");
+  expectInt(i64.from(plain.vertexCount()), 12, "sweep: 12 vertices");
+  sameMesh(&plain, &straight, false, "sweep: normal (0, 0, 1) is the plain mesh");
+  let tl = barSpec(normalOf(1., 0., 1.), None[TaggedCurve]).mesh(3u32, 0u32, false, false, &mut problems);
+  expectInt(i64.from(problems.len()), 0, "sweep: tilted: no problem line");
+  at(&tl, 4u32, rt, 1., 2. - rt, "sweep: tilted ring 1 corner 0");
+  at(&tl, 5u32, -rt, 1., 2. + rt, "sweep: tilted ring 1 corner 1");
+  at(&tl, 0u32, rt, 1., -rt, "sweep: tilted ring 0 corner 0 (the normal is constant, so every ring is tilted)");
+  // A start curve: the rectangle with midpoints, tags 0 2 4 6, at z = 0
+  let sc = barSpec(RunCurves(), Some[TaggedCurve](rectangle(0., true))).mesh(3u32, 0u32, false, false, &mut problems);
+  expectInt(i64.from(problems.len()), 0, "sweep: start curve: no problem line");
+  exactAt(&sc, 0u32, 2., 1., 0., "sweep: start curve column 0");
+  exactAt(&sc, 1u32, -2., 1., 0., "sweep: start curve column 1");
+  exactAt(&sc, 2u32, -2., -1., 0., "sweep: start curve column 2");
+  exactAt(&sc, 3u32, 2., -1., 0., "sweep: start curve column 3");
+  at(&sc, 8u32, 1., 1., 4., "sweep: start curve: the last ring is the section");
+  // Refusals
+  var two = RunCurves();
+  two.push(RunCurve.of(f1(0.)));
+  two.push(RunCurve.of(f1(1.)));
+  let r1 = barSpec(two, None[TaggedCurve]).mesh(3u32, 0u32, false, false, &mut problems);
+  expectInt(i64.from(r1.vertexCount()), 0, "refusal: a normal of 2 curves: empty");
+  expectInt(i64.from(problems.len()), 1, "refusal: a normal of 2 curves: a line");
+  let r2 = barSpec(normalOf(0., 1., 0.), None[TaggedCurve]).mesh(3u32, 0u32, false, false, &mut problems);
+  expectInt(i64.from(r2.vertexCount()), 0, "refusal: a normal along up: empty");
+  expectInt(i64.from(problems.len()), 2, "refusal: a normal along up: a line");
+}
+
+fn refusals() {
+  var problems = List[String]();
+  let sec = twoMid();
+  let fr = frames2(zFrame(0.), zFrame(4.));
+  // Tag count 3 against the sections' 4
+  let pts3 = List[Vec3](4) <- Vec3(2., 1., 4.), Vec3(-2., 1., 4.), Vec3(-2., -1., 4.), Vec3(2., -1., 4.);
+  let tg3 = List[u32](3) <- 0u32, 1u32, 2u32;
+  let c3 = TaggedCurve.of(pts3.view(), tg3.view());
+  let m1 = loftTaggedFramed(&sec, &fr, &None[TaggedCurve], &Some[TaggedCurve](c3), 0u32, false, false, &mut problems);
+  expectInt(i64.from(m1.vertexCount()), 0, "refusal: curve tag count: empty");
+  expectInt(i64.from(problems.len()), 1, "refusal: curve tag count: a line");
+  // Fewer points than tags: 3 points, 4 tags
+  let pts2 = List[Vec3](3) <- Vec3(2., 1., 4.), Vec3(-2., 1., 4.), Vec3(-2., -1., 4.);
+  let tg4 = fourTags();
+  let c2 = TaggedCurve.of(pts2.view(), tg4.view());
+  let m2 = loftTaggedFramed(&sec, &fr, &Some[TaggedCurve](c2), &None[TaggedCurve], 0u32, false, false, &mut problems);
+  expectInt(i64.from(m2.vertexCount()), 0, "refusal: curve with fewer points than tags: empty");
+  expectInt(i64.from(problems.len()), 2, "refusal: curve with fewer points than tags: a line");
+  // Frames and sections of different counts
+  let m3 = loftTaggedFramed(&sec, &frames3(zFrame(0.), zFrame(2.), zFrame(4.)), &None[TaggedCurve], &None[TaggedCurve],
+    0u32, false, false, &mut problems);
+  expectInt(i64.from(m3.vertexCount()), 0, "refusal: frames count: empty");
+  expectInt(i64.from(problems.len()), 3, "refusal: frames count: a line");
+}
+
+fn main() i32 {
+  equalsLoftTagged();
+  tiltedFrame();
+  crossing();
+  betweenRings();
+  endCurve();
+  twoPartsOneCurve();
+  sweepSpecs();
+  refusals();
+  done()
+}
