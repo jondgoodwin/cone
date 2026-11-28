@@ -3,7 +3,11 @@
 // they meet at is the one the value has, and no more.
 mod move_flow_permission_meet;
 
-struct N { pub n: i32; }
+struct N {
+  pub n: i32;
+  pub fn get(self: &) i32 { self.n }
+  fn final(self: &uni) {}
+}
 
 fn afterIf(c: bool) i32 {
   let a = Rc[N](N(1));
@@ -46,4 +50,27 @@ fn writeMet(c: bool) {
   let b = Rc[imm, N](N(2));
   let r = if c {a} else {b};
   r.n = 3;                                                  //~ ErrorNoMut
+}
+
+// Read where it stands, the meet is a temporary the 'uni' owner moves into
+fn afterField(c: bool) i32 {
+  let a = Rc[N](N(1));
+  let b = Rc[mut, N](N(2));
+  let m = (if c {a} else {b}).n;
+  m + b.n + a.n                                             //~ ErrorMove "moved out"
+}
+
+fn afterMethod(c: bool) i32 {
+  let a = Rc[N](N(1));
+  let b = Rc[mut, N](N(2));
+  let m = (if c {b} else {a}).get();
+  m + b.n + a.n                                             //~ ErrorMove "moved out"
+}
+
+fn borrowedAcross(c: bool) i32 {
+  let a = Rc[N](N(1));
+  let b = Rc[mut, N](N(2));
+  let r = &a.n;
+  let m = (if c {a} else {b}).n;                            //~ ErrorFrozen
+  m + *r
 }

@@ -1,0 +1,85 @@
+// What stays accepted beside collection_flow_view_outlives_ref: a view taken through a
+// named reference that has left scope or been given another borrow, where what it
+// points into is not changed while it is used, and where the view is given a borrow of
+// something else before the change.
+//
+// The expected output is worked out by hand in the comments:
+// 7 202 8 101 7 101 9 7 101
+
+mod collection_view_outlives_ref_success;
+
+import stdio use *;
+import collections use *;
+
+fn listOf(n: i32) List[i32] {
+  var l = List[i32]();
+  l.push(n);
+  l
+}
+
+fn grow(l: &mut List[i32]) {
+  var i = 0i32;
+  while i < 100i32 { l.push(i); i += 1i32; }
+}
+
+fn show(v: i32) { printInt(i64.from(v)); printStr(" "); }
+
+// Other lists change; the one viewed does not: 7, then 'n' and 'o' hold 101 each: 202
+fn othersChange() {
+  var m = listOf(7i32);
+  var n = listOf(1i32);
+  var o = listOf(2i32);
+  var v = &n[0usize];
+  { let r = &mut m; v = &(*r)[0usize]; }
+  grow(&mut o);
+  grow(&mut n);
+  show(*v);
+  show(i32.from(n.len + o.len));
+}
+
+// The view is given another list's element before the change: 8, then 'm' holds 101
+fn reassigned() {
+  var m = listOf(7i32);
+  var n = listOf(1i32);
+  var o = listOf(8i32);
+  var v = &n[0usize];
+  { let r = &mut m; v = &(*r)[0usize]; }
+  v = &o[0usize];
+  grow(&mut m);
+  show(*v);
+  show(i32.from(m.len));
+}
+
+// The reference is repointed, and what it now borrows changes, not what is viewed:
+// 7, then 'o' holds 101
+fn repointed() {
+  var m = listOf(7i32);
+  var o = listOf(2i32);
+  var r = &mut m;
+  var v = &(*r)[0usize];
+  r = &mut o;
+  grow(&mut o);
+  show(*v);
+  show(i32.from(o.len));
+}
+
+// The view is used up before the change: 9 from the view, then, the view of 'm'
+// done, 'm' grows: 7 is still its first element, and it holds 101
+fn usedBefore() {
+  var m = listOf(7i32);
+  var n = listOf(9i32);
+  var v = &n[0usize];
+  show(*v);
+  { let r = &mut m; v = &(*r)[0usize]; }
+  show(*v);
+  grow(&mut m);
+  show(i32.from(m.len));
+}
+
+fn main() {
+  othersChange();
+  reassigned();
+  repointed();
+  usedBefore();
+  printStr("\n");
+}

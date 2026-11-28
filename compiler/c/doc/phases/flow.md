@@ -203,6 +203,7 @@ one bit per trigger:
 | `FlowGateInCall` | `nameuseFlow`, `nameuseFlowBorrowed`, `assignFlow` and `swapFlow` (`flowGateStoredAsk`) | a variable named, or stored over (`l = v`, `l.f = v`, `a[i] = v`, an element of a tuple of targets; a store reads nothing of its root), while a borrow of it is waiting: one made by an earlier operand of the same call, struct or array literal or value tuple (`v.add(v.len())`, `v[0].push({v = w; 1})`), or the receiver's borrow that the temporary of a `<-` with several entries keeps to its block's end (`v[0] <- 1, take(v)`; `VarDclNode.keepsborrow`, which `varDclFlow` pushes and `blockFlow` pops), the borrow made inside an operand that is itself a call or literal whose value may carry it included (`both(s.view(), &mut s)`); `&uni s[i]` and `&s[a..=b]` on a slice are an index applied to a borrow of the slice (`borrowRefIndexDispatches`), so an operand that is an index is asked as that borrow (`flowGateOperandAsk`) |
 | `FlowGateBoxed` | `flowLoadValue` | a value whose type carries a borrow converted to an owning virtual reference (`Uni[Trait]` from a `Uni[H]`), whose loans the loan walk checks are global (section 6, "Named lifetimes") |
 | `FlowGateShape` | `fnCallFlow` (`flowGateShape`, `flowGateShapeAsk`) | a method call returning a borrow, on a receiver of a type that may change shape (`ShapeChanging`, or one whose answer `shapeinf` has not ruled out), reached through a reference, a field of `self` or a global rather than a plain local's own place. A borrow that never reaches a variable (`out.append(x.view())`, `two(l[0], bump(m))`) is otherwise no trigger at all, and a call made beside it could reshape what it lends. Asked even once another bit is set, for the bit also says the callees' bodies are to be checked before the walk (`shapeDemandCallees`). Also any call lent a borrow of what an owner points at (`run(&mut *t.task)`, `t.task.run()`), the owner one others may write by (`MayAliasWrite`) of a type some `var` global reaches (`flowGateGlobalOwner`): the global may be another way to the owner, and no argument shows it. A receiver that is a `var` global's own place is no plain local, and a container some `var` global reaches may be what a reference points at: the borrow is asked of every call, so any call after it is a trigger (`FlowState.shapeglobal`); whether the call is refused is the inference's. Also a reference narrowed from an enum to one of its variants through a path others share (`flowGateNarrow`), and a store into a struct-typed place that is no local named whole, in a function that has already lent such a borrow (`flowGateShapeStore`). Also a compound assignment whose place a call lent or an owner points at, with a right side that does more than read (`assignFlow`, `flowGateCompound`): its temporary is declared by no holder trigger, so `l[i] += grow(&mut l)` on a local list would otherwise be walked for nothing. "Does more than read" is anything but names, literals, places and the built-in operators on them, so a call or a store written there. Also a place a call lent or an owner points at, indexed by something that does more than read (`flowGateIndex`, from `fnCallArrIndexFlow`, `assignFlowLvalReads` and `borrowFlowPlace`) |
+| `FlowGateShape` | `fnCallFlow` (`flowGateLent`, `flowGateLentCall`) | a call lent what an owning reference points at (`run(&mut *t.task, &mut s)`, `t.task.run(&mut s)`: the borrow written or the owner lent, also inside a struct, tuple or array literal or the arguments of a call whose value carries a borrow), where others may reach the way to that owner (it is reached through a borrow, a pointer or an owner others share, so a local that is the owner or holds it by value or by unique owners is none), beside a way to write an owner of that type (`reshapeReach` asked of the nearest owner, the one `Place.ownertype` keeps): another argument that reaches one, or, with the lent argument alone, what it points at leading back to one (`run(&mut *t.task)`, `t.task.run()`), unless the owner is unique and the value reaches such owners only below itself (`reshapeOwnerAbove`) or the lent argument is a virtual call's receiver, which the walk does not ask. A call handing on another call's borrow is asked too of every unique owner the inner call's arguments reach behind a borrow (`run(first(a), b)`). An intrinsic, an `init` and a `+ ShapeKeeping` call are asked nothing |
 | `FlowGateStatic` | `typeLitFlow` (`flowGateStatic`, `flowGateStaticAsk`) | a struct or variant literal giving a value carrying a borrow to a field whose type holds borrows but only `'static` ones, whose loans the loan walk checks are global (`pwStaticOnly`, section 6, "Named lifetimes"): `stash(H(&v))` holds nothing in a local, returns nothing, and is otherwise no trigger |
 
 "Carries a borrow" is `itypeCarriesBorrow`: the type is a borrowed reference, or
@@ -804,6 +805,22 @@ A value taken — a variable's initializer, an assignment's value, an argument,
 a field of a literal, a returned or handed-back value — reaches
 `flowHandleMoveOrCopy` or a block's result instead, and is never wrapped.
 
+**A temporary takes its value** (`flowTempTake`, from both functions above). A
+branch's or a block's value has no mark of its own: `blockFlow` and `ifFlow`
+walk each arm, and the arm's source is moved only by whoever takes the whole
+value (`flowHandleMove`, whose `flowMoveSource` walks the arms and breaks). A
+temporary that dies finalizes the value, so it takes it too: where the value
+moves (`flowValueMoves`: a `uni` owner an `if`, `match`, loop or block hands
+on) its source is moved, so `(if c {a} else {b}).n` leaves `a` and `b` unusable,
+with a drop flag releasing whichever arm did not run; and a tuple literal's
+elements are each moved or copied into it, a counted one gaining its holder.
+`TempNode.takes` says so, and the loan walk then walks the value as a move, so
+a borrow of a source still live is refused (`ErrorFrozen`). A value with nothing
+to finalize makes no temporary here, so nothing is moved (a `&uni` reference a
+branch hands on, a move type with no finalizer read where it stands). A value
+written to where it stands, `(if c {a} else {b}).n = 1`, is no temporary: the
+store goes through whichever owner the arm gave, which stays its source's.
+
 **A value moved out of a temporary.** `flowMoveSource` reaching a `TempNode`
 through a dereference is a move out
 through a temporary sole owner: the move is noted in the node's `moved`
@@ -873,9 +890,8 @@ decided only as the program runs, so it holds what the value carries in a stand-
 view made through it holds the loans of each, and is marked for the shape check as one
 through a name is. The loans of borrows that may write are kept on the place too
 (`pwWritingLoans`, `Place.kept`), as `*&uni x` keeps its own. The stand-in is a temporary,
-but what it holds is not dropped at its statement's end (`PathVar.yielded`): a view marked
-later (`loanShapeLazy`) reads from it where the view points. Other values that are no place
-(an assignment's value, a tuple element, a field of a struct literal, a call's result where
+but what it holds is not dropped at its statement's end (`PathVar.yielded`). Other values
+that are no place (an assignment's value, a tuple element, a field of a struct literal, a call's result where
 the stand-in of the paragraph on a reference a call returned is not made) are still read as
 values, and what is dereferenced there is not followed.
 
@@ -1016,6 +1032,16 @@ making a `mut` borrow of the same local (`step(&w, &mut w.entities[0])`, `p.m(&p
 made an alias loan (`loanFlightOwnRo`), the callee taking it as a view others may change.
 A free function's borrowed argument that its result carries (`pwLentArg`) keeps the
 exclusive freeze: a generator over a `&mut List` reshapes its own list.
+
+**A borrow through a reference keeps where it points.** A view taken through a reference
+variable (`&(*r)[0]`) points where `r` pointed as the borrow was made, whatever happens to
+`r` after. Its loan is of `*r`, and the mark for the shape check may come later (a lazy loan
+promoted, a view marked once the reference is lent), when `r` has left scope or holds another
+borrow. So the loan keeps what `r` held where the borrow was made (`Loan.way`: the union over
+the paths and a loop's passes), and its roots, with whether it is in a `var` global, are taken
+from that (`loanRootsNote`), not from what `r` holds at the mark. A later pass of a loop that
+adds to it notes the roots of a loan already marked again, since the pass may find the loan
+frozen and mark it no more.
 
 A holder reaching its loan's source through the loan — `*b = 9`, `r.x` — uses
 the holder; it does not access the source.
@@ -2254,9 +2280,28 @@ given the unseen loan a virtual call's result has (below), under the trait. Noth
 through `opaq` or a lock. Past 200 deep or 100000 types the answer is yes. `flowGateReachesOwner`
 answers yes for every borrowed virtual reference, so such a function's caller is walked. A plain
 reference to an open trait calls no method (`fnCallLowerTraitMethod`), so its referent is walked
-as a struct is, field by field. Not followed: a downcast of the trait object in the callee, which
-can reach past a shared owner in the concrete value that no method or field of the trait hands
-out. Tests: `collection_flow_reshape_handed_trait`, `collection_reshape_handed_trait_success`.
+as a struct is, field by field. Tests: `collection_flow_reshape_handed_trait`,
+`collection_reshape_handed_trait_success`.
+
+**A downcast of a trait object** (`Loan.narrowed`, `Loan.hidden`, `pwHiddenLeaves`). A caller
+can't see what a downcast reaches, so the body is checked: a borrow that passed a shared owner
+from a narrowed trait object may not leave the function (returned, yielded, stored where it may
+outlive the function, or handed to a call that may store it there) unless the trait's methods or
+fields could give it (Error 1064). The marks:
+- The value a downcast gives (a `CastTag` from a virtual reference to a reference) holds its
+  loans marked with the trait (`loanNarrow`; a caller loan takes a second of the same part).
+  A borrow made through a variable holding one carries the mark.
+- A call's result from an argument that reaches a trait object is marked too where neither the
+  trait's signature nor the parameter's own type (outside trait objects, `pwShows`) names what
+  the result may point at (`pwTraitGivesAll`): the callee narrowed it, as `downcastRef` does.
+  A type the parameter shows is already judged by type at the caller, so it is left alone.
+- A marked borrow whose place dereferences an owner others may write through (`Place.ownwrite`:
+  `Rc[mut]`, with no borrowed reference read since but a `&uni`) is hidden. So is the reach loan
+  a call's result gets from a marked argument whose parameter type has a shared owner of its own
+  to pass (`helper(c)`).
+- Leaving: `pwTraitCouldGive` exempts what the trait's methods could hand out, or what its
+  fields reach in the same container.
+Tests: `collection_flow_downcast_leaves`, `collection_downcast_leaves_success`.
 
 **A result borrowed from behind a virtual call's receiver** (`pwReachShared`, argument 0 of a
 `FlagVDisp` call: a method called through a virtual reference, a closure behind `&<fn`, a method

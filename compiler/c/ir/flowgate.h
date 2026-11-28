@@ -202,4 +202,22 @@ static inline void flowGateStatic(FlowState *fstate, INode *lit, uint32_t i, INo
         flowGateStaticAsk(fstate, lit, i, val);
 }
 
+// Gate trigger: a call lent what an owning reference points at, beside a way to
+// write that owner. An argument that is a name or a number lends nothing here.
+static inline void flowGateLent(FlowState *fstate, FnCallNode *call) {
+    if ((fstate->gate & FlowGateShape) || call->args == NULL)
+        return;
+    INode **argsp;
+    uint32_t cnt;
+    for (nodesFor(call->args, cnt, argsp)) {
+        uint16_t tag = (*argsp)->tag;
+        if (tag == BorrowTag || tag == ArrayBorrowTag || tag == CastTag || tag == ArrIndexTag
+                || tag == FnCallTag || tag == TypeLitTag || tag == ArrayLitTag || tag == VTupleTag
+                || tag == NamedValTag) {
+            flowGateLentCall(fstate, call);
+            return;
+        }
+    }
+}
+
 #endif

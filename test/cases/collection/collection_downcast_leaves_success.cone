@@ -1,0 +1,133 @@
+// What stays accepted beside collection_flow_downcast_leaves: after a downcast, a borrow of
+// the concrete value's own storage may leave the function, as may what the library's
+// downcast lends; a view past a shared owner may be used and copied out before returning;
+// and what a trait's own field hands out may be returned.
+
+mod collection_downcast_leaves_success;
+
+import stdio use *;
+import collections use *;
+
+fn make(n: i32) List[i32] {
+  var l = List[i32]();
+  l.push(n);
+  l
+}
+
+trait Counter { pub fn count(self: &) i32; }
+
+struct Holder {
+  pub rc: Rc[mut, List[i32]];
+  pub n: i32;
+  pub own: List[i32];
+  pub fn count(self: &) i32 { return 1i32; }
+}
+
+fn ownField(h: &<Counter, zero: &i32) &i32 {
+  if let Holder(c) = h { return &c.n; }
+  return zero;
+}
+
+// A list the value owns alone is its own storage
+fn ownList(h: &<Counter, zero: &i32) &i32 {
+  if let Holder(c) = h { return &c.own[0usize]; }
+  return zero;
+}
+
+// The view past the 'Rc' ends before the return
+fn usedThenOwn(h: &<Counter, zero: &i32) &i32 {
+  if let Holder(c) = h {
+    let first = &(*c.rc)[0usize];
+    if *first > 0i32 { return &c.n; }
+  }
+  return zero;
+}
+
+fn copiedOut(h: &<Counter, out: &mut i32) {
+  if let Holder(c) = h { *out = (*c.rc)[0usize]; }
+}
+
+// The concrete value itself, and the handle in it: borrows of its own storage
+fn asHolder(h: &<Counter) Option[&Holder] {
+  if let Holder(c) = h { return Some[&Holder](c); }
+  None
+}
+
+fn handle(h: &<Counter, other: &Rc[mut, List[i32]]) &Rc[mut, List[i32]] {
+  if let Holder(c) = h { return &c.rc; }
+  return other;
+}
+
+// A trait whose field holds the list hands it out, so the caller sees it
+trait Fielded {
+  pub rc: Rc[mut, List[i32]];
+}
+
+struct InField is Fielded {
+  pub rc: Rc[mut, List[i32]];
+}
+
+fn fromField(h: &<Fielded, zero: &i32) &i32 {
+  if let InField(c) = h { return &(*c.rc)[0usize]; }
+  return zero;
+}
+
+// A trait whose method hands out such a view does too
+trait Firster { pub fn first(self: &) &i32; }
+
+struct Giver {
+  pub rc: Rc[mut, List[i32]];
+  pub fn first(self: &) &i32 { return &(*rc)[0usize]; }
+}
+
+fn fromMethod(h: &<Firster, zero: &i32) &i32 {
+  if let Giver(c) = h { return &(*c.rc)[0usize]; }
+  return zero;
+}
+
+// A method of a struct holding a trait object hands back its own list's handle: its type
+// shows it, so nothing was narrowed, and a view past the handle may leave
+struct Server {
+  pub cb: Uni[Counter];
+  pub conns: Rc[mut, List[i32]];
+  pub fn handle(self: &) &Rc[mut, List[i32]] { return &conns; }
+}
+
+fn throughServer(s: &Server) &i32 { return &(**s.handle())[0usize]; }
+
+struct Carried is Error, Sendable {
+  pub n: i32;
+  pub fn toText(self: &, out: &uni TextOut) { out <- "carried"; }
+}
+
+fn carriedField(e: &AnyError, zero: &i32) &i32 {
+  if let Some(c) = e.downcastRef[Carried]() { return &c.n; }
+  return zero;
+}
+
+fn main() {
+  let zero = 0i32;
+  let h = Holder(Rc[mut, List[i32]](make(7i32)), 3i32, make(4i32));
+  let r: &<Counter = &h;
+  print <- "ownField = ", *ownField(r, &zero), "\n";
+  print <- "ownList = ", *ownList(r, &zero), "\n";
+  print <- "usedThenOwn = ", *usedThenOwn(r, &zero), "\n";
+  var out = 0i32;
+  copiedOut(r, &mut out);
+  print <- "copiedOut = ", out, "\n";
+  if let Some(c) = asHolder(r) { print <- "asHolder = ", c.n, "\n"; }
+  let spare = Rc[mut, List[i32]](make(1i32));
+  let hr = handle(r, &spare);
+  print <- "handle = ", (**hr)[0usize], "\n";
+  let f = InField(Rc[mut, List[i32]](make(9i32)));
+  let fr: &<Fielded = &f;
+  print <- "fromField = ", *fromField(fr, &zero), "\n";
+  let g = Giver(Rc[mut, List[i32]](make(13i32)));
+  let gr: &<Firster = &g;
+  print <- "fromMethod = ", *fromMethod(gr, &zero), "\n";
+  let cb: Uni[Counter] = Uni[Holder](Holder(Rc[mut, List[i32]](make(1i32)), 1i32, make(1i32)));
+  let s = Server(cb, Rc[mut, List[i32]](make(15i32)));
+  print <- "throughServer = ", *throughServer(&s), "\n";
+  let e = AnyError.from(Carried(11i32));
+  print <- "carriedField = ", *carriedField(&e, &zero), "\n";
+}
