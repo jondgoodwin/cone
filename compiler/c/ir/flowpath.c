@@ -3707,8 +3707,10 @@ static void pwReachAnyOf(PwReach *r, INode *trait) {
 }
 
 // Could a value of 'type' be what a reference to 'trait' points at? It says it is one, or it
-// has a member of every name the trait asks a type for (a field, a method with no body), as a
-// type that never says so may still be made a virtual reference to the trait
+// has a member of every name the trait's vtable has a slot for, as a type that never says so
+// may still be made a virtual reference to the trait (no default applies to it). A trait whose
+// vtable is not yet made is asked of its fields and the methods with no body, which fewer
+// types lack
 static int pwMayBe(INode *type, INode *trait) {
     if (type->tag != StructTag)
         return 0;
@@ -3721,6 +3723,14 @@ static int pwMayBe(INode *type, INode *trait) {
         return 1;
     INode **nodesp;
     uint32_t cnt;
+    if (tr->vtable) {
+        for (nodesFor(tr->vtable->methfld, cnt, nodesp)) {
+            Name *name = (*nodesp)->tag == FnDclTag ? ((FnDclNode *)*nodesp)->namesym : ((FieldDclNode *)*nodesp)->namesym;
+            if (name && namespaceFind(&st->namespace, name) == NULL)
+                return 0;
+        }
+        return 1;
+    }
     for (nodelistFor(&tr->fields, cnt, nodesp)) {
         if (namespaceFind(&st->namespace, ((FieldDclNode *)*nodesp)->namesym) == NULL)
             return 0;

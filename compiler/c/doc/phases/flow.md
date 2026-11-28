@@ -2222,8 +2222,8 @@ the trait. So a result such as `&<Error`, which may point at a value of any type
 `Error`, is held against every store or call that could free a container its parameters reach.
 **A global is a holder of what the result points at only if its type could hold it**: where the
 result borrows a trait, a type in a global matches when it declares the trait or has a member of
-every name the trait asks for (a field, a method with no body: `pwMayBe`; a type may be made a
-virtual reference to a trait it never names), and what a global owns behind a virtual reference
+every name the trait's vtable has a slot for (`pwMayBe`; a type may be made a virtual reference to
+a trait it never names, and then takes none of its defaults), and what a global owns behind a virtual reference
 of its own matches whatever its trait. So a `var` global of `Option[Rc[mut, Tcb]]`, `Tcb` no
 `Error`, is nothing to `Error.report`. A global cannot be dismissed by who names it: the callee
 asked is code behind a virtual reference, which may name any. Tests:
