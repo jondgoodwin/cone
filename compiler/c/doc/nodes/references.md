@@ -119,12 +119,17 @@ a loop's breaks, an array literal's elements, a closure's returns),
 `refFindSuper`, which refuses different regions. With one permission, the
 pointees meet at a base trait (`structRefFindSuper`), and the result is a thin
 borrow of lifetime 0 with no name. With two permissions, `refPermJoin` joins
-them only if both are borrows and nothing else differs: the same pointee, the
-same virtual marks and bound, and neither a key. Owners that differ are not
-joined: a `uni` and a `mut` `Rc` coerced to `Rc[mut, T]` in the arms of an `if`
-is generated wrong, even where the type is declared. Two slices (`ArrayRefTag`) go to `refPermJoin`
+them only if they are of one region (two borrows, or two owners of one region
+ref) and nothing else differs: the same pointee, the same virtual marks and
+bound, and neither a key. Two slices (`ArrayRefTag`) go to `refPermJoin`
 alone, since slices of two element types have two strides. A raw pointer has no
 permission, so two different pointer types have nothing to join.
+
+An owner joined at another permission is coerced as where that type is written:
+the arm gets no node and keeps its own type, so whether it moves is asked of
+the arm and not of the value the arms make (`flowValueMoves`,
+[Flow](../phases/flow.md)). A `uni` owner is moved by the arm that gives it,
+and one that copies is counted.
 
 `refPermJoin` takes the permission from `permJoin`, which is the least of those
 `permMatches` converts both to, and checks that both types coerce to the

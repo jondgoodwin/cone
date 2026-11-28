@@ -1,0 +1,87 @@
+// Beside move_flow_compound, accepted: a right side that moves another value, one that
+// reads the target or borrows it, one that moves the target's variable and gives it a
+// new value before the result is stored, one that replaces it, and a move on a path that
+// returns. The same through a borrow a name holds.
+
+mod move_compound_success;
+
+import stdio use *;
+
+struct Item { pub a: Array[usize, 3]; }
+fn item(v: usize) Uni[Item] { Uni[Item](Item([v, v, v])) }
+
+struct Named { pub n: usize; pub u: Uni[Item]; }
+alias Pair = Array[Named, 2];
+fn named(v: usize) Named { Named(v, item(v)) }
+fn takeNamed(s: Named) usize { s.u.a[0usize] }
+fn peek(s: &Named) usize { s.u.a[0usize] }
+
+fn anotherMoved() {
+  var a: Pair = [named(10usize), named(11usize)];
+  var other = named(5usize);
+  a[0usize].n += takeNamed(other);
+  print <- a[0usize].n, "\n";
+}
+
+fn anotherMovedWhole() {
+  var k = 20usize;
+  var y = named(3usize);
+  k += takeNamed(y);
+  print <- k, "\n";
+}
+
+fn readsTarget() {
+  var s = named(30usize);
+  s.n += s.u.a[0usize];
+  print <- s.n, "\n";
+  s.n += peek(&s);
+  print <- s.n, "\n";
+}
+
+fn assignedAgain() {
+  var s = named(40usize);
+  s.n += {let t = takeNamed(s); s = named(41usize); t};
+  print <- s.n, " ", s.u.a[0usize], "\n";
+}
+
+fn replaced() {
+  var s = named(50usize);
+  s.n += {s = named(51usize); 1usize};
+  print <- s.n, " ", s.u.a[0usize], "\n";
+}
+
+fn leaves(c: bool) usize {
+  var s = named(60usize);
+  s.n += if c {return takeNamed(s);} else {1usize};
+  s.n
+}
+
+fn throughBorrow() {
+  var s = named(70usize);
+  var other = named(7usize);
+  let r = &mut s;
+  r.n += takeNamed(other);
+  r.n += r.u.a[0usize];
+  print <- s.n, "\n";
+}
+
+fn movedAfter() {
+  var s = named(80usize);
+  let r = &mut s.n;
+  *r += 1usize;
+  print <- takeNamed(s), "\n";
+  var t = named(90usize);
+  t.n += 1usize;
+  print <- t.n, " ", takeNamed(t), "\n";
+}
+
+fn main() {
+  anotherMoved();
+  anotherMovedWhole();
+  readsTarget();
+  assignedAgain();
+  replaced();
+  print <- leaves(true), " ", leaves(false), "\n";
+  throughBorrow();
+  movedAfter();
+}
