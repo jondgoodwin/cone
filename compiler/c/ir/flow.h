@@ -340,13 +340,16 @@ INode *flowLockGive(VarDclNode *guard, INode *at);
 // hollow. 'kept' says it is never finalized by its statement: a value moved
 // out of it by value left it with a hole, as a local array is left when an
 // element moves out of it, or an extending borrow made it a hidden local of
-// its block (varDclExtend).
+// its block (varDclExtend). 'takes' says its value was moved or copied into it
+// from a source (a branch's or a block's value, a tuple literal's elements), so
+// the loan walk walks that value as a move.
 typedef struct {
     IExpNodeHdr;
     INode *exp;
     Nodes *moved;
     VarDclNode *walkvar;
     uint8_t kept;
+    uint8_t takes;
 } TempNode;
 
 // Wrap the expression at 'nodep', whose value is read or thrown away here, in

@@ -1,0 +1,253 @@
+// The value of an 'if', a 'match', a loop or a block read where it stands is a
+// temporary, and the owner the arm taken hands it moves into it, as into a
+// variable: it is finalized at the end of the statement, and the owner the other
+// arm would have given, moved on every path as far as its use goes, at the end of
+// its scope (the 'after' line falls between the two). Each value is finalized
+// once, whichever arm ran. An owner that copies ('Rc[mut, T]') is counted into
+// the temporary instead, and its source stays usable.
+mod move_temp_branch;
+import stdio use *;
+
+struct Noisy {
+  pub n: i32;
+  pub fn get(self: &) i32 { self.n }
+  fn final(self: &uni) { printStr("final "); printInt(self.n); printStr("\n"); }
+}
+trait Named { pub fn id(self: &) i32; }
+struct Tag is Named {
+  pub n: i32;
+  pub fn id(self: &) i32 { self.n }
+  fn final(self: &uni) { printStr("final tag "); printInt(self.n); printStr("\n"); }
+}
+
+fn show(n: i32) { printInt(n); printStr("\n"); }
+fn after() { printStr("after\n"); }
+fn label(s: &str, c: bool) { printStr(s); printStr(if c {" t\n"} else {" f\n"}); }
+
+fn field(c: bool) {
+  let a = Rc[Noisy](Noisy(1));
+  let b = Rc[Noisy](Noisy(10));
+  show((if c {a} else {b}).n);
+  after();
+}
+
+fn method(c: bool) {
+  let a = Rc[Noisy](Noisy(1));
+  let b = Rc[Noisy](Noisy(10));
+  show((if c {a} else {b}).get());
+  after();
+}
+
+fn binop(c: bool) {
+  let a = Rc[Noisy](Noisy(1));
+  let b = Rc[Noisy](Noisy(10));
+  show((if c {a} else {b}).n + 1);
+  after();
+}
+
+fn matchArm(c: bool) {
+  let a = Rc[Noisy](Noisy(1));
+  let b = Rc[Noisy](Noisy(10));
+  show((match c { case true {a} else {b} }).n);
+  after();
+}
+
+fn loopValue(c: bool) {
+  let a = Rc[Noisy](Noisy(1));
+  let b = Rc[Noisy](Noisy(10));
+  show((while { if c { break a; } if !c { break b; } }).n);
+  after();
+}
+
+fn blockValue(c: bool) {
+  let a = Rc[Noisy](Noisy(1));
+  show({ show(0); a }.n);
+  after();
+}
+
+fn nested(c: bool) {
+  let a = Rc[Noisy](Noisy(1));
+  let b = Rc[Noisy](Noisy(10));
+  let d = Rc[Noisy](Noisy(100));
+  show((if c { {show(0); a} } else if !c {b} else {d}).n);
+  after();
+}
+
+fn soleOwner(c: bool) {
+  let a = Uni[Noisy](Noisy(1));
+  let b = Uni[Noisy](Noisy(10));
+  show((if c {a} else {b}).n);
+  after();
+}
+
+fn virtualOwner(c: bool) {
+  let a: Uni[Named] = Uni[Tag](Tag(1));
+  let b: Uni[Named] = Uni[Tag](Tag(10));
+  show((if c {a} else {b}).id());
+  after();
+}
+
+fn byValue(c: bool) {
+  let a = Noisy(1);
+  let b = Noisy(10);
+  show((if c {a} else {b}).n);
+  after();
+}
+
+fn freshArm(c: bool) {
+  let a = Rc[Noisy](Noisy(1));
+  show((if c {a} else {Rc[Noisy](Noisy(10))}).n);
+  after();
+}
+
+fn matchScrutinee(c: bool) {
+  let a = Rc[Noisy](Noisy(1));
+  let b = Rc[Noisy](Noisy(10));
+  match (if c {a} else {b}).n {
+    case 1 { show(1); }
+    else { show(10); }
+  };
+  after();
+}
+
+fn rightOperand(c: bool) {
+  let a = Rc[Noisy](Noisy(1));
+  let b = Rc[Noisy](Noisy(10));
+  if c && (if c {a} else {b}).n > 0 { show(1); }
+  after();
+}
+
+fn condition(c: bool) {
+  let a = Rc[Noisy](Noisy(1));
+  let b = Rc[Noisy](Noisy(10));
+  if (if c {a} else {b}).n == 1 { show(1); }
+  after();
+}
+
+fn same(c: bool) {
+  let a = Rc[Noisy](Noisy(1));
+  let b = Rc[Noisy](Noisy(10));
+  let d = Rc[Noisy](Noisy(100));
+  if (if c {a} else {b}) === d { show(0); }
+  after();
+}
+
+fn compound(c: bool) {
+  let a = Rc[Noisy](Noisy(1));
+  let b = Rc[Noisy](Noisy(10));
+  (if c {a} else {b}).n += 5;
+  after();
+}
+
+fn swapped(c: bool) {
+  let a = Rc[Noisy](Noisy(1));
+  let b = Rc[Noisy](Noisy(10));
+  var v = 3;
+  (if c {a} else {b}).n <-> v;
+  show(v);
+  after();
+}
+
+// The value moves on out of the temporary, which gives its memory back
+fn movedOut(c: bool) {
+  let a = Rc[Noisy](Noisy(1));
+  let b = Rc[Noisy](Noisy(10));
+  let v = *(if c {a} else {b});
+  show(v.n);
+  after();
+}
+
+// A tuple literal read where it stands holds each element as a variable would
+fn tupleElem(c: bool) {
+  let a = Rc[Noisy](Noisy(1));
+  show((a, 2).0.n);
+  after();
+}
+
+fn tupleCopy(c: bool) {
+  let a = Rc[mut, Noisy](Noisy(1));
+  show((a, 2).0.n);
+  show(a.n);
+  after();
+}
+
+fn copyArms(c: bool) {
+  let a = Rc[mut, Noisy](Noisy(1));
+  let b = Rc[mut, Noisy](Noisy(10));
+  show((if c {a} else {b}).get());
+  show({a}.n);
+  show(a.n + b.n);
+  after();
+}
+
+// A borrow an initializer takes through the value keeps it in a hidden local to
+// the end of the block, so the owner outlives the 'after' line
+fn extended(c: bool) {
+  let a = Rc[Noisy](Noisy(1));
+  let b = Rc[Noisy](Noisy(10));
+  let x = &*(if c {a} else {b});
+  show(x.n);
+  after();
+}
+
+fn read(r: &Noisy) { show(r.n); }
+
+// Lent to a call as a borrowed reference, each arm borrows its own owner, which
+// stays where it is
+fn lent(c: bool) {
+  let a = Rc[Noisy](Noisy(1));
+  let b = Rc[Noisy](Noisy(10));
+  read(if c {a} else {b});
+  show(a.n + b.n);
+  after();
+}
+
+fn discarded(c: bool) {
+  let a = Rc[Noisy](Noisy(1));
+  let b = Rc[Noisy](Noisy(10));
+  _ = if c {a} else {b};
+  after();
+}
+
+// A value written to where it stands is no temporary: the store goes through the
+// owner the arm gave, which stays its source's
+fn written(c: bool) {
+  let a = Rc[Noisy](Noisy(1));
+  let b = Rc[Noisy](Noisy(10));
+  (if c {a} else {b}).n = 5;
+  show(a.n + b.n);
+  after();
+}
+
+fn run(c: bool) {
+  label("field", c); field(c);
+  label("method", c); method(c);
+  label("binop", c); binop(c);
+  label("matchArm", c); matchArm(c);
+  label("loopValue", c); loopValue(c);
+  label("blockValue", c); blockValue(c);
+  label("nested", c); nested(c);
+  label("soleOwner", c); soleOwner(c);
+  label("virtualOwner", c); virtualOwner(c);
+  label("byValue", c); byValue(c);
+  label("freshArm", c); freshArm(c);
+  label("matchScrutinee", c); matchScrutinee(c);
+  label("rightOperand", c); rightOperand(c);
+  label("condition", c); condition(c);
+  label("same", c); same(c);
+  label("compound", c); compound(c);
+  label("swapped", c); swapped(c);
+  label("movedOut", c); movedOut(c);
+  label("tupleElem", c); tupleElem(c);
+  label("tupleCopy", c); tupleCopy(c);
+  label("copyArms", c); copyArms(c);
+  label("extended", c); extended(c);
+  label("lent", c); lent(c);
+  label("discarded", c); discarded(c);
+  label("written", c); written(c);
+}
+
+fn main() {
+  run(true);
+  run(false);
+}
