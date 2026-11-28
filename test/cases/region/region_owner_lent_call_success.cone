@@ -1,0 +1,93 @@
+mod region_owner_lent_call_success;
+
+// The sound half of region_flow_owner_lent_call: calls lent what an owner points
+// at that stay accepted
+
+import stdio use *;
+import sync use Arc, Mutex;
+
+// The owner is a local, which nothing but a borrow of the local could store over:
+// a callee that stores over another owner of the type frees nothing the local holds
+struct Node {
+  pub v: i64;
+  pub next: Option[Rc[mut, Node]];
+  pub fn append(self: &mut, n: i64) { next = Some(Rc[mut, Node](n, None[Rc[mut, Node]])); v += 1; }
+}
+fn cutNext(n: &mut Node) { n.next = None[Rc[mut, Node]]; n.v += 1; }
+
+fn localOwner() {
+  var head = Rc[mut, Node](1, None[Rc[mut, Node]]);
+  head.append(5);
+  head.next = Some(head);
+  cutNext(&mut *head);
+  print <- "local ", head.v, "\n";
+}
+
+// A unique owner whose value leads only to owners below it
+struct Chain {
+  pub v: i64;
+  pub next: Option[Uni[Chain]];
+}
+fn addAfter(c: &mut Chain, n: i64) { c.next = Some(Uni[Chain](n, None[Uni[Chain]])); c.v += 1; }
+fn extend(h: &mut Uni[Chain]) { addAfter(&mut **h, 7); }
+
+fn uniqueBelow() {
+  var h = Uni[Chain](1, None[Uni[Chain]]);
+  extend(&mut h);
+  print <- "chain ", h.v, "\n";
+}
+
+// A lock owner: the borrow through the lock keeps the value, whatever the holder
+// is given meanwhile
+struct Count { pub n: i64; }
+alias Counter = Arc[Mutex, Count];
+struct Holder { pub cur: Counter; }
+fn replace(c: &mut Count, h: &mut Holder) { h.cur = Counter(100); c.n += 1; print <- "locked ", c.n, "\n"; }
+fn through(a: &mut Holder, b: &mut Holder) { replace(&mut *a.cur, b); }
+
+fn lockOwner() {
+  var h = Holder(Counter(7));
+  through(&mut h, &mut h);
+  print <- "after ", (&*h.cur).n, "\n";
+}
+
+// A callee handed a way to the owner that stores over nothing
+struct Cell { pub v: i64; }
+struct Rack { pub cur: Rc[mut, Rc[mut, Cell]]; }
+fn add(c: &mut Cell, r: &mut Rack) { c.v += r.cur.v; }
+fn same(c: &mut Cell) &mut Cell { c }
+
+fn readsOnly() {
+  let o = Rc[mut, Rc[mut, Cell]](Rc[mut, Cell](7));
+  var r = Rack(o);
+  add(&mut **o, &mut r);
+  add(same(&mut **o), &mut r);
+  print <- "doubled ", o.v, "\n";
+}
+
+// A call through a '+ ShapeKeeping' trait object stores over no owner its caller
+// reaches
+trait Worker {
+  pub fn work(self: &mut, s: &mut Shop);
+}
+struct Clerk {
+  pub count: i64;
+  pub fn work(self: &mut, s: &mut Shop) { count += 1; s.n += count; }
+}
+struct Desk { pub worker: Rc[mut, Worker + ShapeKeeping]; }
+struct Shop { pub n: i64; pub cur: Rc[mut, Desk]; }
+
+fn keepsShape() {
+  let d = Rc[mut, Desk](Rc[mut, Clerk](7));
+  var s = Shop(0, d);
+  d.worker.work(&mut s);
+  print <- "kept ", s.n, "\n";
+}
+
+fn main() {
+  localOwner();
+  uniqueBelow();
+  lockOwner();
+  readsOnly();
+  keepsShape();
+}
