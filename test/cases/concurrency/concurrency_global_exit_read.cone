@@ -1,0 +1,49 @@
+// A global outlives main: a behaviour still running when main returns reads a
+// 'let' global List. A global is never finalized, so the List is still there.
+// The sleep makes the order certain, and the List is large so that a freed one
+// would fault when read.
+mod concurrency_global_exit_read;
+
+import stdio use *;
+import collections use *;
+import actors;
+import thread;
+import time use Duration;
+
+const items = 4000000usize;
+
+fn makeTable() List[u64] {
+  var l = List[u64]();
+  var i = 0usize;
+  while i < items {
+    l.push(7u64);
+    i = i + 1usize;
+  }
+  l
+}
+
+let table = makeTable();
+
+actor Reader {
+  n: u64 = 0u64;
+
+  pub async fn read(self) {
+    thread.sleep(Duration.fromMillis(300i64));
+    printStr("behaviour: reading the table\n");
+    var sum = 0u64;
+    var i = 0usize;
+    while i < items {
+      sum = sum + table[i];
+      i = i + 1usize;
+    }
+    printStr("behaviour: sum (expected 28000000) ");
+    print <- sum;
+    printStr("\n");
+  }
+}
+
+fn main() {
+  let r = Reader();
+  r.read();
+  printStr("main returns\n");
+}

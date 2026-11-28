@@ -2633,6 +2633,63 @@ static int pwStoredOnlyBy(INode *val, INode *recv) {
 
 static void pwPartsStore(INode *node, INode **parts, PathSet **argsets, uint32_t nargs, FnSigNode *sig,
     FnDclNode *arenameth, int arenacall, Place *recvpl, int how);
+static PathSet *pwReachShared(FnCallNode *call, uint32_t argi, INode *parmtype, INode *wanted, PathSet *carried,
+    int covered, uint32_t store, PathSet *result);
+
+// What a call stores that is borrowed through a shared owner, kept until the call has been
+// asked what it may reshape: stored as returned, what it hands out is not asked of the call
+// itself
+typedef struct PwStoreMark {
+    PathSet *holds;
+    PathSet *refholds;      // the argument's own loans, where the store's place is not found
+    int beyond;
+    int found;              // else the place's variable, and how far past it (pwStoreInto)
+    uint32_t var;
+    int from;
+    int to;
+} PwStoreMark;
+static PwStoreMark *pwStoreMarks = NULL;
+static uint32_t npwStoreMarks = 0;
+static uint32_t pwStoreMarksCap = 0;
+
+static void pwStoreMarkAdd(PwStoreMark mark) {
+    if (npwStoreMarks == pwStoreMarksCap)
+        pwStoreMarks = (PwStoreMark *)pathGrow(pwStoreMarks, &pwStoreMarksCap, sizeof(PwStoreMark));
+    pwStoreMarks[npwStoreMarks++] = mark;
+}
+
+static void pwStoreMarksApply() {
+    for (uint32_t i = 0; i < npwStoreMarks; ++i) {
+        PwStoreMark *mark = &pwStoreMarks[i];
+        if (mark->found)
+            pwStoreInto(mark->var, mark->from, mark->to, mark->holds);
+        else
+            pwStoreLands(mark->refholds, mark->beyond, mark->holds, 0);
+    }
+    npwStoreMarks = 0;
+}
+
+// What the argument at 'i' reaches past a shared owner, which a store into the argument at
+// 'at' may hand out: marked as what the result may borrow is (pwReachShared), added to
+// 'reached'. 'wanted' is what the place stored into holds, by the signature 'callsig', and
+// 'into' what the argument at 'i' carries there
+static PathSet *pwStoreReach(FnCallNode *call, uint32_t at, uint32_t i, FnSigNode *callsig, INode *wanted,
+        PathSet *into, PathSet *reached) {
+    if (i >= callsig->parms->used)
+        return reached;
+    // An arena's method lends what never moves
+    if (i == 0 && pwMethod(call)) {
+        INode *recvtype = iexpGetTypeDcl(nodesGet(call->args, 0));
+        INode *container = recvtype->tag == RefTag ? itypeGetTypeDcl(((RefNode *)recvtype)->vtexp) : NULL;
+        uint8_t lends = container && container->tag == StructTag ? ((StructNode *)container)->lends : LendsLoaned;
+        INode *stored = itypeGetTypeDcl(wanted);
+        if (lends == LendsNoLoanMut || (lends == LendsNoLoanRead && stored->tag == RefTag
+                && !(permGetFlags(((RefNode *)stored)->perm) & MayWrite)))
+            return reached;
+    }
+    // Nothing is covered: no lending of the argument marks it for a store
+    return pwReachShared(call, i, iexpGetTypeDcl(nodesGet(callsig->parms, i)), wanted, into, 0, at + 1, reached);
+}
 
 static void pwCallStores(FnCallNode *call, PathSet **argsets, Place *recvpl) {
     if (call->args == NULL || call->args->used < 2)
@@ -2731,6 +2788,21 @@ static void pwPartsStore(INode *node, INode **parts, PathSet **argsets, uint32_t
         // (loanStoredApart)
         int globalonly = isref && depth == 1 && !arenaplace && !arenaparm && !itypeCarriesEndingBorrow(storedin);
         PathSet *others = NULL;
+        // What is borrowed through a shared owner and may be stored here (pwStoreReach),
+        // asked by what the place holds, by the parameter's type
+        PathSet *reached = NULL;
+        FnSigNode *callsig = NULL;
+        INode *wanted = NULL;
+        if (how == LoanEscapeCall && !arenaplace) {
+            callsig = (FnSigNode *)iexpGetDerefTypeDcl(((FnCallNode *)node)->objfn);
+            if (callsig->tag != FnSigTag)
+                callsig = NULL;
+            else {
+                wanted = at < callsig->parms->used ? iexpGetTypeDcl(nodesGet(callsig->parms, at)) : argtype;
+                if (pwIsBorrowed(wanted))
+                    wanted = ((RefNode *)wanted)->vtexp;
+            }
+        }
         // A writable borrow of an arena among the arguments is a place the
         // callee may store anything into (it holds borrows through raw memory,
         // and its own parameter is not a target the walk asks, Bug 51), so no
@@ -2757,6 +2829,9 @@ static void pwPartsStore(INode *node, INode **parts, PathSet **argsets, uint32_t
             if (arenaparm && i < sig->parms->used && lifeHolds(((IExpNode *)nodesGet(sig->parms, i))->vtype, NULL))
                 continue;
             PathSet *carried = argsets[i];
+            if (callsig)
+                reached = pwStoreReach((FnCallNode *)node, at, i, callsig, wanted,
+                    pwArgCarriesTo(sig, i, pointee, carried, globalonly), reached);
             // A borrow written as the argument is stored itself only where
             // the place's type can hold a borrow of something reachable inside
             // what it borrows (itypeMayHoldBorrowInside: the type, its fields
@@ -2779,12 +2854,13 @@ static void pwPartsStore(INode *node, INode **parts, PathSet **argsets, uint32_t
             else
                 others = pathSetUnion(others, pwArgCarriesTo(sig, i, pointee, carried, globalonly));
         }
-        if (others == NULL)
+        if (others == NULL && reached == NULL)
             continue;
         // The callee may store what it reads through an argument, so which
         // of the loans its borrows point at is not known: every one is both
         // near and far
         others = pathSetUntagged(pathSetUnsure(others));
+        reached = pathSetUntagged(pathSetUnsure(reached));
         uint32_t local = loanLocalIn(others);
         Place target;
         int found = 1;
@@ -2818,6 +2894,8 @@ static void pwPartsStore(INode *node, INode **parts, PathSet **argsets, uint32_t
             else
                 pwStoreApart(node, argsets[at], beyond, 0, others, how, 0, 0);
             pwStoreLands(argsets[at], beyond, others, 0);
+            if (reached)
+                pwStoreMarkAdd((PwStoreMark){ reached, argsets[at], beyond, 0, 0, 0, 0 });
             continue;
         }
         // The nearest place it may land in is the target, where a reference
@@ -2854,6 +2932,8 @@ static void pwPartsStore(INode *node, INode **parts, PathSet **argsets, uint32_t
                     pwByParm(pathVars[target.var].var), isref && depth == 1 && !itypeDropReadsBorrow(storedin));
         }
         pwStoreInto(target.var, from, to > 2 ? 2 : to, others);
+        if (reached)
+            pwStoreMarkAdd((PwStoreMark){ reached, NULL, 0, 1, target.var, from, to > 2 ? 2 : to });
     }
 }
 
@@ -4276,9 +4356,13 @@ static uint32_t pwUnseenConts(FnCallNode *call, PwUnseen *unseen, INode ***conts
     return r.nconts;
 }
 
-// A loan for what a call's result may borrow from the argument at 'argi', marked for 'cont'
-static uint32_t pwReachLoan(FnCallNode *call, uint32_t argi, INode *cont, uint32_t base, PathSet **result) {
-    uint32_t id = loanMakeReach((INode *)nodesGet(call->args, argi), pwReachContKey(cont), base);
+// A loan for what a call's result may borrow from the argument at 'argi', marked for 'cont'.
+// 'store' is 0 for the result, else one past the argument stored into: each has loans of its
+// own, since what each hands out may point at differs (PwUnseen)
+static uint32_t pwReachLoan(FnCallNode *call, uint32_t argi, INode *cont, uint32_t base, uint32_t store,
+        PathSet **result) {
+    uint32_t id = loanMakeReach((INode *)nodesGet(call->args, argi),
+        pwReachContKey(cont) | ((store < 63 ? store : 63) << 22), base);
     if (id == 0)
         return 0;
     if (isNameUseNode(call->objfn) && ((NameUseNode *)call->objfn)->dclnode
@@ -4286,7 +4370,7 @@ static uint32_t pwReachLoan(FnCallNode *call, uint32_t argi, INode *cont, uint32
         loanReturnedBy(id, ((NameUseNode *)call->objfn)->namesym);
     loanShapeMark(id, cont);
     *result = pathSetAdd(*result, id);
-    if (pwOwnCnt < sizeof(pwOwnLoans) / sizeof(pwOwnLoans[0]))
+    if (store == 0 && pwOwnCnt < sizeof(pwOwnLoans) / sizeof(pwOwnLoans[0]))
         pwOwnLoans[pwOwnCnt++] = id;
     return id;
 }
@@ -4294,9 +4378,11 @@ static uint32_t pwReachLoan(FnCallNode *call, uint32_t argi, INode *cont, uint32
 // Mark what a call's result may borrow through a shared owner from the argument at 'argi',
 // which carries 'carried' into it. 'covered' says the lending of this argument already marks
 // the referent's own type where it should (a receiver, a reference lent as pwLentArg does).
-// Returns the loans made, added to 'result'
-static PathSet *pwReachShared(FnCallNode *call, uint32_t argi, INode *parmtype, PathSet *carried, int covered,
-        PathSet *result) {
+// A store through an argument hands out as the result does (pwStoreReach): 'wanted' is the
+// type handed out, the result's or what the place stored into holds, and 'store' says which
+// (pwReachLoan). Returns the loans made, added to 'result'
+static PathSet *pwReachShared(FnCallNode *call, uint32_t argi, INode *parmtype, INode *wanted, PathSet *carried,
+        int covered, uint32_t store, PathSet *result) {
     INode *ptype = itypeGetTypeDcl(parmtype);
     if (carried == NULL || ptype == NULL)
         return result;
@@ -4316,8 +4402,8 @@ static PathSet *pwReachShared(FnCallNode *call, uint32_t argi, INode *parmtype, 
         base = loanOf(carried->ids[0]);
     PwReach r;
     memset(&r, 0, sizeof(r));
-    pwReachTargets(&r, ((IExpNode *)call)->vtype, 0);
-    // A result naming no borrowed type hands back no view of anything
+    pwReachTargets(&r, wanted, 0);
+    // A type naming no borrowed type hands back no view of anything
     if (!r.any && r.ntargets == 0)
         return result;
     INode *referent = NULL;
@@ -4333,7 +4419,7 @@ static PathSet *pwReachShared(FnCallNode *call, uint32_t argi, INode *parmtype, 
         INode *cont = pwReachConts[k];
         if (covered && cont == referent)
             continue;
-        if (pwReachLoan(call, argi, cont, base, &result) == 0)
+        if (pwReachLoan(call, argi, cont, base, store, &result) == 0)
             break;
     }
     // A trait object, what is behind which is not known: a virtual call's receiver, whose
@@ -4342,7 +4428,7 @@ static PathSet *pwReachShared(FnCallNode *call, uint32_t argi, INode *parmtype, 
     INode *self = argi == 0 && (call->flags & FlagVDisp) ? iexpGetTypeDcl(nodesGet(call->args, 0)) : NULL;
     INode *behind = self && self->tag == VirtRefTag ? itypeGetTypeDcl(((RefNode *)self)->vtexp) : r.handed;
     if (behind) {
-        uint32_t id = pwReachLoan(call, argi, behind, base, &result);
+        uint32_t id = pwReachLoan(call, argi, behind, base, store, &result);
         if (id && loanUnseen(id) == NULL) {
             PwUnseen *unseen = (PwUnseen *)memAllocBlk(sizeof(PwUnseen));
             memcpy(unseen->targets, r.targets, sizeof(unseen->targets));
@@ -4477,6 +4563,7 @@ static PathSet *pwCall(FnCallNode *call) {
         pwCallMoves(call, sig, recvloan ? &recvpl : NULL);
         if (loanShapeCount())
             pwShapeCall(call, meth, recvloan ? &recvpl : NULL, argsets, nargs, recvloan, fnholds);
+        pwStoreMarksApply();
     }
     if (!carries)
         return NULL;
@@ -4555,7 +4642,8 @@ static PathSet *pwCall(FnCallNode *call) {
             int covered = (meth && i == 0 && recvown) || (i < 8 && lentloan[i] && lentcnt[i]);
             PathSet *into = pwArgCarriesTo(sig, i, sig ? sig->rettype : NULL,
                 meth && i == 0 ? recvholds : argsets[i], globalonly);
-            result = pwReachShared(call, i, iexpGetTypeDcl(nodesGet(calleesig->parms, i)), into, covered, result);
+            result = pwReachShared(call, i, iexpGetTypeDcl(nodesGet(calleesig->parms, i)),
+                ((IExpNode *)call)->vtype, into, covered, 0, result);
         }
     }
     // What the result's borrows point at may be anything its arguments reach

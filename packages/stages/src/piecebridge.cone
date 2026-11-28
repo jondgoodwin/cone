@@ -1,0 +1,208 @@
+// ======== Bridges between the chunk stages and the stream core ========
+//
+// A bridge lets a package move to the stream core one at a time. IT IS A HOP, AND TEMPORARY: each piece is
+// handled by one more actor than it would be, and the bridges go when the old traits do.
+//
+//   ChunkBridge   is a ChunkSink: an old producer sends it chunks, and it sends them on to a PieceSink.
+//                   let src = SocketSource(ChunkBridge(StreamTo[IoBuf].at(newSink, 1u64)));
+//   PieceBridge   is a PieceSink: a new producer sends it pieces, and it sends them on to an old ChunkSink,
+//                 being that sink's ChunkSource.
+//                   let bridge = PieceBridge(oldSink);
+//                   producer.run(..., StreamTo[IoBuf].at(bridge, 1u64));
+//
+// Each bridge carries one stream, with the one end, and a stop each way: a new receiver's Stop becomes the old
+// source's 'stop(why)', and an old sink's 'stop(why)' becomes Stop answers to the new producer.
+//
+// The run-ahead on the old side is the old source's window (ChunkBridge) or, towards an old sink, the new
+// producer's (PieceBridge answers a piece when the sink gives its buffer back).
+
+// An old producer's chunks go on to a PieceSink: the buffer comes back to the old source when the new
+// receiver answers
+pub actor ChunkBridge is ChunkSink {
+  to: StreamTo[IoBuf];
+  up: Option[ChunkSource];
+  flying: usize;                // pieces sent and not answered
+  ending: Option[Ending];       // the end, held until the answers are in
+  stopped: bool;                // the receiver said Stop, or the group was cancelled
+  upEnded: bool;                // the old source's end has arrived
+
+  pub fn init(self: &new, to: StreamTo[IoBuf]) {
+    *self = Self(to: to, up: None[ChunkSource], flying: 0usize, ending: None[Ending], stopped: false,
+      upEnded: false);
+  }
+
+  pub async fn attach(self, source: ChunkSource) {
+    up = Some[ChunkSource](source);
+  }
+
+  pub async fn accept(self, c: IoBuf) {
+    if !stopped && actors.isCancelled() {
+      stopped = true;
+      ending = Some[Ending](Ending.Failed(AnyError.msg("streams: cancelled")));
+    }
+    if stopped {
+      handBack(&up, c);
+      self.settle();
+      return;
+    }
+    // the old source's window counts the buffer's capacity: what goes back must have it
+    let cap = c.capacity();
+    flying = flying + 1usize;
+    let a = await to.sink.piece(to.tag, c);
+    flying = flying - 1usize;
+    var back = None[IoBuf];
+    match a {
+      case is More {}
+      case let MoreWith(b) {
+        if b.capacity() == cap {
+          var x = b;
+          x.clear();
+          back = Some[IoBuf](x);
+        }
+      }
+      case let Stop(why) {
+        if !stopped {
+          stopped = true;
+          match &up {
+            case let &Some(u) { u.stop(why); }
+            case is None {}
+          }
+        }
+      }
+    }
+    match back {
+      case let Some(x) { handBack(&up, x); }
+      case is None { handBack(&up, IoBuf(cap)); }
+    }
+    self.settle();
+  }
+
+  pub async fn end(self, how: Ending) {
+    upEnded = true;
+    if ending is None && !to.ended() { ending = Some[Ending](how); }
+    self.settle();
+  }
+
+  // The one end, after every answer. The old source is let go once it has sent its own end and every buffer
+  // is back: until then a chunk still in flight is given back to it
+  fn settle(self: &mut) {
+    if flying > 0usize { return; }
+    var how = None[Ending];
+    how <-> ending;
+    match how {
+      case let Some(h) { to.end(h); }
+      case is None {}
+    }
+    if upEnded { up = None[ChunkSource]; }
+  }
+}
+
+// A new producer's pieces go on to an old ChunkSink: each is answered when the sink gives a buffer back
+pub actor PieceBridge is PieceSink[IoBuf], ChunkSource {
+  down: Option[ChunkSink];      // let go when the end is sent (the ChunkSink contract)
+  home: Deque[IoBuf];           // buffers given back that no piece is waiting for
+  waiting: Deque[actors.ReplyOf[PieceAck[IoBuf]]];
+  why: Option[Ending];          // the old sink said stop, or the group was cancelled
+  feed: Option[CancelGroup];    // of the stream feeding us, cancelled when we stop
+
+  // 'group', optional, is the cancel group of the stream feeding the bridge: cancelled when the old sink says
+  // stop or the bridge's group is cancelled (piece.cone, HEARING A STOP)
+  pub fn init(self: &new, down: ChunkSink, group: Option[CancelGroup] = None[CancelGroup]) {
+    *self = Self(down: Some[ChunkSink](down), home: Deque[IoBuf](),
+      waiting: Deque[actors.ReplyOf[PieceAck[IoBuf]]](), why: None[Ending], feed: group);
+    down.attach(selfactor);
+  }
+
+  pub async fn piece(self, tag: u64, c: IoBuf) PieceAck[IoBuf] {
+    self.cancelCheck();
+    match &why {
+      case let &Some(w) { return Stop[IoBuf](reasonCopy(w)); }
+      case is None {}
+    }
+    match &down {
+      case let &Some(k) { k.accept(c); }
+      case is None {
+        return Stop[IoBuf](Ending.Failed(AnyError.msg("streams: the stream has ended")));
+      }
+    }
+    let me = selfactor;
+    let a = await actors.Awaitable[PieceAck[IoBuf]].make(fn(rp: actors.ReplyOf[PieceAck[IoBuf]]) [me] {
+      me.waitHome(rp);
+    });
+    a
+  }
+
+  // The envelope of a piece waiting for a buffer
+  async fn waitHome(self, rp: actors.ReplyOf[PieceAck[IoBuf]]) {
+    match &why {
+      case let &Some(w) { rp.answer(Stop[IoBuf](reasonCopy(w))); return; }
+      case is None {}
+    }
+    match home.popFront() {
+      case let Some(b) { rp.answer(MoreWith[IoBuf](b)); }
+      case is None { waiting.push(rp); }
+    }
+  }
+
+  pub async fn giveBack(self, b: IoBuf) {
+    self.cancelCheck();
+    var x = b;
+    x.clear();
+    match &why {
+      case let &Some(w) { return; }
+      case is None {}
+    }
+    match waiting.popFront() {
+      case let Some(rp) { rp.answer(MoreWith[IoBuf](x)); }
+      case is None { home.push(x); }
+    }
+  }
+
+  // The old sink wants no more: it gets its one end with the reason, and every piece waiting, and every
+  // later one, is answered Stop
+  pub async fn stop(self, reason: Ending) {
+    if why is Some || down is None { return; }
+    why = Some[Ending](reasonCopy(&reason));
+    cancelFeed(&feed);
+    self.endDown(reason);
+    self.stopWaiting();
+  }
+
+  pub async fn end(self, tag: u64, how: Ending) {
+    self.cancelCheck();
+    self.endDown(how);
+  }
+
+  fn cancelCheck(self: &mut) {
+    if why is Some || down is None || !actors.isCancelled() { return; }
+    why = Some[Ending](Ending.Failed(AnyError.msg("streams: cancelled")));
+    cancelFeed(&feed);
+    self.endDown(Ending.Failed(AnyError.msg("streams: cancelled")));
+    self.stopWaiting();
+  }
+
+  // The one end downstream; the handle goes with it
+  fn endDown(self: &mut, how: Ending) {
+    var k = None[ChunkSink];
+    k <-> down;
+    match k {
+      case let Some(s) { s.end(how); }
+      case is None {}
+    }
+  }
+
+  fn stopWaiting(self: &mut) {
+    var more = true;
+    while more {
+      match waiting.popFront() {
+        case let Some(rp) {
+          match &why {
+            case let &Some(w) { rp.answer(Stop[IoBuf](reasonCopy(w))); }
+            case is None {}
+          }
+        }
+        case is None { more = false; }
+      }
+    }
+  }
+}

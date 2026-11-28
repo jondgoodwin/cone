@@ -193,6 +193,9 @@ void flowGateGlobalOwner(FlowState *fstate, Nodes *args);
 void flowGateCompound(FlowState *fstate, INode *lval, INode *rval);
 // An index of a place, whose address is made before the index is
 void flowGateIndex(FlowState *fstate, INode *index);
+// Walk the indexes of a place read or borrowed, refusing one that moves the
+// variable holding what it indexes
+void flowIndexArgs(FlowState *fstate, struct FnCallNode *index);
 // A swap, whose left side's address is made before the right side is
 void flowGateSwap(FlowState *fstate, INode *lval, INode *rval);
 // Does making this value do no more than read?

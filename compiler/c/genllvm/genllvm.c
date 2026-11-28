@@ -537,8 +537,8 @@ static LLVMValueRef genlGloVarGlobal(VarDclNode *glovar) {
 // place in read-only memory and whose loads it may assume never change. Only
 // what the object file initializes itself: a global without an initial value
 // is assigned by its module's 'init', at run time, and an 'extern' one's value
-// is another object's. Nor one whose type finalizes: the module's 'drop' hands
-// it to that 'final' as '&uni', which may write it. Nor a thread-local, whose
+// is another object's. Nor one whose type has a drop function, which stays in
+// writable storage (nothing finalizes it, module.md). Nor a thread-local, whose
 // storage is each thread's own block, which no read-only section holds (the
 // parser refuses a 'let' one, and this keeps the rule where the flag is set).
 // Nor one holding an atomic value, which atomic operations change even
