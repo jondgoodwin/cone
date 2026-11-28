@@ -190,6 +190,7 @@ void flowGateShapeWrite(FlowState *fstate, Nodes *args);
 // A call is lent what an owner a 'var' global may also hold points at
 void flowGateGlobalOwner(FlowState *fstate, Nodes *args);
 // A call with an argument that may be lent from behind an owner (flowgate.h, flowGateLent)
+struct FnCallNode;
 void flowGateLentCall(FlowState *fstate, struct FnCallNode *call);
 // A store, which may be the one that ends a compound assignment through a temporary
 void flowGateCompound(FlowState *fstate, INode *lval, INode *rval);
@@ -197,7 +198,6 @@ void flowGateCompound(FlowState *fstate, INode *lval, INode *rval);
 void flowGateIndex(FlowState *fstate, INode *index);
 // Walk the indexes of a place read or borrowed, refusing one that moves the
 // variable holding what it indexes
-struct FnCallNode;
 void flowIndexArgs(FlowState *fstate, struct FnCallNode *index);
 // A swap, whose left side's address is made before the right side is
 void flowGateSwap(FlowState *fstate, INode *lval, INode *rval);
