@@ -119,6 +119,10 @@ int reshapeStoreHits(INode *lval, INode *cont);
 // place, or a field of it, reshapes nothing.
 int reshapeIsOwner(INode *cont);
 INode *reshapeOwnerCont(INode *ownertype);
+// Is the owner 'cont' out of reach of the receiver (of type 'recvtype') it is lent as to a
+// method: a unique owner ('Uni'), with nothing the receiver holds leading to an owner of its
+// type except what the receiver itself owns uniquely? Then every one it reaches is below it
+int reshapeOwnerAbove(INode *cont, INode *recvtype);
 
 // A global (a module-level variable, or a static) has been type checked. Whether
 // any global can reach a collection type decides whether a call that is handed
@@ -161,8 +165,8 @@ typedef struct {
 // call is then taken to be able to write that global, but for the intrinsics, an init and a call
 // through a virtual reference marked '+ ShapeKeeping'.
 // 'skiprecv' says the borrow the loan is of is the receiver's own, an owner lent as the 'self' of
-// the method called: the receiver is then the borrow and no other name for the owner, and only
-// the other arguments are asked.
+// the method called, and the owner is out of the receiver's reach (reshapeOwnerAbove) or the call is
+// virtual (not asked yet): only the other arguments are then asked.
 // 'recvowner' is the struct the call's receiver is a field of, where the receiver is written as a field
 // access ('ui.input.clipboard.append(..)': Input), else NULL. A receiver that is a 'cont' held as a field
 // of a struct other than the borrow's 'owner' is another value than the one the borrow is into, and is

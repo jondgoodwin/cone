@@ -55,6 +55,10 @@ void permPrint(PermNode *node);
 
 // Get permission's flags
 int permGetFlags(INode *perm);
+
+// The flags the question "may another name write?" reads: permGetFlags, but that
+// 'mut1' answers as 'mut' (row 960). Ask MayAliasWrite and MayIntRefSum here
+int permWriterFlags(INode *perm);
    
 // Are the permissions the same?
 int permIsSame(INode *node1, INode *node2);

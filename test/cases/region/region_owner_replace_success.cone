@@ -74,9 +74,9 @@ fn game() i64 {
   n + g.p.v
 }
 
-// an owner lent as the receiver of its own method: the borrow is the 'self' the method works on, no
-// other name for the owner, though the method stores over an owner of its own type in a field and
-// the call is handed another borrow (the tally's)
+// an owner lent as the receiver of its own method, which stores over an owner of its own type in a
+// field of itself (that frees nothing the receiver is in), the call handed another borrow too (the
+// tally's)
 struct Tally { pub v: i64; }
 struct Chain {
   pub n: i64;
@@ -108,6 +108,30 @@ fn rcAfter(a: &mut ShipRc, b: &mut ShipRc) i64 {
   n
 }
 
+// an owner lent as the receiver of its own method, which holds the way back to its owner and
+// stores nothing over it
+struct Job {
+  pub count: i64;
+  pub back: Option[Rc[mut, Slot]];
+  pub fn run(self: &mut) {
+    match back {
+      case let Some(s) { s.runs = s.runs + 1; }
+      else {}
+    }
+    count += 1;
+  }
+}
+struct Slot { pub runs: i64; pub job: Rc[mut, Job]; }
+
+// the count is 9, the runs 2 and 'n' 1
+fn slotRun(s: Rc[mut, Slot]) i64 {
+  var n = 1i64;
+  let r = &n;
+  s.job.run();
+  s.job.run();
+  *r + s.job.count + s.runs
+}
+
 fn main() {
   readOnly();
   writeThrough();
@@ -130,4 +154,7 @@ fn main() {
   var q = ShipRc(0, Rc[mut, Item](70));
   printInt(rcAfter(&mut r, &mut q)); printStr("\n");
   printInt(q.it.v); printStr("\n");
+  let s = Rc[mut, Slot](0, Rc[mut, Job](7, None[Rc[mut, Slot]]));
+  s.job.back = Some(s);
+  printInt(slotRun(s)); printStr("\n");
 }
