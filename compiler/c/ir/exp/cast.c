@@ -690,7 +690,7 @@ static int castBorrowsUni(INode *exp) {
     // A 'mut' borrow is an alias loan: the place has other names while it is held, so it
     // is no longer frozen against a change of variant, and the shape check follows it
     INode *type = iexpGetTypeDcl(value);
-    return !(type->tag == RefTag && (permGetFlags(((RefNode *)type)->perm) & MayAliasWrite));
+    return !(type->tag == RefTag && (permWriterFlags(((RefNode *)type)->perm) & MayAliasWrite));
 }
 
 // A reference narrowed from a sum type -- an enum, a tagged trait, an
@@ -700,8 +700,8 @@ static int castBorrowsUni(INode *exp) {
 // and refused only if something could change the variant while the narrowed
 // reference is used.
 //
-// Where nothing can, the narrowing needs no more: the reference is 'uni', 'imm'
-// or 'mut1' (MayIntRefSum). A read-only borrow made here of a place reached as
+// Where nothing can, the narrowing needs no more: the reference is 'uni' or 'imm'
+// (MayIntRefSum; not 'mut1', permWriterFlags). A read-only borrow made here of a place reached as
 // 'uni' -- a local above all -- freezes the place against change by its own name,
 // but not against a 'mut' borrow of it made earlier, which is an alias loan and may
 // still store another variant. Only the loan walk knows whether one is held, so such
@@ -736,7 +736,7 @@ INode *castNarrowedSum(INode *cast) {
 // Mark a borrowed reference narrowed into a variant for the loan walk, unless its own
 // permission rules out a change of variant
 static void castMarkSumNarrow(CastNode *node, RefNode *from, RefNode *to) {
-    if (!castIsSumNarrow(from, to) || (permGetFlags(from->perm) & MayIntRefSum))
+    if (!castIsSumNarrow(from, to) || (permWriterFlags(from->perm) & MayIntRefSum))
         return;
     node->flags |= FlagVariantNarrow;
     if (castBorrowsUni(node->exp))
@@ -748,13 +748,13 @@ static void castMarkSumNarrow(CastNode *node, RefNode *from, RefNode *to) {
 // holds the same allocation, counted one more, and a variant has its enum's address, so
 // nothing is adjusted. That is allowed only where no writer can change the variant: no loan
 // stands for another owner of the value, so nothing could follow a change through one. An
-// owner whose permission lets a writer store another variant ('mut', 'ro', a lock) stays
+// owner whose permission lets a writer store another variant ('mut', 'mut1', 'ro', a lock) stays
 // refused.
 static void castSumInterior(CastNode *node, RefNode *from, RefNode *to) {
     if (!castIsSumNarrow(from, to))
         return;
     if (itypeGetTypeDcl(from->region) != borrowRef) {
-        if (permGetFlags(from->perm) & MayIntRefSum)
+        if (permWriterFlags(from->perm) & MayIntRefSum)
             return;
         PermNode *perm = (PermNode *)itypeGetTypeDcl(from->perm);
         errorMsgNode((INode *)node, ErrorBadPerm,

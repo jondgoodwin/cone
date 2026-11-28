@@ -20,8 +20,8 @@
 // manual page, "From 'uni'", is the rule; flow.md, "The loan walk", the note.
 enum LoanKind {
     LoanShared,     // read-only: 'ro' or 'imm' of a 'uni' source; '&imm' of a shared one
-    LoanExcl,       // may write: 'mut', 'uni', 'mut1' of a 'uni' source; '&uni' of any
-    LoanAlias,      // 'mut', 'ro', 'mut1' of a shared source: it needs the source only alive
+    LoanExcl,       // may write: '&uni' of any source
+    LoanAlias,      // 'mut', 'mut1' of any source; 'ro' of a shared one: it needs the source only alive
     LoanPin,        // neither: 'opaq', which holds only the address
     LoanCaller,     // what the caller lent through a parameter: frozen by the caller, nothing here conflicts
 };
@@ -265,9 +265,9 @@ static uint8_t loanKindOf(INode *perm, Place *pl) {
         return LoanExcl;
     case AccessBorrowMut:
         // A 'mut' borrow of a place reached as 'uni' is an alias loan too: the source stays usable as
-        // one more 'mut' alias (flow.md, "The loan walk"). A 'mut1' one, which may hand out interior
-        // references into a sum, keeps the source to itself
-        return pl->shared || (permGetFlags(perm) & MayAliasWrite) ? LoanAlias : LoanExcl;
+        // one more 'mut' alias (flow.md, "The loan walk"). So is a 'mut1' one, whose copies write
+        // (permWriterFlags)
+        return pl->shared || (permWriterFlags(perm) & MayAliasWrite) ? LoanAlias : LoanExcl;
     case AccessBorrowImm:
         return LoanShared;
     case AccessBorrow:
@@ -1964,10 +1964,16 @@ void loanFreezeWritable(uint32_t loan) {
 // accesses as a read-only borrow would, so 'v.push(v.len())' compiles, and it
 // is activated at the call, where it must not conflict with what the other
 // arguments carry.
+//
+// Such a value is held by no variable, so what a later operand stores into a
+// variable it borrows is given to it here (pwLentGains), and its builder takes
+// that back when it is built (loanFlightGained).
 // *********************
 
 typedef struct {
-    PathSet *loans;     // what one operand carries
+    PathSet *loans;     // what an access is checked against, or NULL (loanFlightPushHeld)
+    PathSet *held;      // what the value holds
+    PathSet *gained;    // what later stores gave it, or NULL
     uint32_t reserved;  // a two-phase receiver's own loan among them, or 0
     INode *operand;     // the operand, where its pusher named it, or NULL
 } Flight;
@@ -1979,15 +1985,42 @@ uint32_t loanFlightMark() {
     return nflights;
 }
 
-void loanFlightPushOf(PathSet *carried, uint32_t reserved, INode *operand) {
-    if (carried == NULL)
-        return;
+static uint32_t loanFlightAdd(PathSet *loans, PathSet *held, uint32_t reserved, INode *operand) {
     if (nflights == flightcap)
         flights = (Flight *)pathGrow(flights, &flightcap, sizeof(Flight));
-    flights[nflights].loans = carried;
+    flights[nflights].loans = loans;
+    flights[nflights].held = held;
+    flights[nflights].gained = NULL;
     flights[nflights].reserved = reserved;
     flights[nflights].operand = operand;
-    ++nflights;
+    return nflights++;
+}
+
+uint32_t loanFlightPushOf(PathSet *carried, uint32_t reserved, INode *operand) {
+    return carried ? loanFlightAdd(carried, carried, reserved, operand) : LoanNoFlight;
+}
+
+uint32_t loanFlightPushHeld(PathSet *held, INode *operand) {
+    return held ? loanFlightAdd(NULL, held, 0, operand) : LoanNoFlight;
+}
+
+PathSet *loanFlightHeld(uint32_t flight) {
+    return flights[flight].held;
+}
+
+INode *loanFlightOperand(uint32_t flight) {
+    return flights[flight].operand;
+}
+
+void loanFlightGain(uint32_t flight, PathSet *gain) {
+    Flight *f = &flights[flight];
+    f->held = pathSetUnion(f->held, gain);
+    f->loans = f->loans ? pathSetUnion(f->loans, gain) : gain;
+    f->gained = f->gained ? pathSetUnion(f->gained, gain) : gain;
+}
+
+PathSet *loanFlightGained(uint32_t flight) {
+    return flight == LoanNoFlight ? NULL : flights[flight].gained;
 }
 
 void loanFlightPush(PathSet *carried, uint32_t reserved) {
@@ -2035,7 +2068,7 @@ void loanFlightAccess(Place *pl, int access, INode *node) {
     int met = 0;
     for (uint32_t f = 0; f < nflights; ++f) {
         PathSet *set = flights[f].loans;
-        for (uint32_t i = 0; i < set->cnt; ++i) {
+        for (uint32_t i = 0; set && i < set->cnt; ++i) {
             uint32_t id = loanOf(set->ids[i]);
             Loan *loan = &loans[id];
             if (loan->place.var != pl->var || loan->place.deref != pl->deref)
@@ -2102,7 +2135,7 @@ void loanFlightActivate(uint32_t mark, uint32_t receiver, int access, INode *nod
         if (flights[f].reserved == receiver)
             continue;
         PathSet *set = flights[f].loans;
-        for (uint32_t i = 0; i < set->cnt; ++i) {
+        for (uint32_t i = 0; set && i < set->cnt; ++i) {
             uint32_t id = loanOf(set->ids[i]);
             Loan *loan = &loans[id];
             if (id == receiver || loan->place.var != recv->place.var
@@ -2148,7 +2181,7 @@ void loanFlightActivate(uint32_t mark, uint32_t receiver, int access, INode *nod
 void loanSeamFlight(INode *seam) {
     for (uint32_t f = 0; f < nflights; ++f) {
         PathSet *set = flights[f].loans;
-        for (uint32_t i = 0; i < set->cnt; ++i) {
+        for (uint32_t i = 0; set && i < set->cnt; ++i) {
             uint32_t id = loanOf(set->ids[i]);
             if (loanIsGlobal(id))
                 continue;
