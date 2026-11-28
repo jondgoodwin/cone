@@ -1,0 +1,220 @@
+// ======== Trim and join: two open surface pieces cut along where they cross and
+// welded there ========
+//
+// The booleans' machinery (boolean.cone) on pieces that are not solids. Where
+// a boolean keeps what lies inside or outside the other solid, which open
+// pieces have no meaning for, here the caller names a face of each piece and
+// the part kept is what is joined to that face without crossing the curve.
+// The curve, the cuts along it and the welded result are the boolean's: the
+// same perturbation, the same exact crossings, the same cut triangles and
+// the same merging, with the kept vertices (1) and the rest (0) standing where
+// a boolean has the windings.
+//
+// A kept side that the boolean calls "outside" or "inside" the other piece
+// is, here, the side of the other piece's front (the way its faces face) the
+// kept part lies on. Both kept parts must lie on the same kind of side (both
+// on the other's front, as two pieces of one outward skin do, or both behind
+// it), for then their faces face one way across the seam, as the pieces of a
+// union or an intersection do; otherwise the seam's edges would run the same
+// way in both pieces, and the join is refused.
+
+// The vertices of m reached from face 'face' along edges no crossing is on,
+// each marked true
+fn keptFrom(m: &TriMesh, rec: &Records, face: u32) List[bool] {
+  let nv = m.vertexCount();
+  var kept = List[bool].withCapacity(nv);
+  var v = 0usize;
+  while v < nv { kept.push(false); v = v + 1usize; }
+  var work = List[u32]();
+  var c = usize.from(*m.fcStart[usize.from(face)]);
+  while c < usize.from(*m.fcStart[usize.from(face) + 1usize]) {
+    let u = *m.fcV[c];
+    if !*kept[usize.from(u)] {
+      kept.set(usize.from(u), true);
+      work.push(u);
+    }
+    c = c + 1usize;
+  }
+  var at = 0usize;
+  while at < work.len() {
+    let u = usize.from(*work[at]);
+    var i = usize.from(*m.vStart[u]);
+    while i < usize.from(*m.vStart[u + 1usize]) {
+      let e = usize.from(*m.vEdges[i]);
+      if *rec.edgeStart[e] == *rec.edgeStart[e + 1usize] {
+        let w = if *m.ev0[e] == *work[at] {*m.ev1[e]} else {*m.ev0[e]};
+        if !*kept[usize.from(w)] {
+          kept.set(usize.from(w), true);
+          work.push(w);
+        }
+      }
+      i = i + 1usize;
+    }
+    at = at + 1usize;
+  }
+  kept
+}
+
+// Whether any triangle of face f is crossed (see boolean.cone)
+fn faceCrossed(m: &TriMesh, rec: &Records, recO: &Records, f: u32) bool {
+  var t = usize.from(*m.faceTri[usize.from(f)]);
+  while t < usize.from(*m.faceTri[usize.from(f) + 1usize]) {
+    if crossed(m, rec, recO, t) { return true; }
+    t = t + 1usize;
+  }
+  false
+}
+
+// Which side of the other piece the kept part lies on, read from the edges the
+// curve crosses: 1 on its front, 0 behind it, -1 for neither (no crossed edge
+// has a kept end) and 2 for both (the kept part reaches round the curve's end)
+fn keptSide(m: &TriMesh, rec: &Records, kept: &List[bool]) i32 {
+  var front = false;
+  var back = false;
+  var e = 0usize;
+  while e < m.edgeCount() {
+    let r0 = usize.from(*rec.edgeStart[e]);
+    let r1 = usize.from(*rec.edgeStart[e + 1usize]);
+    if r1 > r0 {
+      // The edge goes into the other piece (behind its front) at a crossing
+      // of sign +1: its first end is on the front when that is the first
+      let startFront = *rec.sign[r0] > 0i32;
+      let endFront = *rec.sign[r1 - 1usize] < 0i32;
+      if *kept[usize.from(*m.ev0[e])] {
+        if startFront { front = true; } else { back = true; }
+      }
+      if *kept[usize.from(*m.ev1[e])] {
+        if endFront { front = true; } else { back = true; }
+      }
+    }
+    e = e + 1usize;
+  }
+  if front && back {2i32} else if front {1i32} else if back {0i32} else {-1i32}
+}
+
+fn keptWindings(kept: &List[bool], keepIn: bool) List[i32] {
+  var w = List[i32].withCapacity(kept.len());
+  var v = 0usize;
+  while v < kept.len() {
+    // keptVertex: (w > 0) == keepIn on the kept vertices
+    w.push(if *kept[v] == keepIn {1i32} else {0i32});
+    v = v + 1usize;
+  }
+  w
+}
+
+fn allKept(kept: &List[bool]) bool {
+  var v = 0usize;
+  while v < kept.len() {
+    if !*kept[v] { return false; }
+    v = v + 1usize;
+  }
+  true
+}
+
+fn refusedTrim(a: &PolyMesh, why: &str, problems: &mut List[String]) PolyMesh {
+  problems.push(String.from(why));
+  copyPolyMesh(a)
+}
+
+// Two open pieces a and b cut along the curve where their surfaces cross and
+// joined there: the part of a connected to its face 'keepA' without crossing
+// the curve, and the part of b connected to 'keepB', welded along the curve
+// (the seam's vertices shared, so no edge of it is open), the seam's edges
+// given an edge "crease" of at least 'crease' (a channel made if neither
+// piece has one). The result is open where the pieces are, along their
+// outlines.
+//
+// The caller extends the pieces past where they are to meet, so that they
+// overlap and cross (as the long face's sweep was extended 0.6 mm past its
+// edge in the 27 Nov split): the curve is where the extended surfaces
+// intersect, and only where it exists is there a seam. Where the pieces miss
+// each other along part of the edge, nothing cuts there and the kept parts
+// stay open.
+//
+// The crossings are the boolean's (see booleanWith): the perturbation of b,
+// the exact crossings and the cut triangles, so a vertex on the other piece
+// is decided, and the same pieces give the same bits. The kept parts must
+// face one way across the seam (see above): both on the fronts of the other
+// piece, or both behind. The result's vertices, faces and channels are those
+// of booleanWith (a's kept first, then b's, then the new ones on the curve;
+// a face not crossed and kept is kept whole).
+//
+// Refused, with a line in 'problems' and an unchanged copy of a: a face
+// number out of range; a face crossed by the curve (a kept face must lie on
+// one side of it); pieces that do not cross; a curve that does not separate
+// the kept face from the rest of a piece (the kept part would be all of it, or
+// reaches round the curve's end); kept parts that face opposite ways. A piece
+// that intersects itself, or cannot be cut into triangles with area, may be
+// refused or give a wrong result.
+pub fn trimJoin(a: &PolyMesh, b: &PolyMesh, keepA: u32, keepB: u32, crease: f32, problems: &mut List[String]) PolyMesh {
+  if keepA >= u32.from(a.faceCount()) {
+    return refusedTrim(a, "the face to keep of the first piece is out of range", problems);
+  }
+  if keepB >= u32.from(b.faceCount()) {
+    return refusedTrim(a, "the face to keep of the second piece is out of range", problems);
+  }
+  var ok = true;
+  var ta = triMeshOf(a, "the first piece", 0i32, 0.0, problems, &mut ok);
+  var tb = triMeshOf(b, "the second piece", 1i32, 1.0, problems, &mut ok);
+  if !ok { return copyPolyMesh(a); }
+
+  let bvhA = Bvh.build(&ta.tlo, &ta.thi);
+  let bvhB = Bvh.build(&tb.tlo, &tb.thi);
+  var fault = List[String]();
+  var recA = crossings(&ta, &tb, &bvhB, &mut fault);
+  var recB = crossings(&tb, &ta, &bvhA, &mut fault);
+  recA.indexTriangles(tb.triCount());
+  recB.indexTriangles(ta.triCount());
+  if fault.len() > 0usize {
+    return refusedTrim(a, fault[0usize].view(), problems);
+  }
+  if recA.count() == 0usize && recB.count() == 0usize {
+    return refusedTrim(a, "the two pieces do not cross", problems);
+  }
+  if faceCrossed(&ta, &recA, &recB, keepA) {
+    return refusedTrim(a, "the face to keep of the first piece is crossed by the curve", problems);
+  }
+  if faceCrossed(&tb, &recB, &recA, keepB) {
+    return refusedTrim(a, "the face to keep of the second piece is crossed by the curve", problems);
+  }
+
+  let keptA = keptFrom(&ta, &recA, keepA);
+  let keptB = keptFrom(&tb, &recB, keepB);
+  if allKept(&keptA) {
+    return refusedTrim(a, "the curve does not separate the face to keep from the rest of the first piece", problems);
+  }
+  if allKept(&keptB) {
+    return refusedTrim(a, "the curve does not separate the face to keep from the rest of the second piece", problems);
+  }
+  let sideA = keptSide(&ta, &recA, &keptA);
+  let sideB = keptSide(&tb, &recB, &keptB);
+  if sideA < 0i32 || sideA > 1i32 {
+    return refusedTrim(a, "the curve does not separate the face to keep from the rest of the first piece", problems);
+  }
+  if sideB < 0i32 || sideB > 1i32 {
+    return refusedTrim(a, "the curve does not separate the face to keep from the rest of the second piece", problems);
+  }
+  if sideA != sideB {
+    return refusedTrim(a, "the kept parts face opposite ways across the curve; turn one piece over", problems);
+  }
+  // The boolean's "inside the other" is behind its front
+  let keepInA = sideA == 0i32;
+  let keepInB = sideB == 0i32;
+  let wa = keptWindings(&keptA, keepInA);
+  let wb = keptWindings(&keptB, keepInB);
+
+  var parts = List[PolyMesh]();
+  parts.push(copyPolyMesh(a));
+  parts.push(copyPolyMesh(b));
+  let joined = join(&parts, problems);
+  var made = List[String]();
+  let out = finishPieces(a, &joined, &ta, &tb, &recA, &recB, &wa, &wb, keepInA, keepInB, false, crease, false, &mut made);
+  var i = 0usize;
+  while i < made.len() {
+    problems.push(String.from(made[i].view()));
+    i = i + 1usize;
+  }
+  if out.faceCount() == 0usize { return copyPolyMesh(a); }
+  out
+}

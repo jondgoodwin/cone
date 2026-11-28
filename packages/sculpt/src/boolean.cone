@@ -156,12 +156,26 @@ pub fn booleanWith(a: &PolyMesh, b: &PolyMesh, op: u32, crease: f32, problems: &
     return empty;
   }
 
+  finishPieces(a, &joined, &ta, &tb, &recA, &recB, &wa, &wb, keepInA, keepInB, reverseB, crease, true, problems)
+}
+
+// The pieces kept of two meshes, cut along the curve where they meet, made
+// into the result: the end of booleanWith (the kept sides from the windings
+// 'wa' and 'wb'; 'joined' the join of the two meshes' channels), and of
+// trimJoin, whose 'wa' and 'wb' are 1 on the kept vertices and 0 elsewhere
+// and whose result may be open ('closed' false). An empty mesh and a line in
+// 'problems' if it fails.
+fn finishPieces(a: &PolyMesh, joined: &PolyMesh, ta: &TriMesh, tb: &TriMesh, recA: &Records, recB: &Records,
+    wa: &List[i32], wb: &List[i32], keepInA: bool, keepInB: bool, reverseB: bool, crease: f32, closed: bool,
+    problems: &mut List[String]) PolyMesh {
+  var empty = PolyMesh();
+  var fault = List[String]();
   // The result's vertices: the kept ones of each mesh, then the crossings
   var verts = OutVerts();
-  let outA = verts.addKept(&ta, &wa, keepInA, 0u32);
-  let outB = verts.addKept(&tb, &wb, keepInB, u32.from(ta.vertexCount()));
-  let baseA = verts.addCrossings(&ta, &recA, 0u32);
-  let baseB = verts.addCrossings(&tb, &recB, u32.from(ta.vertexCount()));
+  let outA = verts.addKept(ta, wa, keepInA, 0u32);
+  let outB = verts.addKept(tb, wb, keepInB, u32.from(ta.vertexCount()));
+  let baseA = verts.addCrossings(ta, recA, 0u32);
+  let baseB = verts.addCrossings(tb, recB, u32.from(ta.vertexCount()));
 
   // The pieces, as loops
   var loops = Loops();
@@ -171,8 +185,8 @@ pub fn booleanWith(a: &PolyMesh, b: &PolyMesh, op: u32, crease: f32, problems: &
     u32.from(a.faceCount()));
   let sideA = Side(keepInA, false);
   let sideB = Side(keepInB, reverseB);
-  piecesOf(&ta, &tb, &recA, &recB, &wa, keepInA, &outA, baseA, baseB, offA, sideA, &verts, &mut loops, &mut sc, &mut fault);
-  piecesOf(&tb, &ta, &recB, &recA, &wb, keepInB, &outB, baseB, baseA, offB, sideB, &verts, &mut loops, &mut sc, &mut fault);
+  piecesOf(ta, tb, recA, recB, wa, keepInA, &outA, baseA, baseB, offA, sideA, &verts, &mut loops, &mut sc, &mut fault);
+  piecesOf(tb, ta, recB, recA, wb, keepInB, &outB, baseB, baseA, offB, sideB, &verts, &mut loops, &mut sc, &mut fault);
   if fault.len() > 0usize {
     problems.push(String.from(fault[0usize].view()));
     return empty;
@@ -211,8 +225,8 @@ pub fn booleanWith(a: &PolyMesh, b: &PolyMesh, op: u32, crease: f32, problems: &
           ready = mergeFacePieces(&faces);
         }
         var attempt = PolyMesh();
-        if buildResult(&joined, &verts, &ready, crease, &mut attempt) {
-          let folds = foldedCount(&attempt, &ready.face, &joined, offB.f, reverseB);
+        if buildResult(joined, &verts, &ready, crease, closed, &mut attempt) {
+          let folds = foldedCount(&attempt, &ready.face, joined, offB.f, reverseB);
           let flat = degenerateCount(&attempt);
           if !built || folds < outFolded || (folds == outFolded && flat < outFlat)
               || (folds == outFolded && flat == outFlat && rough < outRough) {
@@ -3592,7 +3606,7 @@ fn inCone(px: f64, py: f64, vx: f64, vy: f64, nx: f64, ny: f64, tx: f64, ty: f64
 
 // The result mesh from its faces, every channel carried from the join (see
 // booleanWith); false when the faces do not make a closed, valid mesh
-fn buildResult(j: &PolyMesh, verts: &OutVerts, faces: &OutFaces, crease: f32, out: &mut PolyMesh) bool {
+fn buildResult(j: &PolyMesh, verts: &OutVerts, faces: &OutFaces, crease: f32, closed: bool, out: &mut PolyMesh) bool {
   // Only the vertices on faces, in order
   let nv = verts.pos.len();
   var newId = List[u32].withCapacity(nv);
@@ -3625,7 +3639,7 @@ fn buildResult(j: &PolyMesh, verts: &OutVerts, faces: &OutFaces, crease: f32, ou
   if problems.len() > 0usize || m.faceCount() != faces.counts.len() { return false; }
   var h = 0usize;
   while h < m.hFace.len() {
-    if *m.hFace[h] == NoIndex { return false; }
+    if closed && *m.hFace[h] == NoIndex { return false; }
     h = h + 1usize;
   }
   let bad = m.validate();

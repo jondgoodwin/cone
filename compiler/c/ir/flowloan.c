@@ -67,8 +67,15 @@ typedef struct {
                         // the 'mut' borrow of the enum held beside it, which a refusal names, else 0
     uint8_t repoint;    // the loan of a narrowed reference variable itself (loanNarrowName): a call or store that
                         // stores a reference of its type over it points the name elsewhere
-    void *unseen;       // a shape loan of what came from behind a trait object ('shapecont' the trait): what the
+    PathSet *way;       // a loan of a place through a reference (place.deref): what the root variable held
+                        // where the borrow was made, on any path, which says where the borrow points once the
+                        // variable has left scope or been given another reference (loanRootsNote)
+    void *unseen;      // a shape loan of what came from behind a trait object ('shapecont' the trait): what the
                         // borrow may point at (flowpath.c, PwUnseen), else NULL
+    INode *narrowed;    // held in a value that may point into the concrete value behind a trait object of this
+                        // trait: what a downcast, or a function that may have downcast, gives (loanNarrow), else NULL
+    INode *hidden;      // then, a borrow that passed a shared owner from there, of what no signature names: it may
+                        // not leave the function (loanHiddenLeaves), else NULL
 } Loan;
 
 // A pending conflict: 'access' conflicted with 'loan', held by 'holder'. On a
@@ -123,6 +130,7 @@ static uint32_t lazyloancap = 0;
 static void loanShapePromote();
 static int loanHeldNow(uint32_t id);
 static int loanIsView(Loan *loan);
+static void loanRootsNote(uint32_t id);
 
 // The loans into a shape-changing value through a shared path (loanShapeMark),
 // and what each call that could reshape one was (loanShapePend), a pending
@@ -278,8 +286,19 @@ static uint8_t loanKindOf(INode *perm, Place *pl) {
 // reference variable beside that of what it points at (loanNarrowName)
 static uint32_t loanMakeKeyed(INode *site, Place *pl, INode *perm, uint32_t key) {
     uint32_t id = mapGet(site, 0, key);
-    if (id)
+    if (id) {
+        // Walked again (a loop's next pass), the root may hold more: the borrow points
+        // there too, and a mark already made is told
+        if (loans[id].place.deref) {
+            PathSet *way = pathSetUnion(loans[id].way, pathVars[loans[id].place.var].holds);
+            if (way != loans[id].way) {
+                loans[id].way = way;
+                if (loans[id].shapecont)
+                    loanRootsNote(id);
+            }
+        }
         return id;
+    }
     if (nloans > LoanIdMask) {
         errorUnreachable(site, "more loans in one function than an entry of a loan set can name");
         return 0;
@@ -317,6 +336,9 @@ static uint32_t loanMakeKeyed(INode *site, Place *pl, INode *perm, uint32_t key)
     loan->elemview = 0;
     loan->unseen = NULL;
     loan->repoint = 0;
+    loan->way = pl->deref ? pathVars[pl->var].holds : NULL;
+    loan->narrowed = NULL;
+    loan->hidden = NULL;
     // Linked from its root variable, so an access finds it
     loan->next = pathVars[pl->var].loans;
     pathVars[pl->var].loans = id;
@@ -395,6 +417,7 @@ uint32_t loanMakeReach(INode *site, uint32_t n, uint32_t base) {
     loan->elemview = 0;
     loan->unseen = NULL;
     loan->repoint = 0;
+    loan->hidden = NULL;
     if (loan->kind == LoanCaller)
         loan->next = 0;
     else {
@@ -453,8 +476,62 @@ uint32_t loanCaller(uint32_t var, uint32_t part) {
     loan->globalview = 0;
     loan->elemview = 0;
     loan->unseen = NULL;
+    loan->way = NULL;
+    loan->narrowed = NULL;
+    loan->hidden = NULL;
     mapPut(parm, 0, loanCallerKey(part), id);
     return id;
+}
+
+// A downcast's value, or what a function that may have downcast gives, holds 'id': the loan
+// to hold instead. A caller's loan is one per part of its parameter, so it takes a second of
+// the same part that carries the trait; any other loan carries it itself
+uint32_t loanNarrow(uint32_t id, INode *trait) {
+    if (loans[id].narrowed)
+        return id;
+    if (loans[id].kind != LoanCaller) {
+        loans[id].narrowed = trait;
+        return id;
+    }
+    uint32_t made = mapGet(trait, id, 0xC0000000u);
+    if (made)
+        return made;
+    if (nloans > LoanIdMask) {
+        errorUnreachable(loans[id].site, "more loans in one function than an entry of a loan set can name");
+        return id;
+    }
+    if (nloans >= loancap)
+        loans = (Loan *)pathGrow(loans, &loancap, sizeof(Loan));
+    made = nloans++;
+    loans[made] = loans[id];
+    loans[made].narrowed = trait;
+    loans[made].mayhold = 0;
+    loans[made].nmay = 0;
+    loans[made].maycap = 0;
+    mapPut(trait, id, 0xC0000000u, made);
+    return made;
+}
+
+uint32_t loanNarrowedLoan(PathSet *set) {
+    for (uint32_t i = 0; set && i < set->cnt; ++i) {
+        if (loans[loanOf(set->ids[i])].narrowed)
+            return loanOf(set->ids[i]);
+    }
+    return 0;
+}
+
+INode *loanNarrowedIn(PathSet *set) {
+    uint32_t loan = loanNarrowedLoan(set);
+    return loan ? loans[loan].narrowed : NULL;
+}
+
+void loanHiddenSet(uint32_t loan, INode *trait) {
+    loans[loan].narrowed = trait;
+    loans[loan].hidden = trait;
+}
+
+INode *loanHidden(uint32_t loan) {
+    return loans[loan].hidden;
 }
 
 uint32_t loanOwnNext(uint32_t var, uint32_t loan) {
@@ -1409,6 +1486,20 @@ static char *loanAttempt(int access) {
 }
 
 static char *loanCaptureAdvice(uint32_t loan, char *buf, size_t size);
+
+void loanHiddenLeaves(INode *node, uint32_t loan, int how) {
+    // Once, and not beside loanEscape's report of the same node
+    if (mapGet(node, 0, 1))
+        return;
+    mapPut(node, 0, 1, 1);
+    char where[160];
+    loanWhere(&loans[loan], where, sizeof(where));
+    Name *trait = ((StructNode *)loans[loan].narrowed)->namesym;
+    errorMsgNode(node, ErrorEscape,
+        "%s a borrow (made %s) reached from a '%s' trait object narrowed to a concrete type and then past a shared owner, where it may outlive this function. A caller can't see what a downcast reaches, so another holder of the owner could free it unseen. Copy the value out, or have '%s' offer it through a method or a 'pub' field.",
+        how == LoanEscapeReturn ? "Returned here is" : how == LoanEscapeStore ? "Stored here is" : "Handed to a call that could store it is",
+        where, &trait->namestr, &trait->namestr);
+}
 
 void loanEscape(INode *node, uint32_t loan, int how) {
     // Once, though a loop's body is walked again
@@ -2616,12 +2707,12 @@ static int loanVarIsMutGlobal(VarDclNode *var) {
 // Is this place in a 'var' global, or in something reached from one: by the global's own name, or
 // through a reference whose loans say it came from one? Which globals a call writes is not
 // followed, so a borrow into such a place is asked of every call (reshapeCall's 'globalview')
-int loanPlaceInGlobal(Place *p) {
+// 'held' is what the place's root variable holds, asked where the place is through it
+static int loanHeldInGlobal(Place *p, PathSet *held) {
     if (loanVarIsMutGlobal(pathVars[p->var].var))
         return 1;
     if (!p->deref)
         return 0;
-    PathSet *held = pathVars[p->var].holds;
     if (held == NULL)
         return 0;
     for (uint32_t i = 0; i < held->cnt; ++i) {
@@ -2634,19 +2725,26 @@ int loanPlaceInGlobal(Place *p) {
     return 0;
 }
 
+int loanPlaceInGlobal(Place *p) {
+    return loanHeldInGlobal(p, pathVars[p->var].holds);
+}
+
 static void loanRootsNote(uint32_t id) {
     Loan *l = &loans[id];
     Place *p = loanShapePlace(l);
-    if (loanPlaceInGlobal(p))
+    // Through a reference, where the borrow points is what the reference's variable held as
+    // the borrow was made (Loan.way): the mark may be made once the variable is out of scope,
+    // or holds another reference
+    PathSet *held = l->source ? loans[l->source].way : l->way;
+    if (loanHeldInGlobal(p, held))
         l->globalview = 1;
     // Read through a 'mut' borrow of the reference (loanShapeRefView): reached by the variable
     // the way starts at and each local it borrows, near and far -- the reference, and what the
     // reference borrows -- so a store or call by any of those names reaches it
     if (l->refway && !p->owned) {
         loanRootsAdd(l, p->var);
-        PathSet *way = pathVars[p->var].holds;
-        for (uint32_t i = 0; way && i < way->cnt; ++i) {
-            Loan *h = &loans[loanOf(way->ids[i])];
+        for (uint32_t i = 0; held && i < held->cnt; ++i) {
+            Loan *h = &loans[loanOf(held->ids[i])];
             if (h->kind == LoanCaller || h->place.owned || h->place.far || loanVarIsGlobal(pathVars[h->place.var].var))
                 l->rootsext = 1;
             else if (!h->place.deref || !h->place.shared)
@@ -2678,17 +2776,16 @@ static void loanRootsNote(uint32_t id) {
         if (!p->uniway)
             return;
     }
-    PathSet *holds = pathVars[p->var].holds;
-    if (holds == NULL) {
+    if (held == NULL) {
         l->rootsext = 1;
         return;
     }
     int found = 0;
     for (int pass = 0; pass < 2; ++pass) {
-        for (uint32_t i = 0; i < holds->cnt; ++i) {
-            if (holds->ids[i] & LoanFar)
+        for (uint32_t i = 0; i < held->cnt; ++i) {
+            if (held->ids[i] & LoanFar)
                 continue;
-            Loan *h = &loans[loanOf(holds->ids[i])];
+            Loan *h = &loans[loanOf(held->ids[i])];
             if (h->place.owned || h->place.far || loanVarIsGlobal(pathVars[h->place.var].var)) {
                 if (pass == 0)
                     l->rootsext = 1;

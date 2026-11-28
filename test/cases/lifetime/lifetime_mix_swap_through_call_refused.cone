@@ -1,0 +1,135 @@
+// Row 965: a side of a swap reached through a reference that is no place -- a call's
+// result, a method's, a List's element -- carries what it holds to the other side, and
+// takes what the other side holds. In each function a borrow of an inner 'b' ends up in a
+// value read after 'b' is gone.
+//
+// Verdict: refuse, ErrorFrozen at 'b', which goes out of scope while borrowed.
+// Basis: a swap is a store in both directions (ref_flow_swap), through a reference a
+// call returns as through a name given it ('let p = ident(&mut h); *p <-> t').
+// Master fcd4ef032: accepted every one; through 'brief' it reads freed memory.
+
+mod lifetime_mix_swap_through_call_refused;
+
+import collections use *;
+
+struct S {
+  pub r: &usize;
+  pub fn init(self: &new, r: &usize) { *self = S(r: r); }
+  pub fn slot(self: &mut) &mut &usize { &mut self.r }
+}
+
+fn ident(x: &mut &usize) &mut &usize { x }
+fn same(x: &mut S) &mut S { x }
+fn pair(x: &mut Array[&usize, 2]) &mut Array[&usize, 2] { x }
+
+fn brief() usize {
+  let a = 1usize;
+  var out = [&a];
+  var h = &a;
+  {
+    let b = 2usize;   //~ ErrorFrozen
+    h = &b;
+    *ident(&mut h) <-> out[0usize];
+  }
+  *out[0usize]
+}
+
+fn reversed() usize {
+  let a = 1usize;
+  var out = [&a];
+  var h = &a;
+  {
+    let b = 2usize;   //~ ErrorFrozen
+    h = &b;
+    out[0usize] <-> *ident(&mut h);
+  }
+  *out[0usize]
+}
+
+fn bothThroughCalls() usize {
+  let a = 1usize;
+  var h = &a;
+  var k = &a;
+  {
+    let b = 2usize;   //~ ErrorFrozen
+    k = &b;
+    *ident(&mut h) <-> *ident(&mut k);
+  }
+  *h
+}
+
+// The other direction: what the variable held is given through the call's reference
+fn intoTheCall() usize {
+  let a = 1usize;
+  var out = [&a];
+  {
+    var h = &a;
+    let b = 2usize;   //~ ErrorFrozen
+    var t = &b;
+    *ident(&mut h) <-> t;
+    out[0usize] = h;
+  }
+  *out[0usize]
+}
+
+fn methodResult() usize {
+  let a = 1usize;
+  var out = [&a];
+  var s = S(&a);
+  {
+    let b = 2usize;   //~ ErrorFrozen
+    s.r = &b;
+    *s.slot() <-> out[0usize];
+  }
+  *out[0usize]
+}
+
+fn fieldOfResult() usize {
+  let a = 1usize;
+  var out = [&a];
+  var s = S(&a);
+  {
+    let b = 2usize;   //~ ErrorFrozen
+    s.r = &b;
+    same(&mut s).r <-> out[0usize];
+  }
+  *out[0usize]
+}
+
+fn elementOfResult() usize {
+  let a = 1usize;
+  var out = [&a];
+  var arr = [&a, &a];
+  {
+    let b = 2usize;   //~ ErrorFrozen
+    arr[0usize] = &b;
+    (*pair(&mut arr))[0usize] <-> out[0usize];
+  }
+  *out[0usize]
+}
+
+fn listElement() usize {
+  let a = 1usize;
+  var out = [&a];
+  var l = List[&usize]();
+  {
+    let b = 2usize;   //~ ErrorFrozen
+    l <- &b;
+    l[0usize] <-> out[0usize];
+  }
+  *out[0usize]
+}
+
+// The walk of the other side's index repoints what the call's reference points at
+fn repointedByTheIndex() usize {
+  let a = 1usize;
+  var out = [&a];
+  var h = &a;
+  {
+    let b = 2usize;   //~ ErrorFrozen
+    *ident(&mut h) <-> out[{h = &b; 0usize}];
+  }
+  *out[0usize]
+}
+
+fn main() {}
