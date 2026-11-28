@@ -81,6 +81,14 @@ fn polyLength(pts: &List[Vec3]) f32 {
 // columns, columns in order from tag 0; quads as 'loftAlong''s, then the caps.
 pub fn loftTagged(sections: &List[TaggedProfile], path: &Path, stations: &Array[f32], between: u32, uvByLength: bool,
     caps: bool, problems: &mut List[String]) PolyMesh {
+  loftTaggedCore(sections, path, stations, between, uvByLength, caps, false, problems)
+}
+
+// 'loftTagged', with 'closingStart' allowing one thing it refuses: on a closed profile, the first section's closing
+// stretch (the last tag round to tag 0) may have no length, a ring that is closing, its ends meeting (SweepSpec's
+// closing part way). That stretch's columns then all start at the one point and open out.
+fn loftTaggedCore(sections: &List[TaggedProfile], path: &Path, stations: &Array[f32], between: u32,
+    uvByLength: bool, caps: bool, closingStart: bool, problems: &mut List[String]) PolyMesh {
   let ns = sections.len();
   if ns < 2usize { return taggedRefused(problems, "loftTagged: fewer than 2 sections"); }
   if path.points.len() < 2usize { return taggedRefused(problems, "loftTagged: the path has fewer than 2 points"); }
@@ -166,7 +174,9 @@ pub fn loftTagged(sections: &List[TaggedProfile], path: &Path, stations: &Array[
         poly.push(*pts[k][j % m]);
         j = j + 1usize;
       }
-      if !(polyLength(&poly) > 0.) { return taggedRefused(problems, "loftTagged: a stretch between tags has no length"); }
+      if !(polyLength(&poly) > 0.) && !(closingStart && closed && k == 0usize && s + 1usize == nst) {
+        return taggedRefused(problems, "loftTagged: a stretch between tags has no length");
+      }
       frs.push(loopFractions(&poly, false));
       polys.push(poly);
       s = s + 1usize;

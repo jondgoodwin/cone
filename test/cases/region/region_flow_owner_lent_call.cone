@@ -1,0 +1,189 @@
+mod region_flow_owner_lent_call;
+
+// A call lent what an owner points at, beside a way to write that owner, is walked
+// for that alone: no function below holds a borrow in a name, hands one out, or
+// does anything else that asks for the walk. Each of these was accepted, and was a
+// heap use-after-free: the callee stored over the owner of what it was lent
+
+import stdio use *;
+
+// A method of an owned trait object, handed a way to the owner
+trait Worker {
+  pub fn work(self: &mut, s: &mut Shop);
+}
+struct Clerk {
+  pub count: i64;
+  pub fn work(self: &mut, s: &mut Shop) {
+    s.cur.worker = Rc[mut, Clerk](100);
+    count += 1;
+  }
+}
+struct Desk { pub worker: Rc[mut, Worker]; }
+struct Shop { pub cur: Rc[mut, Desk]; }
+
+fn virtualReceiver() {
+  let d = Rc[mut, Desk](Rc[mut, Clerk](7));
+  var s = Shop(d);
+  d.worker.work(&mut s);                                             //~ ErrorShapeReshape
+}
+
+// The same, a concrete method
+struct Idle {
+  pub count: i64;
+  pub fn run(self: &mut, s: &mut Sched) {
+    s.cur.task = Rc[mut, Idle](100);
+    count += 1;
+  }
+}
+struct Tcb { pub task: Rc[mut, Idle]; }
+struct Sched { pub cur: Rc[mut, Tcb]; }
+
+fn methodAndHolder() {
+  let t1 = Rc[mut, Tcb](Rc[mut, Idle](7));
+  var s = Sched(t1);
+  t1.task.run(&mut s);                                               //~ ErrorShapeReshape
+}
+
+// A free function lent what the inner of two counted owners points at
+struct Cell { pub v: i64; }
+struct Rack { pub cur: Rc[mut, Rc[mut, Cell]]; }
+fn bump(c: &mut Cell, r: &mut Rack) { *r.cur = Rc[mut, Cell](100); c.v += 1; }
+
+fn freeAndHolder() {
+  let o = Rc[mut, Rc[mut, Cell]](Rc[mut, Cell](7));
+  var r = Rack(o);
+  bump(&mut **o, &mut r);                                            //~ ErrorShapeReshape
+}
+
+// ... the way to the owner passed by value, in a struct that holds it
+fn bumpHeld(c: &mut Cell, r: Rack) { *r.cur = Rc[mut, Cell](100); c.v += 1; }
+
+fn byValue() {
+  let o = Rc[mut, Rc[mut, Cell]](Rc[mut, Cell](7));
+  let r = Rack(o);
+  bumpHeld(&mut **o, r);                                             //~ ErrorShapeReshape
+}
+
+// ... the borrow handed on in a struct literal, in a tuple, or through a call
+struct Wrap { pub c: &mut Cell; }
+fn wrapped(w: Wrap, r: &mut Rack) { *r.cur = Rc[mut, Cell](100); w.c.v += 1; }
+fn paired(w: (&mut Cell, i64), r: &mut Rack) { *r.cur = Rc[mut, Cell](100); w.0.v += 1; }
+fn same(c: &mut Cell) &mut Cell { c }
+
+fn inLiteral() {
+  let o = Rc[mut, Rc[mut, Cell]](Rc[mut, Cell](7));
+  var r = Rack(o);
+  wrapped(Wrap(&mut **o), &mut r);                                   //~ ErrorShapeReshape
+}
+
+fn inTuple() {
+  let o = Rc[mut, Rc[mut, Cell]](Rc[mut, Cell](7));
+  var r = Rack(o);
+  paired((&mut **o, 1), &mut r);                                     //~ ErrorShapeReshape
+}
+
+fn throughCall() {
+  let o = Rc[mut, Rc[mut, Cell]](Rc[mut, Cell](7));
+  var r = Rack(o);
+  bump(same(&mut **o), &mut r);                                      //~ ErrorShapeReshape
+}
+
+// An outer owner stored over drops the one that holds what is lent
+struct Leaf { pub v: i64; }
+struct Branch { pub leaf: Rc[mut, Leaf]; }
+struct Tree { pub cur: Rc[mut, Rc[mut, Branch]]; }
+fn prune(l: &mut Leaf, t: &mut Tree) { *t.cur = Rc[mut, Branch](Rc[mut, Leaf](100)); l.v += 1; }
+
+fn outerOwner() {
+  let o = Rc[mut, Rc[mut, Branch]](Rc[mut, Branch](Rc[mut, Leaf](7)));
+  var t = Tree(o);
+  prune(&mut *o.leaf, &mut t);                                       //~ ErrorShapeReshape
+}
+
+// A unique owner in a field, reached through two '&mut' that may be one
+struct Gem {
+  pub v: i64;
+  pub fn polish(self: &mut, c: &mut Case) { c.gem = Uni[Gem](100); v += 1; }
+}
+struct Case { pub gem: Uni[Gem]; }
+fn recut(g: &mut Gem, c: &mut Case) { c.gem = Uni[Gem](100); g.v += 1; }
+
+fn uniqueField(a: &mut Case, b: &mut Case) {
+  recut(&mut *a.gem, b);                                             //~ ErrorShapeReshape
+}
+
+fn uniqueReceiver(a: &mut Case, b: &mut Case) {
+  a.gem.polish(b);                                                   //~ ErrorShapeReshape
+}
+
+// ... lent by a call that returns the borrow
+fn gemOf(c: &mut Case) &mut Gem { &mut *c.gem }
+
+fn uniqueReturned(a: &mut Case, b: &mut Case) {
+  recut(gemOf(a), b);                                                //~ ErrorShapeReshape
+}
+
+// One lent argument and nothing else, where what it points at leads back to the owner
+struct Job {
+  pub v: i64;
+  pub back: Option[Rc[mut, Queue]];
+  pub fn start(self: &mut) {
+    match back {
+      case let Some(q) { q.job = Rc[mut, Job](100, None[Rc[mut, Queue]]); }
+      else {}
+    }
+    v += 1;
+  }
+}
+struct Queue { pub job: Rc[mut, Job]; }
+fn startJob(j: &mut Job) { j.start(); }
+
+fn loneReceiver() {
+  let q = Rc[mut, Queue](Rc[mut, Job](7, None[Rc[mut, Queue]]));
+  q.job.back = Some(q);
+  q.job.start();                                                     //~ ErrorShapeReshape
+}
+
+fn loneArgument() {
+  let q = Rc[mut, Queue](Rc[mut, Job](7, None[Rc[mut, Queue]]));
+  q.job.back = Some(q);
+  startJob(&mut *q.job);                                             //~ ErrorShapeReshape
+}
+
+// ... a unique owner with a shared way back to it
+struct Pawn {
+  pub v: i64;
+  pub back: Option[Rc[mut, Board]];
+}
+struct Board { pub pawn: Uni[Pawn]; }
+fn promote(p: &mut Pawn) {
+  match p.back {
+    case let Some(b) { b.pawn = Uni[Pawn](100, None[Rc[mut, Board]]); }
+    else {}
+  }
+  p.v += 1;
+}
+
+fn loneUnique() {
+  let b = Rc[mut, Board](Uni[Pawn](7, None[Rc[mut, Board]]));
+  b.pawn.back = Some(b);
+  promote(&mut *b.pawn);                                             //~ ErrorShapeReshape
+}
+
+fn main() {
+  var a = Case(Uni[Gem](7));
+  uniqueField(&mut a, &mut a);
+  uniqueReceiver(&mut a, &mut a);
+  uniqueReturned(&mut a, &mut a);
+  virtualReceiver();
+  methodAndHolder();
+  freeAndHolder();
+  byValue();
+  inLiteral();
+  inTuple();
+  throughCall();
+  outerOwner();
+  loneReceiver();
+  loneArgument();
+  loneUnique();
+}

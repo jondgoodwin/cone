@@ -10,38 +10,156 @@
 // - 'RunCurve': no values is 0 everywhere; 1 value a constant; 2 values linear from the first (t = 0) to the
 //   second (t = 1); 4 or more a uniform cubic B-spline over [0, 1] with that many coefficients (geomath
 //   'bsplineAt', which wants 4 or more). 3 values is refused.
+// - A kink: 'kinks' lists run fractions in (0, 1), rising, where a curve may change slope (not position). The curve
+//   is then 'kinks' + 1 pieces, 'pieces' the value count of each (0, 1, 2 or at least 4, summing to 'values'), each
+//   piece the rule above over its own sub-range of t; at a kink the piece after it. Neighbouring pieces must meet
+//   in value (within 1e-5 of the curve's range). A uniform B-spline piece does not pass through its end
+//   coefficients (geomath 'bsplineAt' runs over [0, 1] from (c0 + 4 c1 + c2) / 6 to (c(n-3) + 4 c(n-2) + c(n-1)) / 6),
+//   so continuity is a condition on the coefficients, not a shared one. No kinks: today's curve, exactly.
 // - The spine: 3 curves, x, y and z of the path, in t. A straight run is 2 values each. 'up' is the path's up.
 // - 'path(samples)': the spine at 'samples' points evenly in t, 'up' as given.
 // - A track has x (on the section frame's normal), y (on its binormal; no values is y = 0 exactly, an open half's
 //   end on its mirror plane) and crease (the "crease" sharpness of the track's column; no values is smooth).
+// - 'closedFrom': the section is an open path for t < closedFrom and a closed ring (counterclockwise) for
+//   t >= closedFrom; 0 is closed all along, 1 open all along. Closing part way needs the open path's two end tracks
+//   to meet at closedFrom (within 1e-5 of the section's length). A run that opens (closed, then open) is this same
+//   spec with its run reversed.
 // - 'sectionAt(t)': every track is a tag, in order; the points are the tracks' x and y at t, the creases the
 //   tracks' crease at t. A track is always present, its crease 0 until it starts.
 // - 'mesh(rings, ...)': 'rings' sections evenly in t, t = 0 and 1 included, 'loftTagged' through them along
 //   'path(4 (rings - 1) + 1)', so each ring's t falls on a path sample. The station of a section is that sample's
 //   fraction of the path's length (loftTagged places by length; on a spine of uniform speed, which every straight
-//   run is, it equals t).
-// - Refusals (a problem line, an empty mesh): a RunCurve of 3 values; fewer than 2 tracks (open) or 3 (closed); a
-//   spine not 3 curves; 'rings' under 2; and whatever 'loftTagged' refuses.
-// - 'numbers': every RunCurve's values (spine, x, y, crease of each track), plus 3 for 'up'; 'closed' is free.
+//   run is, it equals t). A ring is also put at every kink and at closedFrom (an even ring within 1e-5 of one is
+//   moved onto it), the path sampled 4 times a band, so a kink is a ring and the slope change shows; without a
+//   kink or a part-way closing, the rings are exactly as above. A part-way closing is two lofts, the open part over
+//   [0, closedFrom] and the closed part over [closedFrom, 1], through the one path and its stations (so the ring at
+//   closedFrom is in the same frame in both), welded at that ring. The closing stretch starts with no length and
+//   opens out. 'caps' are not built for such a run (the open end has none, the shared ring is no end). The "along"
+//   channel and the uvs' v run over the whole run.
+// - Refusals (a problem line, an empty mesh): a RunCurve of 3 values; fewer than 2 tracks (open all along) or 3
+//   (closed anywhere); a spine not 3 curves; 'rings' under 2; kinks not rising or not inside (0, 1); pieces not
+//   kinks + 1 long or not summing to the values; a piece of 3 values; a jump at a kink; open ends that do not meet
+//   at closedFrom; closedFrom outside [0, 1]; and whatever 'loftTagged' refuses.
+// - 'numbers': every RunCurve's values (spine, x, y, crease of each track), one per kink, plus 3 for 'up', and 1
+//   for closedFrom when it is strictly between 0 and 1.
+
+// The rule of one piece (or a whole curve) at t in [0, 1]: see the top of this file
+fn curveRule(vals: &Array[f32], t: f32) f32 {
+  let n = vals.len;
+  if n == 1usize { return vals[0usize]; }
+  if n == 2usize {
+    var u = t;
+    if u < 0. { u = 0.; }
+    if u > 1. { u = 1.; }
+    let a = vals[0usize];
+    let b = vals[1usize];
+    return a + (b - a) * u;
+  }
+  if n >= 4usize { return bsplineAt(vals, 0., 1., t); }
+  0.
+}
 
 // A function of the run fraction t in [0, 1], stored by how much it varies
 pub struct RunCurve {
   pub values: List[f32];
+  // Run fractions in (0, 1), rising, where the curve may change slope (not position). Empty: one smooth curve
+  pub kinks: List[f32];
+  // One value count per piece (kinks + 1 pieces), each 0, 1, 2 or at least 4, summing to 'values'; empty when
+  // 'kinks' is empty
+  pub pieces: List[u32];
 
-  // The value at t (held to [0, 1]). 0 for no values and for 3 (refused by SweepSpec)
+  // A curve of these values with no kink
+  pub fn of(values: List[f32]) RunCurve { RunCurve(values, List[f32](), List[u32]()) }
+
+  // The value at t (held to [0, 1]). 0 for no values and for 3 (refused by SweepSpec). With kinks, each piece is
+  // the rule over its own sub-range of t, and at a kink the piece after it
   pub fn at(self: &, t: f32) f32 {
-    let n = values.len();
-    if n == 1usize { return *values[0usize]; }
-    if n == 2usize {
-      var u = t;
-      if u < 0. { u = 0.; }
-      if u > 1. { u = 1.; }
-      let a = *values[0usize];
-      let b = *values[1usize];
-      return a + (b - a) * u;
+    if kinks.len() == 0usize { return curveRule(values.view(), t); }
+    var u = t;
+    if u < 0. { u = 0.; }
+    if u > 1. { u = 1.; }
+    var p = 0usize;
+    while p < kinks.len() && *kinks[p] <= u { p = p + 1usize; }
+    pieceAt(p, if p == 0usize {0.} else {*kinks[p - 1usize]}, if p == kinks.len() {1.} else {*kinks[p]}, u)
+  }
+
+  // Piece p, over [a, b] in t, at t
+  fn pieceAt(self: &, p: usize, a: f32, b: f32, t: f32) f32 {
+    if pieces.len() != kinks.len() + 1usize { return 0.; }
+    var off = 0usize;
+    var q = 0usize;
+    while q < p { off = off + usize.from(*pieces[q]); q = q + 1usize; }
+    let cnt = usize.from(*pieces[p]);
+    if off + cnt > values.len() { return 0.; }
+    var own = List[f32].withCapacity(cnt);
+    q = 0usize;
+    while q < cnt { own.push(*values[off + q]); q = q + 1usize; }
+    curveRule(own.view(), if b > a {(t - a) / (b - a)} else {0.})
+  }
+
+  // The reason this curve cannot be used, or an empty string. 'label' names it in the line
+  fn refusal(self: &, label: &str) String {
+    var why = String.from("SweepSpec: ");
+    why.append(label);
+    if kinks.len() == 0usize {
+      if values.len() == 3usize { why.append(" is a curve of 3 values"); return why; }
+      if pieces.len() > 0usize { why.append(" has pieces but no kinks"); return why; }
+      return String.from("");
     }
-    if n >= 4usize { return bsplineAt(values.view(), 0., 1., t); }
-    0.
+    var k = 0usize;
+    while k < kinks.len() {
+      let v = *kinks[k];
+      if !(v > 0. && v < 1.) || (k > 0usize && v <= *kinks[k - 1usize]) {
+        why.append(" has kinks not rising inside (0, 1)");
+        return why;
+      }
+      k = k + 1usize;
+    }
+    if pieces.len() != kinks.len() + 1usize { why.append(" has pieces not kinks + 1 long"); return why; }
+    var total = 0usize;
+    k = 0usize;
+    while k < pieces.len() {
+      if *pieces[k] == 3u32 { why.append(" has a piece of 3 values"); return why; }
+      total = total + usize.from(*pieces[k]);
+      k = k + 1usize;
+    }
+    if total != values.len() { why.append(" has pieces not summing to its values"); return why; }
+    // The jumps, against the curve's range (sampled over every piece)
+    var lo = 0.f32;
+    var hi = 0.f32;
+    var first = true;
+    k = 0usize;
+    while k <= kinks.len() {
+      let a = if k == 0usize {0.} else {*kinks[k - 1usize]};
+      let b = if k == kinks.len() {1.} else {*kinks[k]};
+      var s = 0u32;
+      while s <= 16u32 {
+        let v = pieceAt(k, a, b, a + (b - a) * f32.from(s) / 16.);
+        if first || v < lo { lo = v; }
+        if first || v > hi { hi = v; }
+        first = false;
+        s = s + 1u32;
+      }
+      k = k + 1usize;
+    }
+    k = 0usize;
+    while k < kinks.len() {
+      let a = if k == 0usize {0.} else {*kinks[k - 1usize]};
+      let b = if k + 1usize == kinks.len() {1.} else {*kinks[k + 1usize]};
+      let before = pieceAt(k, a, *kinks[k], *kinks[k]);
+      let after = pieceAt(k + 1usize, *kinks[k], b, *kinks[k]);
+      var jump = after - before;
+      if jump < 0. { jump = 0. - jump; }
+      if jump > 0.00001 * (hi - lo) {
+        why.append(" jumps by ");
+        why.appendF32(jump);
+        why.append(" at kink ");
+        why.appendUInt(u64.from(k));
+        return why;
+      }
+      k = k + 1usize;
+    }
+    String.from("")
   }
 }
 
@@ -59,24 +177,65 @@ pub struct SweepTrack {
 
 pub alias SweepTracks = List[SweepTrack];
 
+// Add v to a rising list, once (within 1e-6 of one already there is the same)
+fn addRising(out: &mut List[f32], v: f32) {
+  var j = 0usize;
+  while j < out.len() {
+    var d = *out[j] - v;
+    if d < 0. { d = 0. - d; }
+    if d < 0.000001 { return; }
+    j = j + 1usize;
+  }
+  out.push(v);
+  j = out.len() - 1usize;
+  while j > 0usize && *out[j - 1usize] > *out[j] {
+    let a = *out[j - 1usize];
+    out[j - 1usize] = *out[j];
+    out[j] = a;
+    j = j - 1usize;
+  }
+}
+
+fn addKinksOf(c: &RunCurve, out: &mut List[f32]) {
+  var k = 0usize;
+  while k < c.kinks.len() {
+    addRising(out, *c.kinks[k]);
+    k = k + 1usize;
+  }
+}
+
 pub struct SweepSpec {
   // x, y and z of the path
   pub spine: RunCurves;
   pub up: Vec3;
-  // The section is a closed ring (counterclockwise), else an open half
-  pub closed: bool;
+  // The section is a closed ring (counterclockwise) for t >= closedFrom and an open half before; 0 is closed all
+  // along, 1 open all along
+  pub closedFrom: f32;
   pub tracks: SweepTracks;
 
   // The path: the spine at 'samples' points, evenly in t, open. An empty path when the spine is not 3 curves or
   // 'samples' is below 2
   pub fn path(self: &, samples: u32) Path {
-    var pts = List[Vec3]();
-    if spine.len() == 3usize && samples >= 2u32 {
+    var ts = List[f32].withCapacity(usize.from(samples));
+    if samples >= 2u32 {
       var i = 0u32;
       while i < samples {
-        let t = f32.from(i) / f32.from(samples - 1u32);
-        pts.push(Vec3(spine[0usize].at(t), spine[1usize].at(t), spine[2usize].at(t)));
+        ts.push(f32.from(i) / f32.from(samples - 1u32));
         i = i + 1u32;
+      }
+    }
+    pathAtTimes(&ts)
+  }
+
+  // The path through the spine at these run fractions
+  fn pathAtTimes(self: &, ts: &List[f32]) Path {
+    var pts = List[Vec3]();
+    if spine.len() == 3usize {
+      var i = 0usize;
+      while i < ts.len() {
+        let t = *ts[i];
+        pts.push(Vec3(spine[0usize].at(t), spine[1usize].at(t), spine[2usize].at(t)));
+        i = i + 1usize;
       }
     }
     var p = Path.fromPoints(pts.view(), false);
@@ -84,8 +243,14 @@ pub struct SweepSpec {
     p
   }
 
+  // Whether the section at t is a closed ring
+  fn closedAt(self: &, t: f32) bool { closedFrom < 1. && t >= closedFrom }
+
   // The section at run fraction t: every track a tag, the creases from the tracks
-  pub fn sectionAt(self: &, t: f32) TaggedProfile {
+  pub fn sectionAt(self: &, t: f32) TaggedProfile { sectionOf(t, closedAt(t)) }
+
+  // The section at t, as a closed ring or as an open path
+  fn sectionOf(self: &, t: f32, closed: bool) TaggedProfile {
     var pts = List[Vec2].withCapacity(tracks.len());
     var tags = List[u32].withCapacity(tracks.len());
     var creases = List[f32].withCapacity(tracks.len());
@@ -107,19 +272,39 @@ pub struct SweepSpec {
   fn refusal(self: &, rings: u32) String {
     if rings < 2u32 { return String.from("SweepSpec: fewer than 2 rings"); }
     if spine.len() != 3usize { return String.from("SweepSpec: the spine is not 3 curves"); }
-    if tracks.len() < (if closed {3usize} else {2usize}) { return String.from("SweepSpec: too few tracks"); }
+    if !(closedFrom >= 0. && closedFrom <= 1.) { return String.from("SweepSpec: closedFrom is outside [0, 1]"); }
+    if tracks.len() < (if closedFrom < 1. {3usize} else {2usize}) { return String.from("SweepSpec: too few tracks"); }
     var k = 0usize;
     while k < 3usize {
-      if spine[k].values.len() == 3usize { return String.from("SweepSpec: a curve of 3 values"); }
+      let why = spine[k].refusal(if k == 0usize {"the spine x"} else if k == 1usize {"the spine y"} else {"the spine z"});
+      if why.len() > 0usize { return why; }
       k = k + 1usize;
     }
     k = 0usize;
     while k < tracks.len() {
       let tr = &tracks[k];
-      if tr.x.values.len() == 3usize || tr.y.values.len() == 3usize || tr.crease.values.len() == 3usize {
-        return String.from("SweepSpec: a curve of 3 values");
+      var q = 0usize;
+      while q < 3usize {
+        var label = String.from("track ");
+        label.appendUInt(u64.from(k));
+        label.append(if q == 0usize {" x"} else if q == 1usize {" y"} else {" crease"});
+        let why = (if q == 0usize {&tr.x} else if q == 1usize {&tr.y} else {&tr.crease}).refusal(label.view());
+        if why.len() > 0usize { return why; }
+        q = q + 1usize;
       }
       k = k + 1usize;
+    }
+    if closedFrom > 0. && closedFrom < 1. {
+      // The open path's two end tracks meet at closedFrom
+      let sec = sectionOf(closedFrom, false);
+      var length = 0.f32;
+      var j = 1usize;
+      while j < sec.profile.points.len() {
+        length = length + (*sec.profile.points[j] - *sec.profile.points[j - 1usize]).length();
+        j = j + 1usize;
+      }
+      let gap = (*sec.profile.points[0usize] - *sec.profile.points[sec.profile.points.len() - 1usize]).length();
+      if gap > 0.00001 * length { return String.from("SweepSpec: the open ends do not meet at closedFrom"); }
     }
     String.from("")
   }
@@ -132,7 +317,65 @@ pub struct SweepSpec {
       return PolyMesh();
     }
     let n = usize.from(rings);
-    let p = path(4u32 * (rings - 1u32) + 1u32);
+    let part = closedFrom > 0. && closedFrom < 1.;
+    var specials = List[f32]();
+    var c = 0usize;
+    while c < 3usize { addKinksOf(&spine[c], &mut specials); c = c + 1usize; }
+    c = 0usize;
+    while c < tracks.len() {
+      addKinksOf(&tracks[c].x, &mut specials);
+      addKinksOf(&tracks[c].y, &mut specials);
+      addKinksOf(&tracks[c].crease, &mut specials);
+      c = c + 1usize;
+    }
+    if part { addRising(&mut specials, closedFrom); }
+
+    // The rings' fractions, and the path sampled to hold each ring on a sample
+    var ringT = List[f32].withCapacity(n + specials.len());
+    var r = 0usize;
+    while r < n {
+      ringT.push(f32.from(u32.from(r)) / f32.from(rings - 1u32));
+      r = r + 1usize;
+    }
+    var s = 0usize;
+    while s < specials.len() {
+      let v = *specials[s];
+      var found = false;
+      r = 1usize;
+      while r + 1usize < ringT.len() {
+        var d = *ringT[r] - v;
+        if d < 0. { d = 0. - d; }
+        if d < 0.00001 { ringT[r] = v; found = true; }
+        r = r + 1usize;
+      }
+      if !found {
+        var pos = 0usize;
+        while pos < ringT.len() && *ringT[pos] < v { pos = pos + 1usize; }
+        ringT.push(v);
+        var j = ringT.len() - 1usize;
+        while j > pos { ringT[j] = *ringT[j - 1usize]; j = j - 1usize; }
+        ringT[pos] = v;
+      }
+      s = s + 1usize;
+    }
+    var sampleT = List[f32]();
+    if specials.len() == 0usize {
+      let evenly = 4u32 * (rings - 1u32) + 1u32;
+      var i = 0u32;
+      while i < evenly { sampleT.push(f32.from(i) / f32.from(evenly - 1u32)); i = i + 1u32; }
+    } else {
+      r = 0usize;
+      while r + 1usize < ringT.len() {
+        var j = 0u32;
+        while j < 4u32 {
+          sampleT.push(*ringT[r] + (*ringT[r + 1usize] - *ringT[r]) * f32.from(j) / 4.);
+          j = j + 1u32;
+        }
+        r = r + 1usize;
+      }
+      sampleT.push(*ringT[ringT.len() - 1usize]);
+    }
+    let p = pathAtTimes(&sampleT);
     // The path's length up to each of its points
     var cum = List[f32].withCapacity(p.points.len());
     var run = 0.f32;
@@ -142,32 +385,116 @@ pub struct SweepSpec {
       cum.push(run);
       i = i + 1usize;
     }
-    var sections = List[TaggedProfile].withCapacity(n);
-    var stations = List[f32].withCapacity(n);
-    var r = 0usize;
-    while r < n {
-      let t = f32.from(u32.from(r)) / f32.from(rings - 1u32);
+    let nr = ringT.len();
+    var sections = List[TaggedProfile].withCapacity(nr);
+    var stations = List[f32].withCapacity(nr);
+    r = 0usize;
+    while r < nr {
+      let t = *ringT[r];
       sections.push(sectionAt(t));
       stations.push(if run > 0. {*cum[4usize * r] / run} else {t});
       r = r + 1usize;
     }
-    loftTagged(&sections, &p, stations.view(), between, uvByLength, caps, problems)
+    if !part { return loftTagged(&sections, &p, stations.view(), between, uvByLength, caps, problems); }
+
+    // Closing part way: the open part and the closed part, two lofts through the one path, welded at the ring
+    var ci = 0usize;
+    while ci < nr && *ringT[ci] != closedFrom { ci = ci + 1usize; }
+    if ci == 0usize || ci + 1usize >= nr {
+      problems.push(String.from("SweepSpec: closedFrom is too close to an end of the run"));
+      return PolyMesh();
+    }
+    var openSecs = List[TaggedProfile].withCapacity(ci + 1usize);
+    var openSt = List[f32].withCapacity(ci + 1usize);
+    var closedSecs = List[TaggedProfile].withCapacity(nr - ci);
+    var closedSt = List[f32].withCapacity(nr - ci);
+    r = 0usize;
+    while r < nr {
+      if r <= ci {
+        openSecs.push(sectionOf(*ringT[r], false));
+        openSt.push(*stations[r]);
+      }
+      if r >= ci {
+        closedSecs.push(sectionOf(*ringT[r], true));
+        closedSt.push(*stations[r]);
+      }
+      r = r + 1usize;
+    }
+    var a = loftTaggedCore(&openSecs, &p, openSt.view(), between, uvByLength, false, false, problems);
+    if a.vertexCount() == 0usize { return PolyMesh(); }
+    var b = loftTaggedCore(&closedSecs, &p, closedSt.view(), between, uvByLength, false, true, problems);
+    if b.vertexCount() == 0usize { return PolyMesh(); }
+    // Along the whole run: the open part's fractions of the way to closedFrom, the closed part's from there to 1
+    let atCf = *stations[ci];
+    let cols = tracks.len();
+    var offs = List[f32].withCapacity(cols);
+    var q = 0usize;
+    while q < cols { offs.push(0.); q = q + 1usize; }
+    if uvByLength {
+      // The closed part's columns carry on from the open part's lengths at the ring
+      let ua = a.findVec2Channel(CornerDomain, "uv");
+      let first = a.vertexCount() - cols;
+      var h = 0u32;
+      while usize.from(h) < a.halfedgeCount() {
+        let v = usize.from(a.toVertex(h));
+        if v >= first { offs[v - first] = a.vec2(ua, h).y; }
+        h = h + 1u32;
+      }
+    }
+    rescaleAlong(&mut a, 0., atCf, false, &offs, cols);
+    rescaleAlong(&mut b, atCf, 1., uvByLength, &offs, cols);
+    var parts = List[PolyMesh]();
+    parts.push(a);
+    parts.push(b);
+    let both = join(&parts, problems);
+    weld(&both, 0.)
   }
 
   // Every stored number
   pub fn numbers(self: &) u32 {
     var total = 3usize;
+    if closedFrom > 0. && closedFrom < 1. { total = total + 1usize; }
     var k = 0usize;
     while k < spine.len() {
-      total = total + spine[k].values.len();
+      total = total + spine[k].values.len() + spine[k].kinks.len();
       k = k + 1usize;
     }
     k = 0usize;
     while k < tracks.len() {
       let tr = &tracks[k];
-      total = total + tr.x.values.len() + tr.y.values.len() + tr.crease.values.len();
+      total = total + tr.x.values.len() + tr.y.values.len() + tr.crease.values.len()
+        + tr.x.kinks.len() + tr.y.kinks.len() + tr.crease.kinks.len();
       k = k + 1usize;
     }
     u32.from(total)
+  }
+}
+
+// A loft's own fraction a of its run [lo, hi] as a fraction of the whole run (the ends exactly)
+fn alongOf(a: f32, lo: f32, hi: f32) f32 {
+  if a >= 1. { return hi; }
+  if a <= 0. { return lo; }
+  lo + a * (hi - lo)
+}
+
+// Put a loft's "along" and its uvs' v on the whole run: its own fraction of [lo, hi] mapped, or with 'byLength' its
+// columns' lengths carried on from offs (column = vertex mod cols)
+fn rescaleAlong(m: &mut PolyMesh, lo: f32, hi: f32, byLength: bool, offs: &List[f32], cols: usize) {
+  let along = m.findFloatChannel(VertexDomain, "along");
+  var v = 0usize;
+  while v < m.vertexCount() {
+    m.setFloat(along, u32.from(v), alongOf(m.float(along, u32.from(v)), lo, hi));
+    v = v + 1usize;
+  }
+  let uv = m.findVec2Channel(CornerDomain, "uv");
+  var h = 0u32;
+  while usize.from(h) < m.halfedgeCount() {
+    let c = m.vec2(uv, h);
+    if byLength {
+      m.setVec2(uv, h, Vec2(c.x, c.y + *offs[usize.from(m.toVertex(h)) % cols]));
+    } else {
+      m.setVec2(uv, h, Vec2(c.x, alongOf(c.y, lo, hi)));
+    }
+    h = h + 1u32;
   }
 }
