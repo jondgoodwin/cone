@@ -1092,6 +1092,33 @@ fn viaParam(h: &amp;Holder, g: &amp;mut Ed) {
   useHolder(h, g.items[0usize].label.view());  // Error 1339: g may be gl, and the closure may write it
 }
 </pre>
+	<p>A <span class="pre">var</span> global that holds a way to <a href="#owners">an owner</a> is another name for its
+		holder. A function reshapes through that global not only by storing through its name, but by storing through
+		whatever it got from it: a copy of the owner the global holds, a pattern's binding, what a function that names the
+		global answers, passed on or kept:</p>
+<pre>
+struct Idle { pub count: i64; }
+struct Tcb { pub task: Rc[mut, Idle]; }
+var cur: Option[Rc[mut, Tcb]] = None[Rc[mut, Tcb]];
+
+fn run(self: &amp;mut Idle) {
+  match cur {
+    case let Some(t) { t.task = Rc[mut, Idle](100); }  // frees the task cur's Tcb owns
+    else {}
+  }
+  self.count += 1;
+}
+
+fn start() {
+  let t1 = Rc[mut, Tcb](Rc[mut, Idle](7));
+  cur = Some(t1);
+  run(&amp;mut *t1.task);          // Error 1339: run stores over the owner of what it is lent
+}
+</pre>
+	<p>What a method lends from behind a virtual reference, as <span class="pre">Error</span>'s <span class="pre">source</span>
+		does, may point at a value of any type that is one of the trait. A <span class="pre">var</span> global is taken to
+		hold it only if its type could: it holds a type that declares the trait, or one with every method and field the
+		trait has, or owns something behind a virtual reference. A global that holds none of these is not asked about.</p>
 
 	<h2 id="notfollowed">What the check does not follow</h2>
 	<p>The check does not tell two values of one type apart. A function handed a <span class="pre">List[Pt]</span> that

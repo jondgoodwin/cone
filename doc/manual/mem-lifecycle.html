@@ -152,10 +152,11 @@ let s: Resource = Resource.Nothing;                             // dies: release
 </pre>
 
 	<h2 id="globals">A global variable</h2>
-	<p>A global variable lives until the program shuts down. Whatever it holds is then finalized by its module's
-		finalizer, after the module's own <span class="pre">final</span>: a value whose type finalizes, a tuple or an array
-		of them, or an owning reference, which is released (<a href="mod-globals.html#dyninit">The module's
-		initializer</a>, in Modularity, describes a module's own initializer and finalizer):</p>
+	<p>A global variable lives until the process ends, and what it holds is never finalized: not a value whose type
+		finalizes, nor a tuple or an array of them, nor an owning reference, which is not released. An actor still
+		running, or a thread the program detached, may be using it until the very end. When <span class="pre">main</span>
+		returns, each module's <span class="pre">final</span> runs, so anything that must happen outside the process is
+		done there (<a href="mod-globals.html#globalend">A global is never finalized</a>, in Modularity):</p>
 <pre>
 mod globals;
 
@@ -178,12 +179,17 @@ fn @initpure init() {
   owned = Uni[R](6);
 }
 
+// The module's finalizer runs after main returns; no R's final does
+fn final() {
+  print &lt;- "module final, one still holds "; print &lt;- one.n; print &lt;- "\n";
+}
+
 fn main() {
   print &lt;- "main ends\n";
 }
 </pre>
-	<p>This prints <span class="pre">main ends</span>, and then, after <span class="pre">main</span> returns,
-		<span class="pre">final 1</span> through <span class="pre">final 6</span>, one to a line.</p>
+	<p>This prints <span class="pre">main ends</span> and, after <span class="pre">main</span> returns,
+		<span class="pre">module final, one still holds 1</span>. None of the six values is finalized.</p>
 
 	<p>You can now say, for any value, when it dies and in what order its finalizers run, which is what code holding a
 		socket, a file or a lock needs to know. The single owner of the last page frees its value the moment that owner goes;
