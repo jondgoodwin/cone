@@ -3715,6 +3715,7 @@ static PathSet *pwPointerOf(PathSet *carried) {
 // A downcast of the trait object is not seen by this
 
 #define PwReachMax 24
+#define PwReachTraits 4
 
 // A type walked, with what it was walked for: so that a type that holds itself ends
 typedef struct {
@@ -3727,6 +3728,10 @@ typedef struct {
     INode *targets[PwReachMax];     // what the result's borrows may point at
     int ntargets;
     int any;                        // anything: a borrow of a trait, or more types than are kept
+    INode *traits[PwReachTraits];   // the traits those borrows point at
+    int ntraits;
+    int anything;                   // 'any' for more than those traits say
+    int byglobal;                   // walking a global's type: could it hold what is borrowed?
     uint32_t nconts;                // the containers found, in 'pwReachConts'
     uint32_t nseen;                 // the types walked, in 'pwReachSeen'
     int visits;                     // types visited by the walks that keep no record of them
@@ -3739,6 +3744,9 @@ struct PwUnseen {
     INode *targets[PwReachMax];
     int ntargets;
     int any;
+    INode *traits[PwReachTraits];
+    int ntraits;
+    int anything;
 };
 
 #define PwReachVisits 4096
@@ -3756,9 +3764,64 @@ static void pwReachTarget(PwReach *r, INode *type) {
             return;
     }
     if (r->ntargets == PwReachMax)
-        r->any = 1;
+        r->any = r->anything = 1;
     else
         r->targets[r->ntargets++] = type;
+}
+
+// A borrow the result holds points at a trait: at a value of some type that is one
+static void pwReachAnyOf(PwReach *r, INode *trait) {
+    r->any = 1;
+    if (trait == NULL || trait->tag != StructTag || !(trait->flags & TraitType)) {
+        r->anything = 1;
+        return;
+    }
+    for (int i = 0; i < r->ntraits; ++i) {
+        if (r->traits[i] == trait)
+            return;
+    }
+    if (r->ntraits == PwReachTraits)
+        r->anything = 1;
+    else
+        r->traits[r->ntraits++] = trait;
+}
+
+// Could a value of 'type' be what a reference to 'trait' points at? It says it is one, or it
+// has a member of every name the trait's vtable has a slot for, as a type that never says so
+// may still be made a virtual reference to the trait (no default applies to it). A trait whose
+// vtable is not yet made is asked of its fields and the methods with no body, which fewer
+// types lack
+static int pwMayBe(INode *type, INode *trait) {
+    if (type->tag != StructTag)
+        return 0;
+    // (another open trait, as a plain reference's referent, stands for any type)
+    if ((type->flags & TraitType) && !reshapeIsSum(type))
+        return 1;
+    StructNode *st = (StructNode *)type;
+    StructNode *tr = (StructNode *)trait;
+    if (structDeclaresTraitTree(st, tr, 0))
+        return 1;
+    INode **nodesp;
+    uint32_t cnt;
+    if (tr->vtable) {
+        for (nodesFor(tr->vtable->methfld, cnt, nodesp)) {
+            Name *name = (*nodesp)->tag == FnDclTag ? ((FnDclNode *)*nodesp)->namesym : ((FieldDclNode *)*nodesp)->namesym;
+            if (name && namespaceFind(&st->namespace, name) == NULL)
+                return 0;
+        }
+        return 1;
+    }
+    for (nodelistFor(&tr->fields, cnt, nodesp)) {
+        if (namespaceFind(&st->namespace, ((FieldDclNode *)*nodesp)->namesym) == NULL)
+            return 0;
+    }
+    for (nodelistFor(&tr->nodelist, cnt, nodesp)) {
+        FnDclNode *meth = (FnDclNode *)*nodesp;
+        if ((*nodesp)->tag == FnDclTag && (meth->flags & FlagMethFld) && meth->value == NULL
+                && meth->namesym && namespaceFind(&st->namespace, meth->namesym) == NULL)
+            return 0;
+    }
+    return 1;
 }
 
 // The types the borrows a result of 'type' holds may point at
@@ -3767,7 +3830,7 @@ static void pwReachTargets(PwReach *r, INode *type, int depth) {
     if (type == NULL || depth > 5)
         return;
     if (++r->visits > PwReachVisits) {
-        r->any = 1;
+        r->any = r->anything = 1;
         return;
     }
     switch (type->tag) {
@@ -3778,7 +3841,7 @@ static void pwReachTargets(PwReach *r, INode *type, int depth) {
         if (pwIsBorrowed(type)) {
             // A trait, or a trait object: whatever implements it
             if (type->tag == VirtRefTag || (to->tag == StructTag && (to->flags & TraitType) && !reshapeIsSum(to)))
-                r->any = 1;
+                pwReachAnyOf(r, to);
             else
                 pwReachTarget(r, to);
         }
@@ -3822,8 +3885,17 @@ static void pwReachTargets(PwReach *r, INode *type, int depth) {
 
 // May a borrow of a value of 'type' be one of the result's?
 static int pwReachMatch(PwReach *r, INode *type) {
-    if (r->any)
-        return 1;
+    if (r->any) {
+        // A global holds what a borrow of a trait points at only if it holds a value that could
+        // be one. (What it holds behind a virtual reference of its own is taken anyway,
+        // pwReachWalk)
+        if (!r->byglobal || r->anything)
+            return 1;
+        for (int i = 0; i < r->ntraits; ++i) {
+            if (pwMayBe(type, r->traits[i]))
+                return 1;
+        }
+    }
     for (int i = 0; i < r->ntargets; ++i) {
         if (itypeIsSame(r->targets[i], type))
             return 1;
@@ -4250,6 +4322,7 @@ static int pwUnseenStoreHits(INode *lval, PwUnseen *unseen) {
     memcpy(r.targets, unseen->targets, sizeof(r.targets));
     r.ntargets = unseen->ntargets;
     r.any = unseen->any;
+    r.anything = unseen->anything;
     r.owned = 1;
     pwReachWalk(&r, stored, NULL, 1, 1, 0);
     return r.nconts > 0 || r.unseen != NULL;
@@ -4264,6 +4337,9 @@ static uint32_t pwUnseenConts(FnCallNode *call, PwUnseen *unseen, INode ***conts
     memcpy(r.targets, unseen->targets, sizeof(r.targets));
     r.ntargets = unseen->ntargets;
     r.any = unseen->any;
+    r.anything = unseen->anything;
+    memcpy(r.traits, unseen->traits, sizeof(r.traits));
+    r.ntraits = unseen->ntraits;
     FnSigNode *sig = (FnSigNode *)iexpGetDerefTypeDcl(call->objfn);
     uint32_t nargs = call->args ? call->args->used : 0;
     for (uint32_t i = 0; i < nargs; ++i) {
@@ -4271,6 +4347,8 @@ static uint32_t pwUnseenConts(FnCallNode *call, PwUnseen *unseen, INode ***conts
             ? iexpGetTypeDcl(nodesGet(sig->parms, i)) : iexpGetTypeDcl(nodesGet(call->args, i));
         pwReachWalk(&r, type, NULL, 1, 1, 0);
     }
+    // A global is a holder of what the borrow points at only if its type could hold one
+    r.byglobal = 1;
     for (uint32_t i = 0; i < reshapeGlobalCount(); ++i)
         pwReachWalk(&r, reshapeGlobalAt(i)->vtype, NULL, 1, 1, 0);
     *conts = (INode **)memAllocBlk((r.nconts ? r.nconts : 1) * sizeof(INode *));
@@ -4356,6 +4434,9 @@ static PathSet *pwReachShared(FnCallNode *call, uint32_t argi, INode *parmtype, 
             memcpy(unseen->targets, r.targets, sizeof(unseen->targets));
             unseen->ntargets = r.ntargets;
             unseen->any = r.any;
+            memcpy(unseen->traits, r.traits, sizeof(unseen->traits));
+            unseen->ntraits = r.ntraits;
+            unseen->anything = r.anything;
             loanUnseenSet(id, unseen);
         }
     }
