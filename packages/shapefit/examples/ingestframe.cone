@@ -1,0 +1,309 @@
+// ingestframe: the ingest and frame instruments on a real model, a horse in one STL file:
+// read it (mesh's STL reader), split it into shells and keep the outer skin of the largest
+// (sculpt), and find the mirror plane of the skin and of a second model (shapefit), with the
+// time of each step.
+//
+//   congo run --release packages/shapefit/examples/ingestframe.cone
+//
+// Reads (reference only, never copied into the repo)
+//   C:/src/knight-ref/horse-all.stl     the horse, 82k triangles in hundreds of shells
+//   C:/src/knight-ref/Knight-avalli.stl a knight, for its mirror plane
+// and writes to C:/src/zz-w77/out/
+//   horse-shell.stl, horse-skin.stl     the largest shell, and its outer skin
+//   horse-skin-verts.txt, avalli-verts.txt   the welded vertices, one 'x y z' a line, in the order
+//                                       the planes were found from (to run the Python reference on the same points)
+//   horse-shells.png                    the horse with each shell its own colour, the skin's
+//                                       mirror plane drawn, seen along the plane and edge on
+// and prints the numbers.
+mod ingestframe;
+
+import stdio use *;
+import libc;
+import geomath use *;
+import collections use *;
+import mesh use *;
+import sculpt use *;
+import shapefit use *;
+import fs;
+import path;
+import time use Instant;
+
+let OutDir = "C:/src/zz-w77/out";
+
+fn seconds(t: &Instant) f64 { t.elapsed().secondsF64() }
+
+fn report(problems: &List[String]) {
+  var i = 0usize;
+  while i < problems.len() {
+    print <- "  problem: ", (*problems[i]).view(), "\n";
+    i = i + 1usize;
+  }
+}
+
+// The vertices as text lines
+fn writeVerts(m: &Mesh, name: &str) {
+  var s = String();
+  var i = 0usize;
+  while i < m.positions.len() {
+    let p = *m.positions[i];
+    s.append(numberText(p.x, 7).view());
+    s.append(" ");
+    s.append(numberText(p.y, 7).view());
+    s.append(" ");
+    s.append(numberText(p.z, 7).view());
+    s.append("\n");
+    i = i + 1usize;
+  }
+  var cpath = String.from(name);
+  let f = libc.fopen(cpath.cstr(), "wb");
+  if f {
+    let v = s.view() as &Array[u8];
+    libc.fwrite(&v[0usize], 1usize, v.len, f);
+    libc.fclose(f);
+  }
+}
+
+fn planeLine(tag: &str, pl: &SymmetryPlane, secs: f64) {
+  print <- tag, ": normal (", numberText(pl.normal.x, 6).view(), " ", numberText(pl.normal.y, 6).view(), " ",
+    numberText(pl.normal.z, 6).view(), ") origin (", numberText(pl.origin.x, 4).view(), " ", numberText(pl.origin.y, 4).view(), " ",
+    numberText(pl.origin.z, 4).view(), ") error ", numberText(f32.from(pl.error), 6).view(), " rms ", numberText(f32.from(pl.rms), 6).view(),
+    "  [", numberText(f32.from(secs), 2).view(), " s]\n";
+}
+
+// The largest five shells' triangle counts, and the index of the largest
+fn topShells(parts: &Shells) usize {
+  var best = 0usize;
+  var used = List[bool]();
+  var i = 0usize;
+  while i < parts.len() { used.push(false); i = i + 1usize; }
+  var rank = 0usize;
+  print <- "  largest shells (triangles):";
+  while rank < 5usize && rank < parts.len() {
+    var at = parts.len();
+    var j = 0usize;
+    while j < parts.len() {
+      if !*used[j] && (at == parts.len() || parts[j].indices.len() > parts[at].indices.len()) { at = j; }
+      j = j + 1usize;
+    }
+    if rank == 0usize { best = at; }
+    used.set(at, true);
+    print <- " ", u64.from(parts[at].indices.len() / 3usize);
+    rank = rank + 1usize;
+  }
+  print <- "\n";
+  best
+}
+
+// ---- the picture: flat-shaded triangles, a colour per triangle, z-buffered ----
+
+fn shade(c: Vec3, k: f32) Vec3 { Vec3(c.x * k, c.y * k, c.z * k) }
+
+fn palette(i: u32) Vec3 {
+  let h = f64.from((i * 97u32) % 360u32) / 60.0;
+  let f = h - libc.floor(h);
+  let seg = u32.from(h);
+  let q = f32.from(1.0 - f);
+  let t = f32.from(f);
+  if seg == 0u32 { Vec3(1., t, 0.2) } else if seg == 1u32 { Vec3(q, 1., 0.2) } else if seg == 2u32 { Vec3(0.2, 1., t) }
+  else if seg == 3u32 { Vec3(0.2, q, 1.) } else if seg == 4u32 { Vec3(t, 0.2, 1.) } else { Vec3(1., 0.2, q) }
+}
+
+// The mesh seen along 'v', in the tile, each triangle the colour of its shell
+fn drawShells(cv: &mut Canvas, vp: &Viewport, m: &Mesh, ids: &List[u32], v: &View, centre: DVec3, scale: f64,
+    plane: &SymmetryPlane) {
+  let nt = m.indices.len() / 3usize;
+  let cx = f64.from(vp.x) + 0.5 * f64.from(vp.w);
+  let cy = f64.from(vp.y) + 0.5 * f64.from(vp.h);
+  var t = 0usize;
+  while t < nt {
+    var px = Array[f64, 3]() <- fill 0.0;
+    var py = Array[f64, 3]() <- fill 0.0;
+    var pz = Array[f64, 3]() <- fill 0.0;
+    var k = 0usize;
+    while k < 3usize {
+      let p = DVec3.from(*m.positions[usize.from(*m.indices[3usize * t + k])]) - centre;
+      let q = v.project(p);
+      px[k] = cx + q.x * scale;
+      py[k] = cy - q.y * scale;
+      pz[k] = q.z;
+      k = k + 1usize;
+    }
+    let n0 = DVec3.from(*m.positions[usize.from(*m.indices[3usize * t + 1usize])]) - DVec3.from(*m.positions[usize.from(*m.indices[3usize * t])]);
+    let n1 = DVec3.from(*m.positions[usize.from(*m.indices[3usize * t + 2usize])]) - DVec3.from(*m.positions[usize.from(*m.indices[3usize * t])]);
+    let nn = DVec3(n0.y * n1.z - n0.z * n1.y, n0.z * n1.x - n0.x * n1.z, n0.x * n1.y - n0.y * n1.x);
+    let nl = nn.length();
+    var light = 0.5;
+    if nl > 0.0 { light = 0.35 + 0.65 * (nn.dot(v.forward) / nl).abs(); }
+    let col = shade(palette(*ids[t]), f32.from(light));
+    var x0 = px[0usize]; var x1 = px[0usize]; var y0 = py[0usize]; var y1 = py[0usize];
+    k = 1usize;
+    while k < 3usize {
+      if px[k] < x0 { x0 = px[k]; } if px[k] > x1 { x1 = px[k]; }
+      if py[k] < y0 { y0 = py[k]; } if py[k] > y1 { y1 = py[k]; }
+      k = k + 1usize;
+    }
+    let area = (px[1usize] - px[0usize]) * (py[2usize] - py[0usize]) - (px[2usize] - px[0usize]) * (py[1usize] - py[0usize]);
+    if area.abs() > 1.0e-12 {
+      var y = i32.from(libc.floor(y0));
+      while y <= i32.from(libc.floor(y1)) {
+        var x = i32.from(libc.floor(x0));
+        while x <= i32.from(libc.floor(x1)) {
+          if x >= vp.x && x < vp.x + vp.w && y >= vp.y && y < vp.y + vp.h {
+            let sx = f64.from(x) + 0.5 - px[0usize];
+            let sy = f64.from(y) + 0.5 - py[0usize];
+            let b1 = (sx * (py[2usize] - py[0usize]) - (px[2usize] - px[0usize]) * sy) / area;
+            let b2 = ((px[1usize] - px[0usize]) * sy - sx * (py[1usize] - py[0usize])) / area;
+            let b0 = 1.0 - b1 - b2;
+            if b0 >= 0.0 && b1 >= 0.0 && b2 >= 0.0 {
+              let z = f32.from(b0 * pz[0usize] + b1 * pz[1usize] + b2 * pz[2usize]);
+              let at = usize.from(y) * usize.from(cv.w) + usize.from(x);
+              if z < *cv.depth[at] {
+                cv.depth.set(at, z);
+                cv.setPixel(x, y, col);
+              }
+            }
+          }
+          x = x + 1;
+        }
+        y = y + 1;
+      }
+    }
+    t = t + 1usize;
+  }
+  // The plane: a rectangle in it about the model's middle, as outline
+  let n = DVec3.from(plane.normal);
+  let o = DVec3.from(plane.origin);
+  let ax = n.x.abs(); let ay = n.y.abs(); let az = n.z.abs();
+  let helper = if ax <= ay && ax <= az { DVec3(1.0, 0.0, 0.0) } else if ay <= az { DVec3(0.0, 1.0, 0.0) } else { DVec3(0.0, 0.0, 1.0) };
+  let u0 = DVec3(n.y * helper.z - n.z * helper.y, n.z * helper.x - n.x * helper.z, n.x * helper.y - n.y * helper.x);
+  let u = u0 * (1.0 / u0.length());
+  let w = DVec3(n.y * u.z - n.z * u.y, n.z * u.x - n.x * u.z, n.x * u.y - n.y * u.x);
+  let r = 0.5 * (f64.from(vp.w) - 20.0) / scale;
+  var corners = List[DVec3]();
+  corners.push(o + u * (-r) + w * (-r));
+  corners.push(o + u * r + w * (-r));
+  corners.push(o + u * r + w * r);
+  corners.push(o + u * (-r) + w * r);
+  var e = 0usize;
+  while e < 4usize {
+    let a = v.project(*corners[e] - centre);
+    let b = v.project(*corners[(e + 1usize) % 4usize] - centre);
+    cv.line(i32.from(cx + a.x * scale), i32.from(cy - a.y * scale), i32.from(cx + b.x * scale), i32.from(cy - b.y * scale), Vec3(1., 1., 1.));
+    e = e + 1usize;
+  }
+}
+
+fn main() i32 {
+  if let Err(e) = fs.makeDirAll(&path.Path.from(OutDir)) { print <- "could not make ", OutDir, ": ", e, "\n"; return 1; }
+  var t = Instant.now();
+  var problems = List[String]();
+  let horse = readStl("C:/src/knight-ref/horse-all.stl", &mut problems);
+  report(&problems);
+  print <- "horse-all.stl: ", u64.from(horse.positions.len()), " vertices, ", u64.from(horse.indices.len() / 3usize),
+    " triangles  [read+weld ", numberText(f32.from(seconds(&t)), 2).view(), " s]\n";
+
+  t = Instant.now();
+  let ids = triangleShells(&horse);
+  let tShellIds = seconds(&t);
+  t = Instant.now();
+  let parts = splitShells(&horse);
+  let tSplit = seconds(&t);
+  print <- "shells: ", u64.from(parts.len()), "  [triangleShells ", numberText(f32.from(tShellIds), 2).view(),
+    " s; splitShells ", numberText(f32.from(tSplit), 2).view(), " s]\n";
+  let big = topShells(&parts);
+  let shell = &parts[big];
+  print <- "largest shell: ", u64.from(shell.positions.len()), " vertices, ", u64.from(shell.indices.len() / 3usize), " triangles\n";
+
+  t = Instant.now();
+  let keep = outerTriangles(shell, 64u32);
+  let tSkin = seconds(&t);
+  print <- "outer skin of the largest shell: ", u64.from(keep.len()), " of ", u64.from(shell.indices.len() / 3usize),
+    " triangles  [64 rays ", numberText(f32.from(tSkin), 2).view(), " s]\n";
+  t = Instant.now();
+  let keep0 = outerTriangles(shell, 0u32);
+  print <- "  with the normal alone: ", u64.from(keep0.len()), " triangles  [", numberText(f32.from(seconds(&t)), 2).view(), " s]\n";
+  let skin = takeTriangles(shell, keep.view());
+  print <- "  the skin as a mesh: ", u64.from(skin.positions.len()), " vertices\n";
+  writeStl(shell, "C:/src/zz-w77/out/horse-shell.stl");
+  writeStl(&skin, "C:/src/zz-w77/out/horse-skin.stl");
+  writeVerts(&skin, "C:/src/zz-w77/out/horse-skin-verts.txt");
+
+  t = Instant.now();
+  let planeSkin = symmetryPlane(skin.positions.view());
+  planeLine("mirror plane, horse skin shell", &planeSkin, seconds(&t));
+  t = Instant.now();
+  let pcaSkin = symmetryPlaneFrom(skin.positions.view(), 4000u32, StartsPrincipal);
+  planeLine("  principal starts only        ", &pcaSkin, seconds(&t));
+  t = Instant.now();
+  let coSkin = symmetryPlaneFrom(skin.positions.view(), 4000u32, StartsCoordinate);
+  planeLine("  coordinate starts only       ", &coSkin, seconds(&t));
+  t = Instant.now();
+  let planeShell = symmetryPlane(shell.positions.view());
+  planeLine("mirror plane, horse largest shell (not skinned)", &planeShell, seconds(&t));
+
+  // The horse's head alone (267 shells), where the principal axes alone once failed (a tilted plane)
+  t = Instant.now();
+  let head = readStl("C:/src/knight-ref/horse-head.stl", &mut problems);
+  report(&problems);
+  let headParts = splitShells(&head);
+  print <- "horse-head.stl: ", u64.from(head.positions.len()), " vertices, ", u64.from(head.indices.len() / 3usize), " triangles, ",
+    u64.from(headParts.len()), " shells  [read, weld and split ", numberText(f32.from(seconds(&t)), 2).view(), " s]\n";
+  let headBig = topShells(&headParts);
+  let headSkin = takeTriangles(&headParts[headBig], outerTriangles(&headParts[headBig], 64u32).view());
+  print <- "  outer skin of its largest shell: ", u64.from(headSkin.indices.len() / 3usize), " triangles\n";
+  writeVerts(&head, "C:/src/zz-w77/out/head-verts.txt");
+  writeVerts(&headSkin, "C:/src/zz-w77/out/head-skin-verts.txt");
+  t = Instant.now();
+  let planeHead = symmetryPlane(head.positions.view());
+  planeLine("mirror plane, horse-head.stl, every shell", &planeHead, seconds(&t));
+  t = Instant.now();
+  let pcaHead = symmetryPlaneFrom(head.positions.view(), 4000u32, StartsPrincipal);
+  planeLine("  principal starts only        ", &pcaHead, seconds(&t));
+  t = Instant.now();
+  let coHead = symmetryPlaneFrom(head.positions.view(), 4000u32, StartsCoordinate);
+  planeLine("  coordinate starts only       ", &coHead, seconds(&t));
+  t = Instant.now();
+  let planeHeadSkin = symmetryPlane(headSkin.positions.view());
+  planeLine("mirror plane, head skin shell", &planeHeadSkin, seconds(&t));
+  t = Instant.now();
+  let pcaHeadSkin = symmetryPlaneFrom(headSkin.positions.view(), 4000u32, StartsPrincipal);
+  planeLine("  principal starts only        ", &pcaHeadSkin, seconds(&t));
+
+  // The whole file, every shell: the start sets again (principal axes alone failed here in Python)
+  t = Instant.now();
+  let planeAll = symmetryPlane(horse.positions.view());
+  planeLine("mirror plane, horse-all.stl, every shell", &planeAll, seconds(&t));
+  t = Instant.now();
+  let pcaAll = symmetryPlaneFrom(horse.positions.view(), 4000u32, StartsPrincipal);
+  planeLine("  principal starts only        ", &pcaAll, seconds(&t));
+  t = Instant.now();
+  let coAll = symmetryPlaneFrom(horse.positions.view(), 4000u32, StartsCoordinate);
+  planeLine("  coordinate starts only       ", &coAll, seconds(&t));
+  writeVerts(&horse, "C:/src/zz-w77/out/horse-all-verts.txt");
+
+  t = Instant.now();
+  let knight = readStl("C:/src/knight-ref/Knight-avalli.stl", &mut problems);
+  report(&problems);
+  print <- "Knight-avalli.stl: ", u64.from(knight.positions.len()), " vertices, ", u64.from(knight.indices.len() / 3usize),
+    " triangles  [read+weld ", numberText(f32.from(seconds(&t)), 2).view(), " s]\n";
+  writeVerts(&knight, "C:/src/zz-w77/out/avalli-verts.txt");
+  t = Instant.now();
+  let planeKnight = symmetryPlane(knight.positions.view());
+  planeLine("mirror plane, Knight-avalli", &planeKnight, seconds(&t));
+
+  // The picture
+  let box = horse.bounds();
+  let centre = DVec3.from((box.min + box.max) * 0.5);
+  let diag = DVec3.from(box.max - box.min).length();
+  var cv = Canvas.make(1200, 600, Vec3(0.08, 0.08, 0.1));
+  let nrm = planeSkin.normal;
+  let up = if nrm.y.abs() < 0.9 { Vec3(0., 1., 0.) } else { Vec3(0., 0., 1.) };
+  let along = View.look(nrm, up);
+  let edge = View.look(along.right.toVec3(), up);
+  let scale = 540.0 / diag;
+  drawShells(&mut cv, &Viewport(0, 0, 600, 600), &horse, &ids, &along, centre, scale, &planeSkin);
+  drawShells(&mut cv, &Viewport(600, 0, 600, 600), &horse, &ids, &edge, centre, scale, &planeSkin);
+  let ok = cv.save(OutDir, "horse-shells.png");
+  print <- "picture written: ", ok, "\n";
+  0
+}

@@ -1,0 +1,173 @@
+// ======== SweepSpec: a swept part stored by track, so its size follows the shape ========
+//
+// A part that is a section swept along a curve is kept as a path plus tracks. A track is one point of the section
+// (a corner, an open end, or an interior point of a curved stretch); each coordinate of a track, and its crease,
+// is a function of the run fraction t in [0, 1], stored by how much it varies. A section at any t is the tracks'
+// points in order, joined by straight stretches, so a smooth run is cheap and a discontinuity (a corner) is a
+// track of its own. A program hydrates it with this package alone: 'sectionAt' makes a section, 'mesh' the tagged
+// loft through the sections. (Fitting one to a mesh is not here.)
+//
+// - 'RunCurve': no values is 0 everywhere; 1 value a constant; 2 values linear from the first (t = 0) to the
+//   second (t = 1); 4 or more a uniform cubic B-spline over [0, 1] with that many coefficients (geomath
+//   'bsplineAt', which wants 4 or more). 3 values is refused.
+// - The spine: 3 curves, x, y and z of the path, in t. A straight run is 2 values each. 'up' is the path's up.
+// - 'path(samples)': the spine at 'samples' points evenly in t, 'up' as given.
+// - A track has x (on the section frame's normal), y (on its binormal; no values is y = 0 exactly, an open half's
+//   end on its mirror plane) and crease (the "crease" sharpness of the track's column; no values is smooth).
+// - 'sectionAt(t)': every track is a tag, in order; the points are the tracks' x and y at t, the creases the
+//   tracks' crease at t. A track is always present, its crease 0 until it starts.
+// - 'mesh(rings, ...)': 'rings' sections evenly in t, t = 0 and 1 included, 'loftTagged' through them along
+//   'path(4 (rings - 1) + 1)', so each ring's t falls on a path sample. The station of a section is that sample's
+//   fraction of the path's length (loftTagged places by length; on a spine of uniform speed, which every straight
+//   run is, it equals t).
+// - Refusals (a problem line, an empty mesh): a RunCurve of 3 values; fewer than 2 tracks (open) or 3 (closed); a
+//   spine not 3 curves; 'rings' under 2; and whatever 'loftTagged' refuses.
+// - 'numbers': every RunCurve's values (spine, x, y, crease of each track), plus 3 for 'up'; 'closed' is free.
+
+// A function of the run fraction t in [0, 1], stored by how much it varies
+pub struct RunCurve {
+  pub values: List[f32];
+
+  // The value at t (held to [0, 1]). 0 for no values and for 3 (refused by SweepSpec)
+  pub fn at(self: &, t: f32) f32 {
+    let n = values.len();
+    if n == 1usize { return *values[0usize]; }
+    if n == 2usize {
+      var u = t;
+      if u < 0. { u = 0.; }
+      if u > 1. { u = 1.; }
+      let a = *values[0usize];
+      let b = *values[1usize];
+      return a + (b - a) * u;
+    }
+    if n >= 4usize { return bsplineAt(values.view(), 0., 1., t); }
+    0.
+  }
+}
+
+pub alias RunCurves = List[RunCurve];
+
+// One point of the section, as functions of the run
+pub struct SweepTrack {
+  // The point on the section frame's normal
+  pub x: RunCurve;
+  // On its binormal; no values is on y = 0
+  pub y: RunCurve;
+  // The "crease" sharpness of this track's column; no values is smooth
+  pub crease: RunCurve;
+}
+
+pub alias SweepTracks = List[SweepTrack];
+
+pub struct SweepSpec {
+  // x, y and z of the path
+  pub spine: RunCurves;
+  pub up: Vec3;
+  // The section is a closed ring (counterclockwise), else an open half
+  pub closed: bool;
+  pub tracks: SweepTracks;
+
+  // The path: the spine at 'samples' points, evenly in t, open. An empty path when the spine is not 3 curves or
+  // 'samples' is below 2
+  pub fn path(self: &, samples: u32) Path {
+    var pts = List[Vec3]();
+    if spine.len() == 3usize && samples >= 2u32 {
+      var i = 0u32;
+      while i < samples {
+        let t = f32.from(i) / f32.from(samples - 1u32);
+        pts.push(Vec3(spine[0usize].at(t), spine[1usize].at(t), spine[2usize].at(t)));
+        i = i + 1u32;
+      }
+    }
+    var p = Path.fromPoints(pts.view(), false);
+    p.up = up;
+    p
+  }
+
+  // The section at run fraction t: every track a tag, the creases from the tracks
+  pub fn sectionAt(self: &, t: f32) TaggedProfile {
+    var pts = List[Vec2].withCapacity(tracks.len());
+    var tags = List[u32].withCapacity(tracks.len());
+    var creases = List[f32].withCapacity(tracks.len());
+    var k = 0usize;
+    while k < tracks.len() {
+      let tr = &tracks[k];
+      pts.push(Vec2(tr.x.at(t), tr.y.at(t)));
+      tags.push(u32.from(k));
+      creases.push(tr.crease.at(t));
+      k = k + 1usize;
+    }
+    let prof = Profile(pts, closed);
+    var tp = TaggedProfile.of(&prof, tags.view());
+    tp.creases = creases;
+    tp
+  }
+
+  // The reason this spec cannot be hydrated, or an empty string
+  fn refusal(self: &, rings: u32) String {
+    if rings < 2u32 { return String.from("SweepSpec: fewer than 2 rings"); }
+    if spine.len() != 3usize { return String.from("SweepSpec: the spine is not 3 curves"); }
+    if tracks.len() < (if closed {3usize} else {2usize}) { return String.from("SweepSpec: too few tracks"); }
+    var k = 0usize;
+    while k < 3usize {
+      if spine[k].values.len() == 3usize { return String.from("SweepSpec: a curve of 3 values"); }
+      k = k + 1usize;
+    }
+    k = 0usize;
+    while k < tracks.len() {
+      let tr = &tracks[k];
+      if tr.x.values.len() == 3usize || tr.y.values.len() == 3usize || tr.crease.values.len() == 3usize {
+        return String.from("SweepSpec: a curve of 3 values");
+      }
+      k = k + 1usize;
+    }
+    String.from("")
+  }
+
+  // The tagged loft through 'rings' sections evenly in t (see the top of this file), 'between' rings in each band
+  pub fn mesh(self: &, rings: u32, between: u32, uvByLength: bool, caps: bool, problems: &mut List[String]) PolyMesh {
+    let why = refusal(rings);
+    if why.len() > 0usize {
+      problems.push(why);
+      return PolyMesh();
+    }
+    let n = usize.from(rings);
+    let p = path(4u32 * (rings - 1u32) + 1u32);
+    // The path's length up to each of its points
+    var cum = List[f32].withCapacity(p.points.len());
+    var run = 0.f32;
+    var i = 0usize;
+    while i < p.points.len() {
+      if i > 0usize { run = run + (*p.points[i] - *p.points[i - 1usize]).length(); }
+      cum.push(run);
+      i = i + 1usize;
+    }
+    var sections = List[TaggedProfile].withCapacity(n);
+    var stations = List[f32].withCapacity(n);
+    var r = 0usize;
+    while r < n {
+      let t = f32.from(u32.from(r)) / f32.from(rings - 1u32);
+      sections.push(sectionAt(t));
+      stations.push(if run > 0. {*cum[4usize * r] / run} else {t});
+      r = r + 1usize;
+    }
+    loftTagged(&sections, &p, stations.view(), between, uvByLength, caps, problems)
+  }
+
+  // Every stored number
+  pub fn numbers(self: &) u32 {
+    var total = 3usize;
+    var k = 0usize;
+    while k < spine.len() {
+      total = total + spine[k].values.len();
+      k = k + 1usize;
+    }
+    k = 0usize;
+    while k < tracks.len() {
+      let tr = &tracks[k];
+      total = total + tr.x.values.len() + tr.y.values.len() + tr.crease.values.len();
+      k = k + 1usize;
+    }
+    u32.from(total)
+  }
+}

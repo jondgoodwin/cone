@@ -1622,6 +1622,19 @@ of it is not (`loanUse`): `l[0].a[l.len()]` is accepted. A place in a variable's
 own storage rests on no borrow, so `arr[bump(&mut arr)]` is accepted, as is a
 `List`'s own index, a method that reaches the storage after its argument. The
 gate marks a function for a lent or owned place indexed so (`flowGateIndex`).
+
+**An index that moves what it indexes.** In a variable's own storage nothing is lent,
+but moving the variable still takes what its elements own while its address is
+already made: `a[take(a)]`, `a` an array of owners, reaches what `take` freed. So
+`flowIndexArgs`, which walks the indexes of a place read or borrowed, refuses
+(`ErrorMove`) one after which the local the place lies in stands moved or hollow
+and did not before: the same answer as `let i = take(a); a[i]`. The local is found
+through fields, elements of arrays held by value and the borrows that borrowing an
+element makes (`&a[i]` is `(&a)[i]`, which the path walk sees as a place reached
+through a reference and asks no drop use of). An index that moves the
+value and gives the variable a new one is accepted, as is a move on a path that
+leaves. A store's index needs no check here: it is walked before the store asks
+about its variable (`assignlvalrtype`).
 A swap is held the same way. Generation makes the left side's address, then the
 right side's, and only then loads and stores through both (`genlTerm`, `SwapTag`),
 so where the right side does more than read, a stand-in holds what the left side
@@ -1650,9 +1663,10 @@ an index is met by the write's drop use, which only the path walk makes. The tre
 checks the left side's name before the right side's index, so a move on a straight
 line passes it: where the left side's root variable stands moved or hollow once both
 sides are loaded, `swapFlow` sets `dropgate`, and `l <-> ls[take(l)]` is refused. An
-index that moves the value and gives the variable a new one is accepted. Not asked:
-the right side's root, so `x <-> a[take(a)]`, `a` an array, compiles when the move
-is on a straight line, though the element's address is made before the index runs.
+index that moves the value and gives the variable a new one is accepted. An index that
+moves what its own side indexes (`x <-> a[take(a)]`) is refused by the index itself
+("An index that moves what it indexes", above).
+
 
 A borrow a
 call returns carries its receiver's loan as the receiver was reached: through a

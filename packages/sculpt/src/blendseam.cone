@@ -1,0 +1,193 @@
+// ======== blendSeam: the round at a seam, two smooth pieces meeting ========
+//
+// Where two parts are joined (an ear on a head, a post on a slab) the exact union has a hard seam. A real edge
+// is two smooth pieces meeting plus a small round of about 0.1 to 0.3 mm (the 27 Nov edge-intersection report),
+// and the round is what this puts back: a narrow band round the seam, remeshed on even triangles (remeshRegion)
+// and faired at order 2 (fairRegion), the rings of faces outside the band holding position and slope. The
+// width of the band is the edge round, not a fillet of millimetres.
+//
+// THE BAND. Every face with a vertex within surface distance 'width' of a seam vertex (surfaceDistances,
+// seeded at the seam's vertices, limit 'width'). Everything outside the band is bit for bit the input.
+//
+// THE BLEND. The seam's edges given "crease" 0 (so the remesh does not hold them), remeshRegion on the band at
+// the edge length L = min(width / 4, the mean edge length of the band's input faces), 5 rounds, then fairRegion
+// order 2 on the region's free vertices, less their outermost ring (bsHoldRings, below).
+//
+// A BAND THAT IS BELOW THE MESH. A band narrower than about two input edge lengths (width under twice the mean
+// edge of its input faces) has less than one edge of well-shaped triangles to work with. A problem line says so,
+// and the work is still done.
+//
+// A REFUSAL is a problem line, an unchanged copy and empty lists: 'width' at or below 0; a seam edge out of the
+// mesh. An empty seam is a silent copy.
+//
+// booleanUnionBlended finds its seam without a marker colliding with a crease the inputs already carry: it
+// asks booleanWith for a crease of M = 1 + max(1, the greatest crease of either input), which no input edge has,
+// and the seam is every edge of the result whose "crease" is exactly M. blendSeam then sets those to 0. The
+// result keeps a "crease" channel (all that the inputs had, the seam's edges 0) even when the inputs had none.
+
+pub struct BlendedSeam {
+  pub mesh: PolyMesh;
+  pub faces: List[u32];      // the band's faces in the result, ascending
+  pub vertices: List[u32];   // the band's free vertices in the result, ascending
+}
+
+fn bsUnchanged(m: &PolyMesh, problems: &mut List[String], why: &str) BlendedSeam {
+  var s = String.from("blendSeam: ");
+  s.append(why);
+  problems.push(s);
+  BlendedSeam(m.clone(), List[u32](), List[u32]())
+}
+
+pub fn blendSeam(m: &PolyMesh, seam: &Array[u32], width: f32, problems: &mut List[String]) BlendedSeam {
+  if seam.len() == 0usize { return BlendedSeam(m.clone(), List[u32](), List[u32]()); }
+  if width <= 0. { return bsUnchanged(m, problems, "width is not above 0"); }
+  let ne = m.edgeCount();
+  var i = 0usize;
+  while i < seam.len() {
+    if usize.from(seam[i]) >= ne { return bsUnchanged(m, problems, "a seam edge is not in the mesh"); }
+    i = i + 1usize;
+  }
+
+  // The seam's vertices, and the band
+  var seeds = List[u32]();
+  i = 0usize;
+  while i < seam.len() {
+    let h = m.edgeHalfedge(seam[i], 0u32);
+    seeds.push(m.toVertex(h));
+    seeds.push(m.fromVertex(h));
+    i = i + 1usize;
+  }
+  let dist = surfaceDistances(m, &seeds, &List[f32](), width);
+  var band = List[u32]();
+  var f = 0usize;
+  var edgeSum: f64 = 0.;
+  var edgeCount = 0usize;
+  while f < m.faceCount() {
+    let vs = m.faceVertices(u32.from(f));
+    var near = false;
+    var k = 0usize;
+    while k < vs.len() {
+      if *dist[usize.from(*vs[k])] <= width { near = true; }
+      k = k + 1usize;
+    }
+    if near {
+      band.push(u32.from(f));
+      let pts = m.facePositions(u32.from(f));
+      k = 0usize;
+      while k < pts.len() {
+        let d = *pts[(k + 1usize) % pts.len()] - *pts[k];
+        edgeSum = edgeSum + f64.from(d.length());
+        edgeCount = edgeCount + 1usize;
+        k = k + 1usize;
+      }
+    }
+    f = f + 1usize;
+  }
+  if band.len() == 0usize { return BlendedSeam(m.clone(), List[u32](), List[u32]()); }
+  let meanEdge = f32.from(edgeSum / f64.from(edgeCount));
+  if width < 2. * meanEdge {
+    var s = String.from("blendSeam: the band is narrower than two input edge lengths; it has less than an edge of well-shaped triangles");
+    problems.push(s);
+  }
+  let edgeLength = if width / 4. < meanEdge {width / 4.} else {meanEdge};
+
+  // The seam's crease off, then the blend
+  var work = m.clone();
+  let cc = work.findFloatChannel(EdgeDomain, "crease");
+  if cc != NoIndex {
+    i = 0usize;
+    while i < seam.len() {
+      work.setFloat(cc, seam[i], 0.);
+      i = i + 1usize;
+    }
+  }
+  let rr = remeshRegion(&work, band.view(), edgeLength, 5u32, problems);
+  if rr.faces.len() == 0usize { return BlendedSeam(m.clone(), List[u32](), List[u32]()); }
+  var free = rr.vertices.clone();
+  var ring = 0u32;
+  while ring < bsHoldRings {
+    free = bsDropOuterRing(&rr.mesh, &free);
+    ring = ring + 1u32;
+  }
+  let faired = fairRegion(&rr.mesh, free.view(), 2u32, problems);
+  BlendedSeam(faired, rr.faces.clone(), rr.vertices.clone())
+}
+
+// The fair solve leaves the band's outermost ring of free vertices where the remesh put them (on the surface
+// the band had on entry), as a third held ring: with only the two rings round the region, the outer edge showed
+// 11 to 25 degrees beside the post's sharp corners; with this one it is 0.03 degrees where the input's own
+// sharp edges are creased. The price is a fillet one ring (L) narrower than the band.
+let bsHoldRings = 1u32;
+
+// 'free' without the vertices that share a face with a vertex not in it
+fn bsDropOuterRing(m: &PolyMesh, free: &List[u32]) List[u32] {
+  var isFree = List[bool]();
+  var v = 0usize;
+  while v < m.vertexCount() { isFree.push(false); v = v + 1usize; }
+  var i = 0usize;
+  while i < free.len() { isFree.set(usize.from(*free[i]), true); i = i + 1usize; }
+  var outer = isFree.clone();
+  var f = 0usize;
+  while f < m.faceCount() {
+    let vs = m.faceVertices(u32.from(f));
+    var anyHeld = false;
+    var k = 0usize;
+    while k < vs.len() {
+      if !*isFree[usize.from(*vs[k])] { anyHeld = true; }
+      k = k + 1usize;
+    }
+    if anyHeld {
+      k = 0usize;
+      while k < vs.len() {
+        outer.set(usize.from(*vs[k]), false);
+        k = k + 1usize;
+      }
+    }
+    f = f + 1usize;
+  }
+  var kept = List[u32]();
+  i = 0usize;
+  while i < free.len() {
+    if *outer[usize.from(*free[i])] { kept.push(*free[i]); }
+    i = i + 1usize;
+  }
+  kept
+}
+
+// The union of a and b with its seam blended: booleanWith's union, its seam found (see the header), then blendSeam
+pub fn booleanUnionBlended(a: &PolyMesh, b: &PolyMesh, width: f32, problems: &mut List[String]) BlendedSeam {
+  if width <= 0. { return bsUnchanged(a, problems, "width is not above 0"); }
+  var top: f32 = 1.;
+  var side = 0usize;
+  while side < 2usize {
+    let src = if side == 0usize {a} else {b};
+    let ch = src.findFloatChannel(EdgeDomain, "crease");
+    if ch != NoIndex {
+      var e = 0usize;
+      while e < src.edgeCount() {
+        let c = src.float(ch, u32.from(e));
+        if c > top { top = c; }
+        e = e + 1usize;
+      }
+    }
+    side = side + 1usize;
+  }
+  let marker = top + 1.;
+  let u = booleanWith(a, b, BooleanUnion, marker, problems);
+  if u.faceCount() == 0usize { return BlendedSeam(u, List[u32](), List[u32]()); }
+  let seam = unionSeamEdges(&u, marker);
+  blendSeam(&u, seam.view(), width, problems)
+}
+
+// The edges of 'm' whose "crease" is exactly 'marker', ascending
+fn unionSeamEdges(m: &PolyMesh, marker: f32) List[u32] {
+  var seam = List[u32]();
+  let ch = m.findFloatChannel(EdgeDomain, "crease");
+  if ch == NoIndex { return seam; }
+  var e = 0usize;
+  while e < m.edgeCount() {
+    if m.float(ch, u32.from(e)) == marker { seam.push(u32.from(e)); }
+    e = e + 1usize;
+  }
+  seam
+}

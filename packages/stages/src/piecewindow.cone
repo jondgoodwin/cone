@@ -1,0 +1,247 @@
+// ======== The stream core: a producer's run-ahead ========
+//
+// TRANSITIONAL, AND NOT PART OF THE PACKAGE'S API. PieceWindow, PieceWindowStats, 'fresh' and 'unusedBuffer'
+// are the inside of stages' own producers (SocketFrom, TransformPass): no other package is to name them,
+// and the idea itself is still to be decided. They are 'pub' only because this package's tests and its
+// measuring examples are modules of their own, which reach no private name.
+//
+// A producer that awaits each answer before its next piece is serial through the chain of stages. A
+// PieceWindow holds the answers it has not yet collected, as futures (one allocation each), and says how far
+// it may run:
+//
+//   - while the UNANSWERED PIECES' COST stays within the budget, and
+//   - at least TWO pieces, whatever their size, where the pool has room for the second.
+//
+// The cost of a piece of bytes is its buffer's capacity and the default budget is 'linkWindow' (256 KiB); the
+// cost of a value is 1 and the default budget is two pieces. The receiver sets another with StreamTo's
+// 'budget'. So a producer never has more than the budget unanswered, except for the floor's second piece (and
+// a first piece larger than the budget).
+//
+//   var w = PieceWindow[IoBuf].bytes(to.budget, pool);          // or PieceWindow[T].values(to.budget)
+//   // before a piece: a buffer, or None while the window or the pool is full
+//   match fresh(&mut w, linkBytes) {
+//     case let Some(b) {
+//       ... fill b ...
+//       let n = b.capacity();
+//       w.sent(to.sink.piece(to.tag, b), n);                       // the answer is kept, not awaited
+//     }
+//     case is None {
+//       match w.oldest() {                                         // await the oldest, then ask again
+//         case let Some(reply) { let a = await reply; w.answered(a); }   // Some(why) on a Stop
+//         case is None {}
+//       }
+//     }
+//   }
+//
+// A PRODUCER OF VALUES asks 'w.room(1usize)' where a producer of bytes asks for a buffer.
+//
+// THE POOL (chunkpool.cone). A stage that makes buffers takes them from the pipeline's ChunkPool, and waits
+// when it is at its cap: 'fresh' is None and the producer awaits its oldest answer, which brings a buffer
+// home. THE CAP WINS OVER THE FLOOR: past the cap a window is lent a buffer only when it has none of the
+// pool's (nothing unanswered, none kept, none in hand), as a ChunkWindow is, so no stream waits for a buffer
+// that no answer of its own will bring, and the pool lends at most its cap and one buffer for each stream
+// (ChunkPool's 'floored' counts those lends). A stream whose pool has no room for a second piece therefore
+// goes one piece at a time: a pool of its own that is to overlap large pieces holds two of them.
+// So every buffer 'fresh' gives is sent ('sent') or given back ('unusedBuffer') before the next is asked
+// for. One buffer an answer brought back is kept to be refilled, still counted in the pool, until the window
+// is dropped; while the pool is over its cap none is kept, so what was lent past it comes back.
+//
+// One behaviour collects a window's answers at a time, oldest first.
+//
+// HOLDING WHILE IDLE. A buffer that came back lies in its answer until the answer is collected, and still
+// counts in the pool. So stages' own producers do not collect in the behaviour that sends: each window has a
+// COLLECTOR, a second behaviour of the actor that awaits the answers in order, so a buffer goes home as its
+// answer arrives, whatever the sending behaviour is waiting for (piecestages.cone, THE COLLECTOR). An idle
+// SocketFrom stream holds the buffer it reads into and an idle TransformPass none, as today's stages do.
+//
+//   w.stats()     the most pieces and the most cost unanswered at once, and the times there was no room
+
+// What a window has counted so far
+pub struct PieceWindowStats {
+  pub peak: usize;               // the most pieces unanswered at once
+  pub peakCost: usize;           // the most cost unanswered at once
+  pub stalls: u64;               // times 'room' said no
+}
+
+// A producer's run-ahead window: see above.
+// TRANSITIONAL 'pub': for this package's tests and timed-round programs only. Nothing outside 'stages' uses it.
+pub struct PieceWindow[T] is Move {
+  pool: Option[ChunkPool];       // the pool the pieces' buffers come from, for a window of bytes
+  budget: usize;                 // the cost unanswered pieces may reach, above the floor of two
+  replies: Deque[actors.Future[PieceAck[T]]];
+  costs: Deque[usize];           // a cost for each piece unanswered, the one being awaited included
+  held: usize;                   // their sum
+  filling: usize;                // counted in the pool for buffers 'fresh' gave that are not yet sent
+  spare: Option[T];              // the buffer the last answer brought back
+  spareCost: usize;
+  top: usize;                    // the most unanswered pieces at once
+  topCost: usize;                // the most cost unanswered at once
+  stalled: u64;                  // times 'room' said no
+
+  // A window for a stream of values (cost 1 each): 'budget' pieces, or two if 'budget' is 0
+  pub fn values(budget: usize) PieceWindow[T] {
+    PieceWindow[T](None[ChunkPool], if budget == 0usize {2usize} else {budget},
+      Deque[actors.Future[PieceAck[T]]](), Deque[usize](), 0usize, 0usize, None[T], 0usize, 0usize, 0usize, 0u64)
+  }
+
+  // A window for a stream of bytes, its buffers from 'pool': 'budget' bytes, or linkWindow if 'budget' is 0
+  pub fn bytes(budget: usize, pool: ChunkPool) PieceWindow[T] {
+    PieceWindow[T](Some[ChunkPool](pool), if budget == 0usize {linkWindow} else {budget},
+      Deque[actors.Future[PieceAck[T]]](), Deque[usize](), 0usize, 0usize, None[T], 0usize, 0usize, 0usize, 0u64)
+  }
+
+  // Whether the window has room to send a piece of this cost now. If not, there are at least two unanswered to
+  // await. (A window of bytes also needs a buffer from its pool: 'fresh' asks both)
+  pub fn room(self: &mut, cost: usize) bool {
+    var ok = held + cost <= budget;
+    #if #defined("MUT_NO_FLOOR") {
+      if costs.len() == 0usize { ok = true; }
+    } #else {
+      if costs.len() < 2usize { ok = true; }
+    }
+    if !ok { stalled = stalled + 1u64; }
+    ok
+  }
+
+  // The answer of a piece just sent, and what it cost
+  pub fn sent(self: &mut, reply: actors.Future[PieceAck[T]], cost: usize) {
+    replies.push(reply);
+    costs.push(cost);
+    held = held + cost;
+    filling = if filling > cost {filling - cost} else {0usize};
+    if costs.len() > top { top = costs.len(); }
+    if held > topCost { topCost = held; }
+  }
+
+  // The oldest answer, to be awaited and handed to 'answered'; None when all are collected
+  pub fn oldest(self: &mut) Option[actors.Future[PieceAck[T]]] {
+    replies.popFront()
+  }
+
+  // The answer of the piece 'oldest' gave: its cost leaves the window, a buffer that came back is kept to
+  // be refilled, unless the pool is over its cap. Some(why) when the receiver said Stop
+  pub fn answered(self: &mut, a: PieceAck[T]) Option[Ending] {
+    var cost = 0usize;
+    match costs.popFront() {
+      case let Some(c) { cost = c; }
+      case is None {}
+    }
+    held = held - cost;
+    match a {
+      case is More { self.release(cost); }
+      case let MoreWith(back) {
+        if spare is None && !self.overCap() {
+          spare = Some[T](back);
+          spareCost = cost;
+        } else {
+          self.release(cost);
+        }
+      }
+      case let Stop(why) {
+        self.release(cost);
+        return Some[Ending](why);
+      }
+    }
+    None[Ending]
+  }
+
+  // The pieces unanswered now, their cost, and the budget they are held to
+  pub fn unanswered(self: &) usize { costs.len() }
+  pub fn unansweredCost(self: &) usize { held }
+  pub fn allowance(self: &) usize { budget }
+
+  // The most there have been at once, and the times 'room' said no
+  pub fn stats(self: &) PieceWindowStats { PieceWindowStats(top, topCost, stalled) }
+
+  // The buffer kept to be refilled goes: for a producer that has sent its last piece and lives on
+  fn dropSpare(self: &mut) {
+    var t = None[T];
+    t <-> spare;
+    if t is Some { self.release(spareCost); }
+  }
+
+  // Whether a buffer 'fresh' gave is still in hand (not sent, not given back)
+  fn inHand(self: &) bool { filling > 0usize }
+
+  // Whether the pool is lending past its cap: then a buffer that comes home goes back to it, as a
+  // ChunkWindow's does, and none is kept
+  fn overCap(self: &) bool {
+    var over = false;
+    #if #defined("MUT_KEEP_OVER") {} #else {
+      match &pool {
+        case let &Some(p) { over = p.lent() > p.cap(); }
+        case is None {}
+      }
+    }
+    over
+  }
+
+  fn release(self: &, cost: usize) {
+    match &pool {
+      case let &Some(p) { p.release(cost); }
+      case is None {}
+    }
+  }
+
+  // Whatever is still counted is the pool's again: an abandoned stream keeps nothing of it, nor does a
+  // buffer an operation lost (a read that failed)
+  fn final(self: &uni) {
+    var all = held + filling;
+    if spare is Some { all = all + spareCost; }
+    match &pool {
+      case let &Some(p) { p.release(all); }
+      case is None {}
+    }
+  }
+}
+
+// A buffer to fill with at least 'want' bytes: the one an answer brought back, or a new one from the pool.
+// None when the window has no room or the pool is at its cap; then at least one piece is unanswered (provided
+// every buffer given before was sent or given back), so the caller awaits the oldest and asks again. The
+// buffer's capacity is the piece's cost, to give 'sent'
+pub fn fresh(w: &mut PieceWindow[IoBuf], want: usize) Option[IoBuf] {
+  let cap = capacityFor(want);
+  if !w.room(cap) { return None[IoBuf]; }
+  var t = None[IoBuf];
+  t <-> w.spare;
+  match t {
+    case let Some(b) {
+      if b.capacity() == cap {
+        var x = b;
+        x.clear();
+        w.filling = w.filling + cap;
+        return Some[IoBuf](x);
+      }
+      w.release(w.spareCost);
+    }
+    case is None {}
+  }
+  match &w.pool {
+    case let &Some(p) {
+      #if #defined("MUT_NO_CAP") {
+        _ = p.reserve(cap, true);
+      } #else {
+        // past the cap, only a window that holds nothing of the pool's
+        var alone = w.held == 0usize && w.filling == 0usize;
+        #if #defined("MUT_CAP_FLOOR_TWO") { alone = w.costs.len() < 2usize; }
+        if !p.reserve(cap, alone) { return None[IoBuf]; }
+      }
+    }
+    case is None {}
+  }
+  w.filling = w.filling + cap;
+  Some[IoBuf](IoBuf(want))
+}
+
+// A buffer from 'fresh' that is not to be sent after all (a pull that gave nothing): kept for the next, or
+// let go
+pub fn unusedBuffer(w: &mut PieceWindow[IoBuf], b: IoBuf) {
+  let cap = b.capacity();
+  w.filling = if w.filling > cap {w.filling - cap} else {0usize};
+  if w.spare is None && !w.overCap() {
+    w.spare = Some[IoBuf](b);
+    w.spareCost = cap;
+  } else {
+    w.release(cap);
+  }
+}
