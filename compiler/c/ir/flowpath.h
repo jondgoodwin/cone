@@ -176,6 +176,11 @@ void *pathGrow(void *buf, uint32_t *cap, size_t size);
 // (awaitOrder)
 void flowPathWalk(FnDclNode *fndcl, int loans, int drops, int seams);
 
+// May 'call', of signature 'sig' (NULL for a function value's), store through
+// another of its arguments what the argument at 'i' reaches: is another one a
+// writable way to something that can hold a borrow? Asked by the types
+int flowCallMayStore(FnCallNode *call, FnSigNode *sig, uint32_t i);
+
 // Set while the walks that waited are made at the end of type check
 // (shapeWalkDeferred): nothing is checked later, so a verdict that leans on
 // something not checked yet is final, taken as yes. A walk made earlier
