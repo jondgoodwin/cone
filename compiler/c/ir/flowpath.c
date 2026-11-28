@@ -1561,11 +1561,6 @@ static PathSet *pwSlotRead(StarNode *deref, PathSet *base) {
     return base;
 }
 
-// Is this the temporary an operator changing its operand in place borrows it through?
-static int pwIsOpTemp(VarDclNode *var) {
-    return var->namesym == tempName && var->value && var->value->tag == BorrowTag;
-}
-
 // May a copy of a value of this type write what a borrow it holds reaches? A reference does
 // where its permission writes, or where what it points at holds a borrow of its own; any other
 // value holding a borrow is taken to
@@ -1609,9 +1604,9 @@ static PathSet *pwPlaceValue(INode **nodep, int move) {
     if (pwCarries(((IExpNode *)*nodep)->vtype))
         holds = pathSetUnion(holds, pl.kept);
     // A copy of a '&mut' borrow is another name for what it borrows, wherever it goes: a
-    // local, a field, a callee. The temporary an operator changing its operand in place
-    // borrows it through (pwVarDcl) is the operator's own
-    if (!moves && !pwIsOpTemp(pathVars[pl.var].var) && !iexpIsMove(*nodep)
+    // local, a field, a callee. A value read out of a variable the compiler made (what a
+    // match or an operator holds what it works on in) names it no further than the program did
+    if (!moves && !loanVarIsMade(pathVars[pl.var].var) && !iexpIsMove(*nodep)
             && pwCopiesWriter(((IExpNode *)*nodep)->vtype))
         loanCopied(holds);
     // A holder moved away whole holds nothing here: its value, and the
