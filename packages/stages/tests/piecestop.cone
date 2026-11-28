@@ -1,0 +1,173 @@
+// A receiver that stops while its producer waits on an idle socket (piece.cone, HEARING A STOP): it built its
+// StreamTo with a cancel group, a child of its own, and cancels it; SocketFrom's read is in that group, so it
+// ends, and so does the stream. The server holds the connection open and silent for 1.5 s, so a read that is
+// not ended lasts that long; each stream's end must come within 100 ms of the cancel.
+//
+//   A. one piece arrives; the receiver waits (the next read is then parked), cancels and answers Stop(Failed):
+//      the stream ends with that reason
+//   B. the same, answering Stop(Finished): the stream ends Finished
+//   C. no piece at all: the receiver cancels with nothing to answer: Failed("streams: cancelled")
+//   D. the whole stream's group is cancelled instead: the receiver's child of it goes too, and the read ends
+//
+// Mutant, run as 'congo test --no-cache -D NAME':
+//   MUT_NO_STOP_GROUP   SocketFrom does not wait in the stream's group: A, B and C fail (the end comes at 1.5 s)
+
+mod piecestop;
+
+import testing use *;
+import collections use *;
+import iobuf use IoBuf;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import time use Instant, Duration;
+import thread;
+import actors;
+import aio use Socket;
+import iocore use SocketAddr, IoError, CancelGroup;
+import streams use *;
+import stages use *;
+
+fn textOf(e: &AnyError) String {
+  var text = String();
+  {
+    var w = text.textOut();
+    e.report(&uni w);
+  }
+  text
+}
+
+fn socketOf(r: Result[Socket, IoError]) Socket {
+  var res = r;
+  var s = Socket.none();
+  match &mut res {
+    case var &mut Ok(ok) {s <-> *ok;}
+    case let &mut Err(e) { panic("socketOf: the operation failed"); }
+  }
+  s
+}
+
+fn nowNanos() u64 { u64.from(Instant.now().nanos()) }
+
+// Accepts one connection, writes 'first' bytes (none when 0), then says nothing for 1.5 s and closes
+actor Server {
+  pub async fn serve(self, first: usize, port: OneshotSender[u16]) {
+    let listener = socketOf(await aio.listen(SocketAddr.localhost(0u16)));
+    let addr = await listener.localAddr();
+    var p = port;
+    match addr {
+      case let Ok(a) { p.send(a.port()); }
+      case is Err { p.send(0u16); return; }
+    }
+    let conn = socketOf(await listener.accept());
+    if first > 0usize {
+      var buf = IoBuf(first);
+      buf.setLen(first);
+      _ = await conn.write(buf);
+    }
+    _ = await aio.sleep(Duration.fromMillis(1500i64));
+  }
+}
+
+pub struct Stopped is Sendable {
+  pub pieces: u64;
+  pub kind: u64;            // 1 Finished, 2 Failed
+  pub text: String;
+  pub endedAt: u64;         // the steady clock at the stream's end
+  pub cutAt: u64;           // and at the receiver's own cancel, 0 when it made none
+}
+
+pub actor Stopper is PieceSink[IoBuf] {
+  stop: Option[CancelGroup];
+  failing: bool;
+  pieces: u64;
+  cutAt: u64;
+  done: OneshotSender[Stopped];
+
+  pub fn init(self: &new, failing: bool, done: OneshotSender[Stopped]) {
+    *self = Self(stop: None[CancelGroup], failing: failing, pieces: 0u64, cutAt: 0u64, done: done);
+  }
+
+  // The receiver builds the stream's StreamTo, with a group of its own, a child of the one it works in
+  pub async fn begin(self, src: SocketFrom, port: u16) {
+    let g = actors.currentGroup().child();
+    stop = Some[CancelGroup](g);
+    src.run(SocketAddr.localhost(port), StreamTo[IoBuf].at(selfactor, 1u64, 0usize, Some[CancelGroup](g)));
+  }
+
+  pub async fn piece(self, tag: u64, c: IoBuf) PieceAck[IoBuf] {
+    pieces = pieces + 1u64;
+    _ = await aio.sleep(Duration.fromMillis(50i64));      // the producer's next read is parked by now
+    self.cut();
+    if failing { return Stop[IoBuf](Ending.Failed(AnyError.msg("receiver: enough"))); }
+    Stop[IoBuf](Ending.Finished)
+  }
+
+  // A receiver with no piece to answer
+  pub async fn quit(self) { self.cut(); }
+
+  pub async fn end(self, tag: u64, how: Ending) {
+    let endedAt = nowNanos();
+    var kind = 1u64;
+    var text = String();
+    match how {
+      case is Finished {}
+      case let Failed(e) { kind = 2u64; text = textOf(&e); }
+    }
+    done.send(Stopped(pieces, kind, String.from(text.view()), endedAt, cutAt));
+  }
+
+  fn cut(self: &mut) {
+    cutAt = nowNanos();
+    match &stop {
+      case let &Some(g) { _ = g.cancel(); }
+      case is None {}
+    }
+  }
+}
+
+fn portOf(first: usize) u16 {
+  var tx: OneshotSender[u16];
+  var rx: OneshotReceiver[u16];
+  tx, rx = Oneshot[u16].make();
+  Server().serve(first, tx);
+  rx.recv() || 0u16
+}
+
+// how: 0 a piece arrives and is answered; 1 the receiver quits with no piece; 2 the whole stream's group goes
+fn one(how: u32, failing: bool, label: &str, kind: u64, why: &str) {
+  var tx: OneshotSender[Stopped];
+  var rx: OneshotReceiver[Stopped];
+  tx, rx = Oneshot[Stopped].make();
+  let port = portOf(if how == 0u32 {100usize} else {0usize});
+  let sink = Stopper(failing, tx);
+  let src = SocketFrom();
+  let whole = CancelGroup.make();
+  actors.withGroup(&whole, fn() [sink, src, port] { sink.begin(src, port); });
+  var cancelledAt = 0u64;
+  if how != 0u32 {
+    thread.sleep(Duration.fromMillis(200i64));            // connected, and parked in its first read
+    cancelledAt = nowNanos();
+    if how == 1u32 { sink.quit(); } else { _ = whole.cancel(); }
+  }
+  match rx.recv() {
+    case let Some(s) {
+      let from = if how == 2u32 {cancelledAt} else {s.cutAt};
+      let ms = (s.endedAt - from) / 1000000u64;
+      expectBool(ms < 100u64, true, label);
+      expectUInt(s.kind, kind, label);
+      expectStr(s.text.view(), why, label);
+      expectUInt(s.pieces, if how == 0u32 {1u64} else {0u64}, label);
+    }
+    case is None { expectBool(false, true, label); }
+  }
+}
+
+fn main() i32 {
+  initAll();
+  one(0u32, true, "A: Stop(Failed) on an idle socket ends the read, with the receiver's reason", 2u64, "receiver: enough");
+  one(0u32, false, "B: Stop(Finished) ends the read, and the stream is Finished", 1u64, "");
+  one(1u32, true, "C: a cancel with nothing to answer ends the read, Failed", 2u64, "streams: cancelled");
+  one(2u32, true, "D: the whole stream's cancel reaches the read through the child", 2u64, "streams: cancelled");
+  finalAll();
+  expectUInt(iobuf.stats().lent, 0u64, "every buffer is back in its pool");
+  done()
+}

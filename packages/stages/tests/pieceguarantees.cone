@@ -1,0 +1,263 @@
+// The guarantees of the stream core (piece.cone):
+//
+//   A. a producer drops its StreamTo un-ended after two pieces: the receiver gets exactly one 'end', Failed
+//   B. a producer ends properly: exactly one 'end', Finished (the finalizer adds none)
+//   C. a StreamFrom dropped untaken: the source gets exactly one 'decline' and no 'deliver'
+//   D. a StreamFrom taken: the source gets one 'deliver' and no 'decline'; its three pieces arrive, one end
+//   E. a receiver answers Stop to its 3rd piece: the producer sends no 4th, ends once with the stop's reason
+//
+// Mutants (each must make a check above fail), run as 'congo test --no-cache -D NAME':
+//   MUT_NO_FINAL_TO    StreamTo's finalizer sends nothing: A fails
+//   MUT_NO_FINAL_FROM  StreamFrom's finalizer sends nothing: C fails
+//   MUT_IGNORE_STOP    the producer loop ignores Stop: E fails
+
+mod pieceguarantees;
+
+import testing use *;
+import collections use *;
+import iobuf use IoBuf;
+import sync use Oneshot, OneshotSender, OneshotReceiver;
+import actors;
+import stages use *;
+
+fn textOf(e: &AnyError) String {
+  var text = String();
+  {
+    var w = text.textOut();
+    e.report(&uni w);
+  }
+  text
+}
+
+pub struct ProdOut is Sendable {
+  pub sent: u64;
+  pub stopSeen: bool;
+}
+
+// The producer's whole job: a piece, its answer, and at the end the one 'end'
+pub actor Prod {
+  pub async fn run(self, to: StreamTo[IoBuf], pieces: u64, size: usize, report: OneshotSender[ProdOut]) {
+    var dest = to;
+    var i = 0u64;
+    var stop = None[Ending];
+    var seen = false;
+    while i < pieces && stop is None {
+      var b = IoBuf(size);
+      b.setLen(size);
+      let a = await dest.sink.piece(dest.tag, b);
+      i = i + 1u64;
+      match a {
+        case is More {}
+        case let MoreWith(back) {}
+        case let Stop(why) {
+          seen = true;
+          #if #defined("MUT_IGNORE_STOP") {} #else { stop = Some[Ending](why); }
+        }
+      }
+    }
+    match stop {
+      case let Some(why) { dest.end(why); }
+      case is None { dest.end(Ending.Finished); }
+    }
+    var r = report;
+    r.send(ProdOut(i, seen));
+  }
+}
+
+// Sends 'pieces' pieces and lets the stream go un-ended
+pub actor DropProd {
+  pub async fn run(self, to: StreamTo[IoBuf], pieces: u64, size: usize, report: OneshotSender[u64]) {
+    var i = 0u64;
+    while i < pieces {
+      var b = IoBuf(size);
+      b.setLen(size);
+      _ = await to.sink.piece(to.tag, b);
+      i = i + 1u64;
+    }
+    var r = report;
+    r.send(i);
+  }                                    // 'to' is dropped here, un-ended
+}
+
+pub struct ProbeOut is Sendable {
+  pub pieces: u64;
+  pub afterStop: u64;
+  pub ends: u64;
+  pub endKind: u32;            // 0 none, 1 Finished, 2 Failed
+  pub endText: String;
+}
+
+pub actor Probe is PieceSink[IoBuf] {
+  stopAt: u64;                 // answer Stop to the piece with this number (counting from 1); 0: never
+  pieces: u64;
+  afterStop: u64;
+  ends: u64;
+  endKind: u32;
+  endText: String;
+  stopped: bool;
+
+  pub fn init(self: &new, stopAt: u64) {
+    *self = Self(stopAt: stopAt, pieces: 0u64, afterStop: 0u64, ends: 0u64, endKind: 0u32, endText: String(), stopped: false);
+  }
+
+  pub async fn piece(self, tag: u64, c: IoBuf) PieceAck[IoBuf] {
+    pieces = pieces + 1u64;
+    if stopped { afterStop = afterStop + 1u64; }
+    if stopAt != 0u64 && pieces == stopAt {
+      stopped = true;
+      return Stop[IoBuf](Ending.Failed(AnyError.msg("probe: enough")));
+    }
+    More[IoBuf]
+  }
+
+  pub async fn end(self, tag: u64, how: Ending) {
+    ends = ends + 1u64;
+    match how {
+      case is Finished { endKind = 1u32; }
+      case let Failed(e) { endKind = 2u32; endText = textOf(&e); }
+    }
+  }
+
+  pub async fn report(self, to: OneshotSender[ProbeOut]) {
+    var t = to;
+    t.send(ProbeOut(pieces, afterStop, ends, endKind, String.from(endText.view())));
+  }
+}
+
+// A source that counts its delivers and declines
+pub actor Offer is PieceSource[IoBuf] {
+  delivers: u64;
+  declines: u64;
+
+  pub fn init(self: &new) { *self = Self(delivers: 0u64, declines: 0u64); }
+
+  pub async fn deliver(self, tag: u64, to: StreamTo[IoBuf]) {
+    delivers = delivers + 1u64;
+    var dest = to;
+    var i = 0u64;
+    while i < 3u64 {
+      var b = IoBuf(100usize);
+      b.setLen(100usize);
+      _ = await dest.sink.piece(dest.tag, b);
+      i = i + 1u64;
+    }
+    dest.end(Ending.Finished);
+  }
+
+  pub async fn decline(self, tag: u64) { declines = declines + 1u64; }
+
+  pub async fn report(self, to: OneshotSender[(u64, u64)]) {
+    var t = to;
+    t.send((delivers, declines));
+  }
+}
+
+fn probeOut(p: Probe) ProbeOut {
+  var tx: OneshotSender[ProbeOut];
+  var rx: OneshotReceiver[ProbeOut];
+  tx, rx = Oneshot[ProbeOut].make();
+  p.report(tx);
+  match rx.recv() {
+    case let Some(o) { o }
+    case is None { ProbeOut(0u64, 0u64, 0u64, 0u32, String()) }
+  }
+}
+
+fn main() i32 {
+  initAll();
+
+  // A. dropped un-ended
+  {
+    let probe = Probe(0u64);
+    var tx: OneshotSender[u64];
+    var rx: OneshotReceiver[u64];
+    tx, rx = Oneshot[u64].make();
+    let dp = DropProd();
+    dp.run(StreamTo[IoBuf].at(probe, 1u64), 2u64, 100usize, tx);
+    expectUInt((rx.recv() || 0u64), 2u64, "A: the producer sent two pieces");
+    actors.waitQuiet();
+    let o = probeOut(probe);
+    expectUInt(o.pieces, 2u64, "A: the receiver took two pieces");
+    expectUInt(o.ends, 1u64, "A: and got exactly one end");
+    expectUInt(u64.from(o.endKind), 2u64, "A: which was Failed");
+    expectStr(o.endText.view(), "streams: the producer dropped the stream", "A: with the dropped-stream reason");
+  }
+
+  // B. ended properly
+  {
+    let probe = Probe(0u64);
+    var tx: OneshotSender[ProdOut];
+    var rx: OneshotReceiver[ProdOut];
+    tx, rx = Oneshot[ProdOut].make();
+    let p = Prod();
+    p.run(StreamTo[IoBuf].at(probe, 1u64), 4u64, 100usize, tx);
+    let r = rx.recv() || ProdOut(0u64, false);
+    expectUInt(r.sent, 4u64, "B: the producer sent four pieces");
+    actors.waitQuiet();
+    let o = probeOut(probe);
+    expectUInt(o.pieces, 4u64, "B: the receiver took four pieces");
+    expectUInt(o.ends, 1u64, "B: and got exactly one end");
+    expectUInt(u64.from(o.endKind), 1u64, "B: which was Finished");
+  }
+
+  // C. a stream on offer, dropped untaken
+  {
+    let offer = Offer();
+    {
+      let sf = StreamFrom[IoBuf].of(offer, 5u64);
+    }
+    actors.waitQuiet();
+    var tx: OneshotSender[(u64, u64)];
+    var rx: OneshotReceiver[(u64, u64)];
+    tx, rx = Oneshot[(u64, u64)].make();
+    offer.report(tx);
+    let c = rx.recv() || (9u64, 9u64);
+    expectUInt(c.0, 0u64, "C: dropped untaken: no deliver");
+    expectUInt(c.1, 1u64, "C: and exactly one decline");
+  }
+
+  // D. a stream on offer, taken
+  {
+    let offer = Offer();
+    let probe = Probe(0u64);
+    {
+      var sf = StreamFrom[IoBuf].of(offer, 5u64);
+      sf.to(StreamTo[IoBuf].at(probe, 9u64));
+    }
+    actors.waitQuiet();
+    var tx: OneshotSender[(u64, u64)];
+    var rx: OneshotReceiver[(u64, u64)];
+    tx, rx = Oneshot[(u64, u64)].make();
+    offer.report(tx);
+    let c = rx.recv() || (9u64, 9u64);
+    expectUInt(c.0, 1u64, "D: taken: one deliver");
+    expectUInt(c.1, 0u64, "D: and no decline");
+    let o = probeOut(probe);
+    expectUInt(o.pieces, 3u64, "D: the three pieces arrived");
+    expectUInt(o.ends, 1u64, "D: with one end");
+    expectUInt(u64.from(o.endKind), 1u64, "D: Finished");
+  }
+
+  // E. the receiver says Stop to its 3rd piece
+  {
+    let probe = Probe(3u64);
+    var tx: OneshotSender[ProdOut];
+    var rx: OneshotReceiver[ProdOut];
+    tx, rx = Oneshot[ProdOut].make();
+    let p = Prod();
+    p.run(StreamTo[IoBuf].at(probe, 1u64), 10u64, 100usize, tx);
+    let r = rx.recv() || ProdOut(0u64, false);
+    actors.waitQuiet();
+    let o = probeOut(probe);
+    expectUInt(r.sent, 3u64, "E: the producer sent three pieces and no fourth");
+    expectBool(r.stopSeen, true, "E: it saw the Stop");
+    expectUInt(o.pieces, 3u64, "E: the receiver took three");
+    expectUInt(o.afterStop, 0u64, "E: none after its Stop");
+    expectUInt(o.ends, 1u64, "E: it got one end");
+    expectStr(o.endText.view(), "probe: enough", "E: carrying the stop's reason");
+  }
+
+  finalAll();
+  expectUInt(iobuf.stats().lent, 0u64, "every buffer is back in its pool");
+  done()
+}
