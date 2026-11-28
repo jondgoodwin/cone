@@ -289,7 +289,7 @@ reference into the value's payload, which a change of variant would reread as
 the wrong type. It is the collection rule's case: allowed, and refused only if
 something could change the variant while the narrowed reference is used.
 `castSumInterior` asks, once the conversion has become a recast:
-- the from-reference's permission has `MayIntRefSum` — `uni`, `imm`, `mut1`: no
+- the from-reference's permission has `MayIntRefSum` — `uni`, `imm`: no
   other name can change the variant, and nothing more is asked.
 
 Everything else is marked `FlagVariantNarrow` (`castSumNarrows`), which gates the
@@ -318,10 +318,10 @@ reference is read through to whatever holds the narrowed reference, marking the
 loan as the loan of a borrow into a collection is marked (flow.md, "A change through
 another name"). A narrowing of an owning reference, an `Rc[imm, T]` narrowed to an `Rc[imm, Variant]`, is
 a copy of the owner typed as the variant, allowed only where no writer can store another variant
-through any owner (`MayIntRefSum`: `imm`, `uni`, `mut1`): the cast is a plain recast, which
+through any owner (`MayIntRefSum`: `imm`, `uni`): the cast is a plain recast, which
 flow counts as it counts any copy of an owner (a recast is its operand).
 No loan stands for the other owners, so an owner whose permission lets one store another variant
-(`mut`, `ro`, a lock) is refused (`ErrorBadPerm`). The variant is at its enum's address, and the
+(`mut`, `mut1`, `ro`, a lock) is refused (`ErrorBadPerm`). The variant is at its enum's address, and the
 allocation's header before it is the same size for both: an allocation places a variant at its
 enum's alignment (generation.md, "An enum variant's allocation is laid out at its enum's alignment"). The `is` test binds
 nothing and is not asked. A narrowing from a virtual reference is not asked either.

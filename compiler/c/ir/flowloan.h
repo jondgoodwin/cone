@@ -312,6 +312,17 @@ uint32_t loanMayHolder(uint32_t loan, uint32_t k);
 // A method's returned borrow carries this loan: name the method in a message
 void loanReturnedBy(uint32_t loan, Name *method);
 
+// Downcasts (flowpath.c, "A downcast of a trait object"). The loan to hold for 'loan' in a
+// value that may point into the concrete value behind a trait object of 'trait'; the trait of
+// the first such loan in 'set', and its trait; a borrow that passed a shared owner from there,
+// which may not leave the function, and its report
+uint32_t loanNarrow(uint32_t loan, INode *trait);
+uint32_t loanNarrowedLoan(PathSet *set);
+INode *loanNarrowedIn(PathSet *set);
+void loanHiddenSet(uint32_t loan, INode *trait);
+INode *loanHidden(uint32_t loan);
+void loanHiddenLeaves(INode *node, uint32_t loan, int how);
+
 // Is the loan's place in what a shared owning reference holds, where others may write?
 int loanThroughSharedOwner(uint32_t loan);
 
@@ -455,8 +466,21 @@ void loanShapePend(INode *call, uint32_t loan, int why, Name *callee);
 uint32_t loanFlightMark();
 void loanFlightPush(PathSet *carried, uint32_t reserved);
 void loanFlightPop(uint32_t mark);
-// The same, naming the operand whose loans they are, for a seam's message
-void loanFlightPushOf(PathSet *carried, uint32_t reserved, INode *operand);
+// The same, naming the operand whose loans they are, for a seam's message.
+// Returns the entry, or LoanNoFlight where there is nothing to push
+#define LoanNoFlight 0xffffffffu
+uint32_t loanFlightPushOf(PathSet *carried, uint32_t reserved, INode *operand);
+// A value held while a place is walked, which no access is checked against but
+// for what a store then gives it
+uint32_t loanFlightPushHeld(PathSet *held, INode *operand);
+
+// The entries are 0 to loanFlightMark(). What one holds and its operand (or
+// NULL), what a store into a variable it borrows gives it (pwLentGains), and
+// all it was so given, or NULL: its builder adds that to the value it builds
+PathSet *loanFlightHeld(uint32_t flight);
+INode *loanFlightOperand(uint32_t flight);
+void loanFlightGain(uint32_t flight, PathSet *gain);
+PathSet *loanFlightGained(uint32_t flight);
 
 // An access to a place while loans are in flight: one it conflicts with is
 // reported at once (a reserved receiver's loan conflicts as a read-only one)

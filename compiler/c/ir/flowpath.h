@@ -56,7 +56,7 @@ typedef struct {
     uint8_t nsteps;     // A path longer than PlaceMaxSteps is cut short, which only overlaps more
     uint8_t shared;     // 1: reached through a shared path
     uint8_t sharedlen;  // then, how many steps lead to the first reference that may alias (0: the root's)
-    uint8_t shwrite;    // 1: some reference on the way may alias and is not 'imm' or 'mut1' (pwMayAliasWritten),
+    uint8_t shwrite;    // 1: some reference on the way may alias and is not 'imm' (pwMayAliasWritten),
                         // so another holder may change what the place is in; a collection's block may move
     uint8_t uniway;     // the borrowed reference the root is read through is 'uni', but was itself read from
                         // where another holder may write ('**o', 'o' an 'Rc[mut, &uni T]'; '**m'): what it
@@ -64,6 +64,8 @@ typedef struct {
                         // no loan's kind and no freezing
     uint8_t owned;     // nonzero (1 + the index of the last such step, loanShapeDisjoint): a step dereferences an owning reference others may own too ('Rc'), so
                         // the place may outlive its root variable
+    uint8_t ownwrite;   // a step dereferences an owning reference others may own and write through ('Rc[mut]'), with
+                        // no borrowed reference read since: what another holder may free
     uint8_t far;        // deref: the reference was itself read through a borrowed one ('**pp',
                         // '*r.g'), so the root stands for anything a borrow or more past where
                         // the variable points (flowloan.h, LoanFar)

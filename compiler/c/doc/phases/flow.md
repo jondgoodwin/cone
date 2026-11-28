@@ -873,9 +873,8 @@ decided only as the program runs, so it holds what the value carries in a stand-
 view made through it holds the loans of each, and is marked for the shape check as one
 through a name is. The loans of borrows that may write are kept on the place too
 (`pwWritingLoans`, `Place.kept`), as `*&uni x` keeps its own. The stand-in is a temporary,
-but what it holds is not dropped at its statement's end (`PathVar.yielded`): a view marked
-later (`loanShapeLazy`) reads from it where the view points. Other values that are no place
-(an assignment's value, a tuple element, a field of a struct literal, a call's result where
+but what it holds is not dropped at its statement's end (`PathVar.yielded`). Other values
+that are no place (an assignment's value, a tuple element, a field of a struct literal, a call's result where
 the stand-in of the paragraph on a reference a call returned is not made) are still read as
 values, and what is dereferenced there is not followed.
 
@@ -917,9 +916,9 @@ permission and the place (`loanKindOf`):
 
 | Kind | Borrow | Of a place reached |
 | --- | --- | --- |
-| *exclusive* | `&mut1` / `&uni` | as `uni` / either way |
+| *exclusive* | `&uni` | either way |
 | *shared* | `&ro` (the default `&`), `&imm` / `&imm` | as `uni` / through a shared path |
-| *alias* | `&mut` / `&mut1`, `&ro` | either way / through a shared path |
+| *alias* | `&mut`, `&mut1` / `&ro` | either way / through a shared path |
 | *pin* | `&opaq` | either way |
 
 A *holder* is a local or a parameter whose type carries a borrow
@@ -983,7 +982,8 @@ what a `uni` reference points at, an owner's contents or a `uni` slice's element
 be lent `&mut` any number of times (in one call, held in locals, held in structs), and
 read, written and borrowed beside them; only what needs the source unique conflicts
 (a move, a replacement, its end, an `&uni` or `&imm` borrow, as the table says).
-`&mut1`, which hands out interior references into a sum, keeps the source to itself. The
+`&mut1` is lent as `&mut` is: its reference may be copied and a copy writes, so every question
+"may another name write?" is answered for `mut1` as for `mut` (`permWriterFlags`). The
 rest is the shape rule, which a source another name reaches is asked of, and which the
 source of an alias loan has other names for. So long as a loan is the only `mut`
 borrow of its source, nothing differs from the exclusive loan it replaced: the loans a
@@ -1015,6 +1015,16 @@ making a `mut` borrow of the same local (`step(&w, &mut w.entities[0])`, `p.m(&p
 made an alias loan (`loanFlightOwnRo`), the callee taking it as a view others may change.
 A free function's borrowed argument that its result carries (`pwLentArg`) keeps the
 exclusive freeze: a generator over a `&mut List` reshapes its own list.
+
+**A borrow through a reference keeps where it points.** A view taken through a reference
+variable (`&(*r)[0]`) points where `r` pointed as the borrow was made, whatever happens to
+`r` after. Its loan is of `*r`, and the mark for the shape check may come later (a lazy loan
+promoted, a view marked once the reference is lent), when `r` has left scope or holds another
+borrow. So the loan keeps what `r` held where the borrow was made (`Loan.way`: the union over
+the paths and a loop's passes), and its roots, with whether it is in a `var` global, are taken
+from that (`loanRootsNote`), not from what `r` holds at the mark. A later pass of a loop that
+adds to it notes the roots of a loan already marked again, since the pass may find the loan
+frozen and mark it no more.
 
 A holder reaching its loan's source through the loan — `*b = 9`, `r.x` — uses
 the holder; it does not access the source.
@@ -1588,6 +1598,23 @@ borrow. A holder whose every borrowed reference points at a value holding no
 borrow (`&i64`, an `Option[&i64]` a call returned) can read none of them, and
 gains nothing (`pwReadsBorrows`).
 
+A borrow no variable holds yet is such a holder too. A value in the making is on
+the flight stack ("In flight", above), and `pwLentGains` gives it what it would
+give a variable (`loanFlightGain`), so an access that conflicts with what it was
+given is reported at once. Its builder adds what it was given to what it builds
+(`loanFlightGained`): a call's arguments and receiver, a literal's elements, an
+assignment's or parallel assignment's value while a place is walked or another
+element stored, and the reference an index reaches its place by, or the element
+borrow already made, while the index is walked. In `p = pick(&mut h, {h = &b;
+1})`, `p` holds `b`'s loan. The last three are pushed to be watched only
+(`loanFlightPushHeld`): no access is checked against what they held when pushed.
+
+A gain to a value still being built isn't kept per path, so a store on one
+branch inside a later argument is seen by its sibling branch: in
+`pick(&mut h, if c { h = &y; 1 } else { y = 5; 1 })` the write to `y` is
+refused. That is conservative, and taking `let p = &mut h` before the call
+avoids it.
+
 **What is not held.** The temporary an operator changing its operand in place
 borrows it through (`x += 1` is `{let tmp = &mut x; *tmp = *tmp + 1}`, and
 `v <- a, b` appends through one; both named `tempName`) is an access, a write,
@@ -1679,7 +1706,7 @@ returned borrow carries, read-only or writing (`l[0usize]`, `&mut l[0usize]`, `l
 stays an alias loan marked for the shape check (`pwShapeLent`): the path, `l` or
 `self.items`, stays readable, lendable and writable, and a change of its shape is what is
 refused. Where the check does not follow the loan (the path is reached through a reference
-others do not write by: `imm`, `mut1`), a read-only borrow's loan is made a `LoanShared`
+others do not write by: `imm`), a read-only borrow's loan is made a `LoanShared`
 one and a writing one a `LoanExcl` one (`loanFreezeShared`, `loanFreezeWritable`): the
 path is frozen as a local's is. So
 `let e = l[0usize]; l.push(p); e.x`, the
@@ -1831,7 +1858,7 @@ Part (b) of the rule (`reshape.c`, `flowpath.c`'s `pwShapeBorrow`/`pwShapeCall`,
 `flowloan.c`'s shape section). When `pwCall` freezes a shape-changing receiver's
 path (above) and the place is reached through a reference that others may
 write by (`Place.shwrite`: a `mut`, `ro` or lock-permission reference, an `Rc[mut]`
-owner; not `imm`, `mut1`, `opaq` or `uni` -- but a `uni` one read from such a way
+owner, and `mut1` as `mut`; not `imm`, `opaq` or `uni` -- but a `uni` one read from such a way
 counts, `Place.uniway` under "The loan walk"), the borrow's loan is *marked*
 (`loanShapeMark`, `Loan.shapecont`) — unless the reference is read-only and what it
 was borrowed from is a place this function holds a loan on that excludes writers,
@@ -2036,9 +2063,16 @@ by value or through owners alone (`reshapeStoreHits`). A local holding an owning
 owner's own place (`reshapeUniqueLocalOf`), reached by no other name but a borrow of it: a loan's own
 root variables are listed beside the loan even where the owner is shared (`loanRootsNote`), so
 `&mut r` lent to the call that replaces `r` is asked. The receiver's own borrow of an owner
-(`left.insert(v)`: an owner lent as `self`, the loan `recvloan`) is the value the method works on, so
-only its other arguments are asked (`reshapeCall`'s `skiprecv`), and a replacement they make is
-reported at the call (`loanShapeNow`). The check does not tell two owners of one type apart.
+(`t.task.run()`: an owner lent as `self`, the loan `recvloan`) is asked as any argument is, since what
+the receiver holds may lead back to the owner, which the method then stores over. A virtual call's
+receiver (`FlagVDisp`: a method of an owned trait object, an owned closure called) is not asked, so one
+that leads back to its owner is accepted [differs]. The other exception
+(`reshapeOwnerAbove`, `reshapeCall`'s `skiprecv`) is a unique owner (`Uni`, a region that is `Move`)
+whose receiver reaches an owner of that type only through what it owns uniquely: no shared owner,
+borrow, pointer or virtual reference it holds leads to one, so every owner it can store over is below
+it (a node's method called through its owner, `left.insert(v)`), and only the other arguments are
+asked. The borrow is handed to this very call, so a replacement is reported at the call
+(`loanShapeNow`). The check does not tell two owners of one type apart.
 An owner of a trait object (`Uni[Gadget]`, `Rc[mut, Gadget]`: a `VirtRefTag` with an owning region) is an
 owner like any other (`reshapeIsOwner`), the borrow a method of the trait lends an owner's contents. `rcWalk`
 reads a virtual reference as it does for a collection: its implementers are unknown, so it reaches any container
@@ -2135,7 +2169,7 @@ lent and marked as it is out of a collection (`shapeChanging` of an enum is
 narrowed ([narrow](../nodes/narrow.md)) is held by the hidden local `-narrow`, whose recast
 is this narrowed reference: the message names the original name, which is the one the writer
 sees go stale. A name narrowed by a test and read from its own storage, held by value or
-through `uni`, `imm` or `mut1`, has no narrowed reference: where a `mut` borrow of it is held
+through `uni` or `imm`, has no narrowed reference: where a `mut` borrow of it is held
 at the test, a stand-in holds the same kind of loan and each use of the name as the variant is
 a use of it. Where the name is a reference and the `mut` borrow is of the variable itself, the
 stand-in also holds a loan of the variable, marked with the reference's type as an owner is
@@ -2229,9 +2263,28 @@ given the unseen loan a virtual call's result has (below), under the trait. Noth
 through `opaq` or a lock. Past 200 deep or 100000 types the answer is yes. `flowGateReachesOwner`
 answers yes for every borrowed virtual reference, so such a function's caller is walked. A plain
 reference to an open trait calls no method (`fnCallLowerTraitMethod`), so its referent is walked
-as a struct is, field by field. Not followed: a downcast of the trait object in the callee, which
-can reach past a shared owner in the concrete value that no method or field of the trait hands
-out. Tests: `collection_flow_reshape_handed_trait`, `collection_reshape_handed_trait_success`.
+as a struct is, field by field. Tests: `collection_flow_reshape_handed_trait`,
+`collection_reshape_handed_trait_success`.
+
+**A downcast of a trait object** (`Loan.narrowed`, `Loan.hidden`, `pwHiddenLeaves`). A caller
+can't see what a downcast reaches, so the body is checked: a borrow that passed a shared owner
+from a narrowed trait object may not leave the function (returned, yielded, stored where it may
+outlive the function, or handed to a call that may store it there) unless the trait's methods or
+fields could give it (Error 1064). The marks:
+- The value a downcast gives (a `CastTag` from a virtual reference to a reference) holds its
+  loans marked with the trait (`loanNarrow`; a caller loan takes a second of the same part).
+  A borrow made through a variable holding one carries the mark.
+- A call's result from an argument that reaches a trait object is marked too where neither the
+  trait's signature nor the parameter's own type (outside trait objects, `pwShows`) names what
+  the result may point at (`pwTraitGivesAll`): the callee narrowed it, as `downcastRef` does.
+  A type the parameter shows is already judged by type at the caller, so it is left alone.
+- A marked borrow whose place dereferences an owner others may write through (`Place.ownwrite`:
+  `Rc[mut]`, with no borrowed reference read since but a `&uni`) is hidden. So is the reach loan
+  a call's result gets from a marked argument whose parameter type has a shared owner of its own
+  to pass (`helper(c)`).
+- Leaving: `pwTraitCouldGive` exempts what the trait's methods could hand out, or what its
+  fields reach in the same container.
+Tests: `collection_flow_downcast_leaves`, `collection_downcast_leaves_success`.
 
 **A result borrowed from behind a virtual call's receiver** (`pwReachShared`, argument 0 of a
 `FlagVDisp` call: a method called through a virtual reference, a closure behind `&<fn`, a method
