@@ -212,6 +212,12 @@ pub struct SweepSpec {
   // along, 1 open all along
   pub closedFrom: f32;
   pub tracks: SweepTracks;
+  // The normal of each section's plane along the run: empty, the planes are square to the path (today's); else 3
+  // curves, x, y and z, read at t and made unit length. See "Frames and curve ends" above.
+  pub normal: RunCurves;
+  // When given, the first (last) ring is this curve
+  pub startCurve: Option[TaggedCurve];
+  pub endCurve: Option[TaggedCurve];
 
   // The path: the spine at 'samples' points, evenly in t, open. An empty path when the spine is not 3 curves or
   // 'samples' is below 2
@@ -268,6 +274,20 @@ pub struct SweepSpec {
     tp
   }
 
+  // Whether either end is a curve
+  fn hasCurve(self: &) bool {
+    var has = false;
+    match startCurve.asRef() {
+      case let Some(c) { has = true; }
+      else { }
+    }
+    match endCurve.asRef() {
+      case let Some(c) { has = true; }
+      else { }
+    }
+    has
+  }
+
   // The reason this spec cannot be hydrated, or an empty string
   fn refusal(self: &, rings: u32) String {
     if rings < 2u32 { return String.from("SweepSpec: fewer than 2 rings"); }
@@ -293,6 +313,16 @@ pub struct SweepSpec {
         q = q + 1usize;
       }
       k = k + 1usize;
+    }
+    if normal.len() != 0usize && normal.len() != 3usize { return String.from("SweepSpec: the normal is not 3 curves"); }
+    k = 0usize;
+    while k < normal.len() {
+      let why = normal[k].refusal(if k == 0usize {"the normal x"} else if k == 1usize {"the normal y"} else {"the normal z"});
+      if why.len() > 0usize { return why; }
+      k = k + 1usize;
+    }
+    if (normal.len() > 0usize || hasCurve()) && closedFrom > 0. && closedFrom < 1. {
+      return String.from("SweepSpec: a normal or a curve end is not built with a part-way closing");
     }
     if closedFrom > 0. && closedFrom < 1. {
       // The open path's two end tracks meet at closedFrom
@@ -395,7 +425,36 @@ pub struct SweepSpec {
       stations.push(if run > 0. {*cum[4usize * r] / run} else {t});
       r = r + 1usize;
     }
-    if !part { return loftTagged(&sections, &p, stations.view(), between, uvByLength, caps, problems); }
+    if !part && normal.len() == 0usize && !hasCurve() {
+      return loftTagged(&sections, &p, stations.view(), between, uvByLength, caps, problems);
+    }
+    if !part {
+      // Frames: the section planes' own where 'normal' is given, else the path's, one per ring
+      var frames = List[Frame].withCapacity(nr);
+      let pf = p.frames();
+      let pd = p.distances();
+      let pl = p.length();
+      r = 0usize;
+      while r < nr {
+        let t = *ringT[r];
+        if normal.len() == 0usize {
+          frames.push(frameAtDistance(&p, &pf, &pd, pl, *stations[r] * pl));
+        } else {
+          let origin = Vec3(spine[0usize].at(t), spine[1usize].at(t), spine[2usize].at(t));
+          let nrm = unit(Vec3(normal[0usize].at(t), normal[1usize].at(t), normal[2usize].at(t)));
+          let b0 = unit(up - nrm * up.dot(nrm));
+          if nrm.length() == 0. || b0.length() == 0. {
+            var line = String.from("SweepSpec: the normal is zero or along 'up' at ring ");
+            line.appendUInt(u64.from(r));
+            problems.push(line);
+            return PolyMesh();
+          }
+          frames.push(Frame(origin, nrm, b0.cross(nrm), b0));
+        }
+        r = r + 1usize;
+      }
+      return loftTaggedFramed(&sections, &frames, &startCurve, &endCurve, between, uvByLength, caps, problems);
+    }
 
     // Closing part way: the open part and the closed part, two lofts through the one path, welded at the ring
     var ci = 0usize;
@@ -420,9 +479,13 @@ pub struct SweepSpec {
       }
       r = r + 1usize;
     }
-    var a = loftTaggedCore(&openSecs, &p, openSt.view(), between, uvByLength, false, false, problems);
+    let noFrames = List[Frame]();
+    let none = noCurve();
+    var a = loftTaggedCore(&openSecs, &p, openSt.view(), &noFrames, false, &none, false, &none, between, uvByLength,
+      false, false, problems);
     if a.vertexCount() == 0usize { return PolyMesh(); }
-    var b = loftTaggedCore(&closedSecs, &p, closedSt.view(), between, uvByLength, false, true, problems);
+    var b = loftTaggedCore(&closedSecs, &p, closedSt.view(), &noFrames, false, &none, false, &none, between, uvByLength,
+      false, true, problems);
     if b.vertexCount() == 0usize { return PolyMesh(); }
     // Along the whole run: the open part's fractions of the way to closedFrom, the closed part's from there to 1
     let atCf = *stations[ci];
@@ -457,6 +520,11 @@ pub struct SweepSpec {
     var k = 0usize;
     while k < spine.len() {
       total = total + spine[k].values.len() + spine[k].kinks.len();
+      k = k + 1usize;
+    }
+    k = 0usize;
+    while k < normal.len() {
+      total = total + normal[k].values.len() + normal[k].kinks.len();
       k = k + 1usize;
     }
     k = 0usize;

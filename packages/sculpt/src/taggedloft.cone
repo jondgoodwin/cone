@@ -59,6 +59,75 @@ pub struct TaggedProfile {
   }
 }
 
+// A ring in space with its feature points: the end of a loft that is a 3-D curve ('startCurve', 'endCurve'). Its
+// tags correspond to the sections' tags one for one, and it runs the same way round (a closed one) as they do seen
+// from ahead; its points need not be coplanar.
+pub struct TaggedCurve {
+  pub points: List[Vec3];
+  // The feature points' numbers, rising; as many as the sections' tags. An open curve's first and last points are tags
+  pub tags: List[u32];
+  // One per tag: the "crease" sharpness of the tag's column at this end
+  pub creases: List[f32];
+
+  // The curve through these points, closed or not, with these tags and every crease 0
+  pub fn of(points: &Array[Vec3], tags: &Array[u32]) TaggedCurve {
+    var p = List[Vec3].withCapacity(points.len);
+    var i = 0usize;
+    while i < points.len {
+      p.push(points[i]);
+      i = i + 1usize;
+    }
+    var t = List[u32].withCapacity(tags.len);
+    var c = List[f32].withCapacity(tags.len);
+    i = 0usize;
+    while i < tags.len {
+      t.push(tags[i]);
+      c.push(0.);
+      i = i + 1usize;
+    }
+    TaggedCurve(p, t, c)
+  }
+}
+
+fn noCurve() TaggedCurve { TaggedCurve(List[Vec3](), List[u32](), List[f32]()) }
+
+fn copyOfCurve(c: &TaggedCurve) TaggedCurve {
+  TaggedCurve(copyList(&c.points), copyList(&c.tags), copyList(&c.creases))
+}
+
+// The reason a curve cannot end a loft of 'nt' tags, closed or not, or an empty string
+fn curveRefusal(c: &TaggedCurve, nt: usize, closed: bool, which: &str) String {
+  var why = String.from("loftTaggedFramed: the ");
+  why.append(which);
+  let m = c.points.len();
+  if c.tags.len() != nt {
+    why.append(" curve's tag count differs from the sections'");
+    return why;
+  }
+  if c.creases.len() != nt {
+    why.append(" curve's creases are not one per tag");
+    return why;
+  }
+  if m < c.tags.len() || (closed && m < 3usize) || (!closed && m < 2usize) {
+    why.append(" curve has fewer points than tags");
+    return why;
+  }
+  var i = 0usize;
+  while i < nt {
+    let t = usize.from(*c.tags[i]);
+    if t >= m || (i > 0usize && t <= usize.from(*c.tags[i - 1usize])) {
+      why.append(" curve's tags are not rising or out of range");
+      return why;
+    }
+    i = i + 1usize;
+  }
+  if !closed && (*c.tags[0usize] != 0u32 || usize.from(*c.tags[nt - 1usize]) != m - 1usize) {
+    why.append(" curve's first and last points must be tags");
+    return why;
+  }
+  String.from("")
+}
+
 // One problem line and an empty mesh
 fn taggedRefused(problems: &mut List[String], why: &str) PolyMesh {
   problems.push(String.from(why));
@@ -81,17 +150,51 @@ fn polyLength(pts: &List[Vec3]) f32 {
 // columns, columns in order from tag 0; quads as 'loftAlong''s, then the caps.
 pub fn loftTagged(sections: &List[TaggedProfile], path: &Path, stations: &Array[f32], between: u32, uvByLength: bool,
     caps: bool, problems: &mut List[String]) PolyMesh {
-  loftTaggedCore(sections, path, stations, between, uvByLength, caps, false, problems)
+  let none = noCurve();
+  let noFrames = List[Frame]();
+  loftTaggedCore(sections, path, stations, &noFrames, false, &none, false, &none, between, uvByLength, caps, false,
+    problems)
+}
+
+// The tagged loft with each section placed in a frame of its own (see the top of this file, "Frames and curve ends").
+// 'frames' one per section (profile x on the frame's normal, y on its binormal); 'startCurve' and 'endCurve', when
+// given, are the first and last rings in place of the first and last sections' placed points. Numbering as
+// 'loftTagged''s.
+pub fn loftTaggedFramed(sections: &List[TaggedProfile], frames: &List[Frame], startCurve: &Option[TaggedCurve],
+    endCurve: &Option[TaggedCurve], between: u32, uvByLength: bool, caps: bool, problems: &mut List[String]) PolyMesh {
+  var hasStart = false;
+  var hasEnd = false;
+  var sc = noCurve();
+  var ec = noCurve();
+  match startCurve.asRef() {
+    case let Some(c) { hasStart = true; sc = copyOfCurve(c); }
+    else { }
+  }
+  match endCurve.asRef() {
+    case let Some(c) { hasEnd = true; ec = copyOfCurve(c); }
+    else { }
+  }
+  if frames.len() == 0usize { return taggedRefused(problems, "loftTaggedFramed: no frames"); }
+  let noPts = List[Vec3]();
+  let noPath = Path.fromPoints(noPts.view(), false);
+  let noSt = List[f32]();
+  loftTaggedCore(sections, &noPath, noSt.view(), frames, hasStart, &sc, hasEnd, &ec, between, uvByLength, caps, false,
+    problems)
 }
 
 // 'loftTagged', with 'closingStart' allowing one thing it refuses: on a closed profile, the first section's closing
 // stretch (the last tag round to tag 0) may have no length, a ring that is closing, its ends meeting (SweepSpec's
-// closing part way). That stretch's columns then all start at the one point and open out.
-fn loftTaggedCore(sections: &List[TaggedProfile], path: &Path, stations: &Array[f32], between: u32,
+// closing part way). That stretch's columns then all start at the one point and open out. With 'frames' not empty
+// (one per section) each section is placed in its own frame and the columns between run on the Catmull-Rom spline
+// through the placed points; the start and end curves, when 'hasStart' and 'hasEnd', are the first and last rings.
+fn loftTaggedCore(sections: &List[TaggedProfile], path: &Path, stations: &Array[f32], frames: &List[Frame],
+    hasStart: bool, startC: &TaggedCurve, hasEnd: bool, endC: &TaggedCurve, between: u32,
     uvByLength: bool, caps: bool, closingStart: bool, problems: &mut List[String]) PolyMesh {
   let ns = sections.len();
+  let framed = frames.len() > 0usize;
   if ns < 2usize { return taggedRefused(problems, "loftTagged: fewer than 2 sections"); }
-  if path.points.len() < 2usize { return taggedRefused(problems, "loftTagged: the path has fewer than 2 points"); }
+  if framed && frames.len() != ns { return taggedRefused(problems, "loftTaggedFramed: frames and sections differ in count"); }
+  if !framed && path.points.len() < 2usize { return taggedRefused(problems, "loftTagged: the path has fewer than 2 points"); }
   let closed = sections[0usize].profile.closed;
   let nt = sections[0usize].tags.len();
   var k = 0usize;
@@ -131,9 +234,25 @@ fn loftTaggedCore(sections: &List[TaggedProfile], path: &Path, stations: &Array[
     }
   }
 
-  // Each section's points as Vec3 (z 0), a closed one started at tag 0, and its tags from there
-  var pts = List[List[Vec3]].withCapacity(ns);
-  var tg = List[List[usize]].withCapacity(ns);
+  if hasStart {
+    let why = curveRefusal(startC, nt, closed, "start");
+    if why.len() > 0usize { return taggedRefused(problems, why.view()); }
+  }
+  if hasEnd {
+    let why = curveRefusal(endC, nt, closed, "end");
+    if why.len() > 0usize { return taggedRefused(problems, why.view()); }
+  }
+  if (hasStart || hasEnd) && !framed {
+    return taggedRefused(problems, "loftTagged: a curve end needs frames");
+  }
+
+  // Each section's points as Vec3 (z 0), a closed one started at tag 0, and its tags from there. Then the start
+  // curve's and the end curve's, as two more rows (they take part in no column, and get the columns' points)
+  let startRow = ns;
+  let endRow = if hasStart {ns + 1usize} else {ns};
+  let nsAll = ns + (if hasStart {1usize} else {0usize}) + (if hasEnd {1usize} else {0usize});
+  var pts = List[List[Vec3]].withCapacity(nsAll);
+  var tg = List[List[usize]].withCapacity(nsAll);
   k = 0usize;
   while k < ns {
     let m = sections[k].profile.points.len();
@@ -156,13 +275,31 @@ fn loftTaggedCore(sections: &List[TaggedProfile], path: &Path, stations: &Array[
     tg.push(t);
     k = k + 1usize;
   }
+  var ce = 0usize;
+  while ce < 2usize {
+    if (ce == 0usize && hasStart) || (ce == 1usize && hasEnd) {
+      let c = if ce == 0usize {startC} else {endC};
+      let shift = if closed {usize.from(*c.tags[0usize])} else {0usize};
+      var p = copyList(&c.points);
+      if shift != 0usize { p = rotated(&p, shift); }
+      var t = List[usize].withCapacity(nt);
+      var i = 0usize;
+      while i < nt {
+        t.push(usize.from(*c.tags[i]) - shift);
+        i = i + 1usize;
+      }
+      pts.push(p);
+      tg.push(t);
+    }
+    ce = ce + 1usize;
+  }
 
   // The stretches' polylines and their fractions, section by section
   let nst = if closed {nt} else {nt - 1usize};
-  var polys = List[List[Vec3]].withCapacity(ns * nst);
-  var frs = List[List[f32]].withCapacity(ns * nst);
+  var polys = List[List[Vec3]].withCapacity(nsAll * nst);
+  var frs = List[List[f32]].withCapacity(nsAll * nst);
   k = 0usize;
-  while k < ns {
+  while k < nsAll {
     let m = pts[k].len();
     var s = 0usize;
     while s < nst {
@@ -224,10 +361,10 @@ fn loftTaggedCore(sections: &List[TaggedProfile], path: &Path, stations: &Array[
   let n = colS.len();
 
   // Each section's ring on the columns, and the columns' fractions of its whole length
-  var rings = List[Vec3].withCapacity(ns * n);
-  var us = List[f32].withCapacity(ns * (n + 1usize));
+  var rings = List[Vec3].withCapacity(nsAll * n);
+  var us = List[f32].withCapacity(nsAll * (n + 1usize));
   k = 0usize;
-  while k < ns {
+  while k < nsAll {
     var ring = List[Vec3].withCapacity(n);
     var c = 0usize;
     while c < n {
@@ -255,10 +392,10 @@ fn loftTaggedCore(sections: &List[TaggedProfile], path: &Path, stations: &Array[
     else { knots.push(f32.from(k) / f32.from(ns - 1usize)); }
     k = k + 1usize;
   }
-  let ringsClosed = path.closed;
-  let frames = path.frames();
-  let dist = path.distances();
-  let total = path.length();
+  let ringsClosed = !framed && path.closed;
+  let pframes = if framed {List[Frame]()} else {path.frames()};
+  let dist = if framed {List[f32]()} else {path.distances()};
+  let total = if framed {0.} else {path.length()};
   let steps = usize.from(between) + 1usize;
   let bands = if ringsClosed {ns} else {ns - 1usize};
   let nr = if ringsClosed {ns * steps} else {bands * steps + 1usize};
@@ -268,7 +405,61 @@ fn loftTaggedCore(sections: &List[TaggedProfile], path: &Path, stations: &Array[
   var ringUs = List[f32].withCapacity(nr * (n + 1usize));
   var vs = List[f32].withCapacity(nr + 1usize);
   var r = 0usize;
-  while r < nr && frames.len() > 0usize {
+  if framed {
+    // Each section placed in its own frame; the first and last rings the curves where given; between them the
+    // Catmull-Rom spline through the placed points (knots by the frames' origins, as 'loft')
+    var sp = List[Vec3].withCapacity(ns * n);
+    k = 0usize;
+    while k < ns {
+      let fr = *frames[k];
+      var j = 0usize;
+      while j < n {
+        let p = *rings[k * n + j];
+        sp.push(fr.place(Vec2(p.x, p.y)));
+        j = j + 1usize;
+      }
+      k = k + 1usize;
+    }
+    if closed { reportCrossings(&sp, frames, n, problems); }
+    var j = 0usize;
+    while j < n {
+      if hasStart { sp.set(j, *rings[startRow * n + j]); }
+      if hasEnd { sp.set((ns - 1usize) * n + j, *rings[endRow * n + j]); }
+      j = j + 1usize;
+    }
+    var dsum: f32 = 0.;
+    k = 0usize;
+    while k < ns {
+      if k > 0usize { dsum = dsum + frames[k].origin.distance(frames[k - 1usize].origin); }
+      knots.set(k, dsum);
+      k = k + 1usize;
+    }
+    k = 0usize;
+    while k < ns {
+      if dsum > 0. { knots.set(k, *knots[k] / dsum); }
+      else { knots.set(k, f32.from(k) / f32.from(ns - 1usize)); }
+      k = k + 1usize;
+    }
+    while r < nr {
+      let kk = r / steps;
+      let i = r % steps;
+      let f = f32.from(i) / f32.from(steps);
+      let k1 = if kk + 1usize < ns {kk + 1usize} else {kk};
+      let ua = rowOf(kk, ns, hasStart, startRow, hasEnd, endRow) * (n + 1usize);
+      let ub = rowOf(k1, ns, hasStart, startRow, hasEnd, endRow) * (n + 1usize);
+      j = 0usize;
+      while j < n {
+        pos.push(if i == 0usize {*sp[kk * n + j]} else {columnPoint(&sp, &knots, ns, n, false, true, kk, j, f)});
+        ringUs.push(if i == 0usize {*us[ua + j]} else {mixf(*us[ua + j], *us[ub + j], f)});
+        j = j + 1usize;
+      }
+      ringUs.push(1.);
+      vs.push(if i == 0usize {*knots[kk]} else {mixf(*knots[kk], *knots[k1], f)});
+      r = r + 1usize;
+    }
+    r = nr;
+  }
+  while r < nr && pframes.len() > 0usize {
     let kk = r / steps;
     let i = r % steps;
     let f = f32.from(i) / f32.from(steps);
@@ -276,7 +467,7 @@ fn loftTaggedCore(sections: &List[TaggedProfile], path: &Path, stations: &Array[
     let ta = *knots[kk];
     let tb = if i == 0usize {ta} else if k1 == 0usize {*knots[0usize] + 1.} else {*knots[k1]};
     let t = if i == 0usize {ta} else {mixf(ta, tb, f)};
-    let fr = frameAtDistance(path, &frames, &dist, total, t * total);
+    let fr = frameAtDistance(path, &pframes, &dist, total, t * total);
     var j = 0usize;
     while j < n {
       let p = if i == 0usize {*rings[kk * n + j]}
@@ -294,8 +485,8 @@ fn loftTaggedCore(sections: &List[TaggedProfile], path: &Path, stations: &Array[
   }
   vs.push(1.);
   if pos.len() == 0usize { return PolyMesh(); }
-  let capA = ringCapUvs(&rings, 0usize, n, true);
-  let capB = ringCapUvs(&rings, ns - 1usize, n, false);
+  let capA = if hasStart {List[Vec2]()} else {ringCapUvs(&rings, 0usize, n, true)};
+  let capB = if hasEnd {List[Vec2]()} else {ringCapUvs(&rings, ns - 1usize, n, false)};
   var m = tube(&pos, n, nr, closed, ringsClosed, caps, false, &ringUs, &vs, &capA, &capB);
 
   // Creases on the tags' columns, by band
@@ -309,8 +500,8 @@ fn loftTaggedCore(sections: &List[TaggedProfile], path: &Path, stations: &Array[
     let r1 = (r + 1usize) % nr;
     var i = 0usize;
     while i < nt {
-      let a = *sections[kk].creases[i];
-      let b = *sections[k1].creases[i];
+      let a = if kk == 0usize && hasStart {*startC.creases[i]} else {*sections[kk].creases[i]};
+      let b = if k1 == ns - 1usize && hasEnd {*endC.creases[i]} else {*sections[k1].creases[i]};
       let c = mixf(a, b, f);
       if c != 0. {
         let col = *tagCol[i];
@@ -324,6 +515,96 @@ fn loftTaggedCore(sections: &List[TaggedProfile], path: &Path, stations: &Array[
 
   if uvByLength { setLengthUvs(&mut m, &pos, n, nr, closed, ringsClosed); }
   m
+}
+
+// The row of 'rings' and 'us' that holds section k's ring: the section's own, or a curve's at an end
+fn rowOf(k: usize, ns: usize, hasStart: bool, startRow: usize, hasEnd: bool, endRow: usize) usize {
+  if k == 0usize && hasStart { return startRow; }
+  if k + 1usize == ns && hasEnd { return endRow; }
+  k
+}
+
+// The parameters s = p . d, rising, where the plane through o with normal nrm cuts the closed ring (row 'row' of
+// 'sp', n points)
+fn planeCuts(sp: &List[Vec3], row: usize, n: usize, o: Vec3, nrm: Vec3, d: Vec3) List[f32] {
+  var out = List[f32]();
+  var j = 0usize;
+  while j < n {
+    let a = *sp[row * n + j];
+    let b = *sp[row * n + (j + 1usize) % n];
+    let da = (a - o).dot(nrm);
+    let db = (b - o).dot(nrm);
+    if (da < 0. && db >= 0.) || (da >= 0. && db < 0.) {
+      let p = a + (b - a) * (da / (da - db));
+      let s = p.dot(d);
+      out.push(s);
+      var q = out.len() - 1usize;
+      while q > 0usize && *out[q - 1usize] > *out[q] {
+        let t = *out[q - 1usize];
+        out[q - 1usize] = *out[q];
+        out[q] = t;
+        q = q - 1usize;
+      }
+    }
+    j = j + 1usize;
+  }
+  out
+}
+
+// Whether sections k and k + 1 meet inside the part: the line where their planes meet cuts both closed rings, and the
+// stretches of it inside each ring overlap (the rings then pass through each other, the part is folded there).
+// Parallel planes do not meet.
+fn sectionsCross(sp: &List[Vec3], frames: &List[Frame], n: usize, k: usize) bool {
+  let fa = *frames[k];
+  let fb = *frames[k + 1usize];
+  let na = unit(fa.normal.cross(fa.binormal));
+  let nb = unit(fb.normal.cross(fb.binormal));
+  let d = na.cross(nb);
+  if d.length() < 0.000001 { return false; }
+  let du = unit(d);
+  let ca = planeCuts(sp, k, n, fb.origin, nb, du);
+  let cb = planeCuts(sp, k + 1usize, n, fa.origin, na, du);
+  if ca.len() % 2usize != 0usize || cb.len() % 2usize != 0usize { return false; }
+  var i = 0usize;
+  while i + 1usize < ca.len() {
+    var j = 0usize;
+    while j + 1usize < cb.len() {
+      let lo = if *ca[i] > *cb[j] {*ca[i]} else {*cb[j]};
+      let hi = if *ca[i + 1usize] < *cb[j + 1usize] {*ca[i + 1usize]} else {*cb[j + 1usize]};
+      if hi - lo > 0.00001 { return true; }
+      j = j + 2usize;
+    }
+    i = i + 2usize;
+  }
+  false
+}
+
+// One problem line naming the neighbouring sections that cross (the first 8), if any do
+fn reportCrossings(sp: &List[Vec3], frames: &List[Frame], n: usize, problems: &mut List[String]) {
+  var count = 0usize;
+  var named = String.from("");
+  var k = 0usize;
+  while k + 1usize < frames.len() {
+    if sectionsCross(sp, frames, n, k) {
+      if count < 8usize {
+        if count > 0usize { named.append(", "); }
+        named.appendUInt(u64.from(k));
+        named.append("-");
+        named.appendUInt(u64.from(k + 1usize));
+      }
+      count = count + 1usize;
+    }
+    k = k + 1usize;
+  }
+  if count > 0usize {
+    var line = String.from("loftTaggedFramed: ");
+    line.appendUInt(u64.from(count));
+    line.append(" neighbouring sections cross inside the part (");
+    line.append(named.view());
+    if count > 8usize { line.append(", ..."); }
+    line.append(")");
+    problems.push(line);
+  }
 }
 
 // The quads' corner uvs in the mesh's own lengths (see the top of this file). The quads are the mesh's first
