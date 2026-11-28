@@ -873,9 +873,8 @@ decided only as the program runs, so it holds what the value carries in a stand-
 view made through it holds the loans of each, and is marked for the shape check as one
 through a name is. The loans of borrows that may write are kept on the place too
 (`pwWritingLoans`, `Place.kept`), as `*&uni x` keeps its own. The stand-in is a temporary,
-but what it holds is not dropped at its statement's end (`PathVar.yielded`): a view marked
-later (`loanShapeLazy`) reads from it where the view points. Other values that are no place
-(an assignment's value, a tuple element, a field of a struct literal, a call's result where
+but what it holds is not dropped at its statement's end (`PathVar.yielded`). Other values
+that are no place (an assignment's value, a tuple element, a field of a struct literal, a call's result where
 the stand-in of the paragraph on a reference a call returned is not made) are still read as
 values, and what is dereferenced there is not followed.
 
@@ -1016,6 +1015,16 @@ making a `mut` borrow of the same local (`step(&w, &mut w.entities[0])`, `p.m(&p
 made an alias loan (`loanFlightOwnRo`), the callee taking it as a view others may change.
 A free function's borrowed argument that its result carries (`pwLentArg`) keeps the
 exclusive freeze: a generator over a `&mut List` reshapes its own list.
+
+**A borrow through a reference keeps where it points.** A view taken through a reference
+variable (`&(*r)[0]`) points where `r` pointed as the borrow was made, whatever happens to
+`r` after. Its loan is of `*r`, and the mark for the shape check may come later (a lazy loan
+promoted, a view marked once the reference is lent), when `r` has left scope or holds another
+borrow. So the loan keeps what `r` held where the borrow was made (`Loan.way`: the union over
+the paths and a loop's passes), and its roots, with whether it is in a `var` global, are taken
+from that (`loanRootsNote`), not from what `r` holds at the mark. A later pass of a loop that
+adds to it notes the roots of a loan already marked again, since the pass may find the loan
+frozen and mark it no more.
 
 A holder reaching its loan's source through the loan — `*b = 9`, `r.x` — uses
 the holder; it does not access the source.

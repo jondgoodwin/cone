@@ -1228,10 +1228,8 @@ static int pwYieldedRef(INode *ref) {
 }
 
 // The stand-in for such a value. It is a temporary of its statement, but what it holds is
-// not dropped when the statement ends: a view made through it may be marked for the shape
-// check later (loanShapeLazy), and where the view points is then read from what the
-// stand-in holds. One variable per dereference, so that a loop's next walk finds the loans
-// of it that the last one made
+// not dropped when the statement ends. One variable per dereference, so that a loop's next
+// walk finds the loans of it that the last one made
 static uint32_t pwYieldStandIn(INode *ref, PathSet *holds) {
     uint32_t i = 0;
     while (i < nyields && yields[i].ref != ref)
